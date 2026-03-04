@@ -26,7 +26,7 @@ ClaudeClaw is not a chatbot wrapper. It spawns the actual `claude` CLI on your M
 
 ![ClaudeClaw setup flow](assets/setup-flow.jpeg)
 
-Follow these steps in order. The whole thing takes about 5 minutes.
+Follow these steps in order. The whole thing takes about 5 minutes. DO NoT Skip any steps!
 
 ---
 
