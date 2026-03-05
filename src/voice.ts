@@ -96,6 +96,30 @@ function httpsGet(url: string): Promise<Buffer> {
   });
 }
 
+// ── OGG Opus conversion helper ──────────────────────────────────────────────
+
+/**
+ * Convert any audio buffer to OGG Opus format via ffmpeg.
+ * Required because Telegram's replyWithVoice expects OGG Opus,
+ * but ElevenLabs returns MP3 and Gradium may return raw Opus.
+ */
+async function toOggOpus(inputBuffer: Buffer, inputExt: string): Promise<Buffer> {
+  const id = `${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+  const tmpDir = path.join(UPLOADS_DIR, '..', 'tmp');
+  mkdirSync(tmpDir, { recursive: true });
+  const tmpIn = path.join(tmpDir, `tts_${id}${inputExt}`);
+  const tmpOut = path.join(tmpDir, `tts_${id}.ogg`);
+
+  try {
+    fs.writeFileSync(tmpIn, inputBuffer);
+    await execFileAsync('ffmpeg', ['-i', tmpIn, '-c:a', 'libopus', '-b:a', '48k', '-y', tmpOut]);
+    return fs.readFileSync(tmpOut);
+  } finally {
+    try { fs.unlinkSync(tmpIn); } catch { /* ignore */ }
+    try { fs.unlinkSync(tmpOut); } catch { /* ignore */ }
+  }
+}
+
 // ── STT: Groq Whisper ───────────────────────────────────────────────────────
 
 /**
@@ -230,7 +254,7 @@ async function synthesizeSpeechElevenLabs(text: string): Promise<Buffer> {
     },
   });
 
-  return await httpsRequest(
+  const mp3Buffer = await httpsRequest(
     `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`,
     {
       method: 'POST',
@@ -243,6 +267,9 @@ async function synthesizeSpeechElevenLabs(text: string): Promise<Buffer> {
     },
     payload,
   );
+
+  // ElevenLabs returns MP3 — convert to OGG Opus for Telegram voice messages
+  return await toOggOpus(mp3Buffer, '.mp3');
 }
 
 // ── TTS: Gradium AI (alternative) ────────────────────────────────────────────
@@ -266,7 +293,7 @@ async function synthesizeSpeechGradium(text: string): Promise<Buffer> {
     only_audio: true,
   });
 
-  return await httpsRequest(
+  const opusBuffer = await httpsRequest(
     'https://eu.api.gradium.ai/api/post/speech/tts',
     {
       method: 'POST',
@@ -278,6 +305,9 @@ async function synthesizeSpeechGradium(text: string): Promise<Buffer> {
     },
     payload,
   );
+
+  // Gradium returns raw Opus — wrap in OGG container for Telegram
+  return await toOggOpus(opusBuffer, '.opus');
 }
 
 // ── TTS: macOS say + ffmpeg (local fallback) ─────────────────────────────────

@@ -219,7 +219,7 @@ export function splitMessage(text: string): string[] {
 
 // ── File marker types ─────────────────────────────────────────────────
 export interface FileMarker {
-  type: 'document' | 'photo';
+  type: 'document' | 'photo' | 'voice';
   filePath: string;
   caption?: string;
 }
@@ -230,7 +230,7 @@ export interface ExtractResult {
 }
 
 /**
- * Extract [SEND_FILE:path] and [SEND_PHOTO:path] markers from Claude's response.
+ * Extract [SEND_FILE:path], [SEND_PHOTO:path] and [SEND_VOICE:path] markers from Claude's response.
  * Supports optional captions via pipe: [SEND_FILE:/path/to/file.pdf|Here's your report]
  *
  * Returns the cleaned text (markers stripped) and an array of file descriptors.
@@ -238,11 +238,11 @@ export interface ExtractResult {
 export function extractFileMarkers(text: string): ExtractResult {
   const files: FileMarker[] = [];
 
-  const pattern = /\[SEND_(FILE|PHOTO):([^\]\|]+)(?:\|([^\]]*))?\]/g;
+  const pattern = /\[SEND_(FILE|PHOTO|VOICE):([^\]\|]+)(?:\|([^\]]*))?\]/g;
 
   const cleaned = text.replace(pattern, (_, kind: string, filePath: string, caption?: string) => {
     files.push({
-      type: kind === 'PHOTO' ? 'photo' : 'document',
+      type: kind === 'PHOTO' ? 'photo' : kind === 'VOICE' ? 'voice' : 'document',
       filePath: filePath.trim(),
       caption: caption?.trim() || undefined,
     });
@@ -392,6 +392,8 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
         const input = new InputFile(file.filePath);
         if (file.type === 'photo') {
           await ctx.replyWithPhoto(input, file.caption ? { caption: file.caption } : undefined);
+        } else if (file.type === 'voice') {
+          await ctx.replyWithVoice(input);
         } else {
           await ctx.replyWithDocument(input, file.caption ? { caption: file.caption } : undefined);
         }
@@ -916,9 +918,8 @@ export function createBot(): Bot {
       const localPath = await downloadTelegramFile(TELEGRAM_BOT_TOKEN, fileId, UPLOADS_DIR);
       const transcribed = await transcribeAudio(localPath);
       clearInterval(typingInterval);
-      // Only reply with voice if explicitly requested — otherwise execute and respond in text
-      const wantsVoiceBack = /\b(respond (with|via|in) voice|send (me )?(a )?voice( note| back)?|voice reply|reply (with|via) voice)\b/i.test(transcribed);
-      void handleMessage(ctx, `[Voice transcribed]: ${transcribed}`, wantsVoiceBack);
+      // Voice in = voice out. Always reply with voice when user sends a voice note.
+      void handleMessage(ctx, `[Voice transcribed]: ${transcribed}`, true);
     } catch (err) {
       clearInterval(typingInterval);
       logger.error({ err }, 'Voice transcription failed');
