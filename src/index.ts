@@ -4,6 +4,7 @@ import path from 'path';
 import { loadAgentConfig } from './agent-config.js';
 import { createBot } from './bot.js';
 import { ALLOWED_CHAT_ID, activeBotToken, STORE_DIR, PROJECT_ROOT, setAgentOverrides } from './config.js';
+import { checkPendingMigrations } from './migrations.js';
 import { startDashboard } from './dashboard.js';
 import { initDatabase } from './db.js';
 import { logger } from './logger.js';
@@ -71,6 +72,7 @@ async function main(): Promise<void> {
   if (AGENT_ID === 'main') {
     showBanner();
   }
+  checkPendingMigrations(PROJECT_ROOT);
 
   if (!activeBotToken) {
     logger.error('Bot token is not set. Add TELEGRAM_BOT_TOKEN (or agent token) to .env and restart.');
