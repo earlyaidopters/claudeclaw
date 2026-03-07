@@ -1,8 +1,9 @@
 import fs from 'fs';
 import path from 'path';
 
+import { loadAgentConfig } from './agent-config.js';
 import { createBot } from './bot.js';
-import { ALLOWED_CHAT_ID, TELEGRAM_BOT_TOKEN, STORE_DIR, PROJECT_ROOT } from './config.js';
+import { ALLOWED_CHAT_ID, activeBotToken, STORE_DIR, PROJECT_ROOT, setAgentOverrides } from './config.js';
 import { startDashboard } from './dashboard.js';
 import { initDatabase } from './db.js';
 import { logger } from './logger.js';
@@ -11,7 +12,22 @@ import { runDecaySweep } from './memory.js';
 import { initScheduler } from './scheduler.js';
 import { setTelegramConnected, setBotInfo } from './state.js';
 
-const PID_FILE = path.join(STORE_DIR, 'claudeclaw.pid');
+// Parse --agent flag
+const agentFlagIndex = process.argv.indexOf('--agent');
+const AGENT_ID = agentFlagIndex !== -1 ? process.argv[agentFlagIndex + 1] : 'main';
+
+if (AGENT_ID !== 'main') {
+  const agentConfig = loadAgentConfig(AGENT_ID);
+  setAgentOverrides({
+    agentId: AGENT_ID,
+    botToken: agentConfig.botToken,
+    cwd: path.join(PROJECT_ROOT, 'agents', AGENT_ID),
+    model: agentConfig.model,
+  });
+  logger.info({ agentId: AGENT_ID, name: agentConfig.name }, 'Running as agent');
+}
+
+const PID_FILE = path.join(STORE_DIR, `${AGENT_ID === 'main' ? 'claudeclaw' : `agent-${AGENT_ID}`}.pid`);
 
 function showBanner(): void {
   const bannerPath = path.join(PROJECT_ROOT, 'banner.txt');
@@ -44,10 +60,12 @@ function releaseLock(): void {
 }
 
 async function main(): Promise<void> {
-  showBanner();
+  if (AGENT_ID === 'main') {
+    showBanner();
+  }
 
-  if (!TELEGRAM_BOT_TOKEN) {
-    logger.error('TELEGRAM_BOT_TOKEN is not set. Add it to .env and restart.');
+  if (!activeBotToken) {
+    logger.error('Bot token is not set. Add TELEGRAM_BOT_TOKEN (or agent token) to .env and restart.');
     process.exit(1);
   }
 
@@ -63,11 +81,16 @@ async function main(): Promise<void> {
 
   const bot = createBot();
 
-  // Start dashboard after bot is created so we can pass bot.api for chat relay
-  startDashboard(bot.api);
+  // Dashboard only runs in the main bot process
+  if (AGENT_ID === 'main') {
+    startDashboard(bot.api);
+  }
 
   if (ALLOWED_CHAT_ID) {
-    initScheduler((text) => bot.api.sendMessage(ALLOWED_CHAT_ID, text, { parse_mode: 'HTML' }).then(() => {}));
+    initScheduler(
+      (text) => bot.api.sendMessage(ALLOWED_CHAT_ID, text, { parse_mode: 'HTML' }).then(() => {}),
+      AGENT_ID,
+    );
   }
 
   const shutdown = async () => {
@@ -80,15 +103,19 @@ async function main(): Promise<void> {
   process.on('SIGINT', () => void shutdown());
   process.on('SIGTERM', () => void shutdown());
 
-  logger.info('Starting ClaudeClaw...');
+  logger.info({ agentId: AGENT_ID }, 'Starting ClaudeClaw...');
 
   await bot.start({
     onStart: (botInfo) => {
       setTelegramConnected(true);
       setBotInfo(botInfo.username ?? '', botInfo.first_name ?? 'ClaudeClaw');
       logger.info({ username: botInfo.username }, 'ClaudeClaw is running');
-      console.log(`\n  ClaudeClaw online: @${botInfo.username}`);
-      console.log(`  Send /chatid to get your chat ID for ALLOWED_CHAT_ID\n`);
+      if (AGENT_ID === 'main') {
+        console.log(`\n  ClaudeClaw online: @${botInfo.username}`);
+        console.log(`  Send /chatid to get your chat ID for ALLOWED_CHAT_ID\n`);
+      } else {
+        console.log(`\n  ClaudeClaw agent [${AGENT_ID}] online: @${botInfo.username}\n`);
+      }
     },
   });
 }

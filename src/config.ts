@@ -17,6 +17,26 @@ const envConfig = readEnvFile([
   'DASHBOARD_URL',
 ]);
 
+// ── Multi-agent support ──────────────────────────────────────────────
+// These are mutable and overridden by index.ts when --agent is passed.
+export let AGENT_ID = 'main';
+export let activeBotToken =
+  process.env.TELEGRAM_BOT_TOKEN || envConfig.TELEGRAM_BOT_TOKEN || '';
+export let agentCwd: string | undefined; // undefined = use PROJECT_ROOT
+export let agentDefaultModel: string | undefined; // from agent.yaml
+
+export function setAgentOverrides(opts: {
+  agentId: string;
+  botToken: string;
+  cwd: string;
+  model?: string;
+}): void {
+  AGENT_ID = opts.agentId;
+  activeBotToken = opts.botToken;
+  agentCwd = opts.cwd;
+  agentDefaultModel = opts.model;
+}
+
 export const TELEGRAM_BOT_TOKEN =
   process.env.TELEGRAM_BOT_TOKEN || envConfig.TELEGRAM_BOT_TOKEN || '';
 

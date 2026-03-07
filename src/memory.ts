@@ -63,10 +63,11 @@ export function saveConversationTurn(
   userMessage: string,
   claudeResponse: string,
   sessionId?: string,
+  agentId = 'main',
 ): void {
   // Always log full conversation to conversation_log (for /respin)
-  logConversationTurn(chatId, 'user', userMessage, sessionId);
-  logConversationTurn(chatId, 'assistant', claudeResponse, sessionId);
+  logConversationTurn(chatId, 'user', userMessage, sessionId, agentId);
+  logConversationTurn(chatId, 'assistant', claudeResponse, sessionId, agentId);
 
   // Skip short or command-like messages for memory extraction
   if (userMessage.length <= 20 || userMessage.startsWith('/')) return;

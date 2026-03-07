@@ -17,17 +17,20 @@ let sender: Sender;
  * Initialise the scheduler. Call once after the Telegram bot is ready.
  * @param send  Function that sends a message to the user's Telegram chat.
  */
-export function initScheduler(send: Sender): void {
+let schedulerAgentId = 'main';
+
+export function initScheduler(send: Sender, agentId = 'main'): void {
   if (!ALLOWED_CHAT_ID) {
     logger.warn('ALLOWED_CHAT_ID not set — scheduler will not send results');
   }
   sender = send;
+  schedulerAgentId = agentId;
   setInterval(() => void runDueTasks(), 60_000);
-  logger.info('Scheduler started (checking every 60s)');
+  logger.info({ agentId }, 'Scheduler started (checking every 60s)');
 }
 
 async function runDueTasks(): Promise<void> {
-  const tasks = getDueTasks();
+  const tasks = getDueTasks(schedulerAgentId);
   if (tasks.length === 0) return;
 
   logger.info({ count: tasks.length }, 'Running due scheduled tasks');
