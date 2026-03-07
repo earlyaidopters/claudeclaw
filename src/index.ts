@@ -3,6 +3,7 @@ import path from 'path';
 
 import { loadAgentConfig } from './agent-config.js';
 import { createBot } from './bot.js';
+import { checkPendingMigrations } from './migrations.js';
 import { ALLOWED_CHAT_ID, activeBotToken, STORE_DIR, PROJECT_ROOT, setAgentOverrides } from './config.js';
 import { startDashboard } from './dashboard.js';
 import { initDatabase } from './db.js';
@@ -68,6 +69,9 @@ function releaseLock(): void {
 }
 
 async function main(): Promise<void> {
+  
+  checkPendingMigrations(PROJECT_ROOT);
+
   if (AGENT_ID === 'main') {
     showBanner();
   }

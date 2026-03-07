@@ -191,12 +191,13 @@ Output looks like:
 
 ## Updating ClaudeClaw
 
-When a new version is released, update in 4 commands:
+When a new version is released, update in 5 commands:
 
 ```bash
 cd claudeclaw          # go to your ClaudeClaw directory
 git pull               # pull the latest code
 npm install            # install any new dependencies
+npm run migrate        # apply any pending migrations
 npm run build          # recompile TypeScript
 ```
 
@@ -1183,7 +1184,7 @@ Video analysis via Google Gemini. It is **not** for Gmail or Google Calendar (th
 Recommended but not required. The video covers how Claude Code works under the hood, which helps you understand what ClaudeClaw is actually doing. But you can set up ClaudeClaw first and watch it later.
 
 **"How do I update when a new version drops?"**
-`cd claudeclaw && git pull && npm install && npm run build` then restart. See [Updating ClaudeClaw](#updating-claudeclaw) above.
+`cd claudeclaw && git pull && npm install && npm run migrate && npm run build` then restart. See [Updating ClaudeClaw](#updating-claudeclaw) above.
 
 **"Telegram formatting looks broken / not formatting properly"**
 ClaudeClaw converts Claude's Markdown to Telegram-safe HTML (bold, italic, code blocks, links). Telegram's formatting support is limited compared to a full web page. If something looks off, it's usually Telegram's rendering, not a bug. For very long or complex responses, the formatting is intentionally kept simple to avoid Telegram parse errors.
