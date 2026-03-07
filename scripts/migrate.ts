@@ -22,6 +22,7 @@ interface AppliedState {
 
 interface MigrationModule {
   description: string;
+  notify?: string;
   run: () => Promise<void>;
 }
 
@@ -53,7 +54,6 @@ const PATH_SCAN_PATTERNS: Array<{ pattern: RegExp; label: string }> = [
   { pattern: /process\.chdir\s*\(/, label: 'process.chdir()' },
   { pattern: /os\.homedir\s*\(\)/, label: 'os.homedir()' },
   { pattern: /os\.tmpdir\s*\(\)/, label: 'os.tmpdir()' },
-  { pattern: /__dirname/, label: '__dirname' },
 ];
 
 function scanForPathWarnings(filePath: string): PathWarning[] {
@@ -123,6 +123,7 @@ async function main(): Promise<void> {
     version: string;
     filename: string;
     description: string;
+    notify?: string;
     warnings: PathWarning[];
   }
 
@@ -139,9 +140,11 @@ async function main(): Promise<void> {
       }
 
       let description = '(no description)';
+      let notify: string | undefined;
       try {
         const mod = (await import(pathToFileURL(filePath).href)) as MigrationModule;
         description = mod.description ?? description;
+        notify = mod.notify;
       } catch (e) {
         console.error(`Failed to load migration ${filePath}: ${e}`);
         process.exit(1);
@@ -150,7 +153,7 @@ async function main(): Promise<void> {
       const warnings = scanForPathWarnings(filePath);
       if (warnings.length > 0) hasWarnings = true;
 
-      migrationInfos.push({ version, filename, description, warnings });
+      migrationInfos.push({ version, filename, description, notify, warnings });
     }
   }
 
@@ -161,26 +164,23 @@ async function main(): Promise<void> {
   );
 
   let currentVersionHeader = '';
-  for (const { version, filename, description, warnings } of migrationInfos) {
+  for (const { version, filename, description, notify, warnings } of migrationInfos) {
     if (version !== currentVersionHeader) {
       console.log(`  ${version}:`);
       currentVersionHeader = version;
     }
-    console.log(`    • ${description} (${filename})`);
+    console.log(`    • ${description} (migrations/${version}/${filename}.ts)`);
     if (warnings.length > 0) {
-      console.log(`      ⚠️  Possible out-of-repo path access detected:`);
-      for (const w of warnings) {
-        console.log(`          line ${w.line}: ${w.text}`);
+      
+      console.log(`      ⚠️  Possible out-of-repo path access detected (migrations/${version}/${filename}.ts: lines ${warnings.map(warning => warning.line).join(', ')})`);           
+      if (notify) {
+        console.log(`      ℹ️  ${notify}`);
       }
-      console.log(`          Inspect migrations/${version}/${filename}.ts before proceeding.`);
     }
   }
 
   console.log('');
-  if (hasWarnings) {
-    console.log(`⚠️  Review each migration and check your project before proceeding.`);
-    console.log(`    Inspect migrations/<version>/<name>.ts if unsure.\n`);
-  }
+  
 
   const versionWord = pendingVersions.length === 1 ? 'version' : 'versions';
   const migrationWord = totalMigrations === 1 ? 'migration' : 'migrations';

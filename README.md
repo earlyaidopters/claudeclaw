@@ -1052,6 +1052,7 @@ Browse more: [github.com/anthropics/claude-code](https://github.com/anthropics/c
 
 | Variable | Required | Description |
 |----------|----------|-------------|
+| `CLAUDECLAW_CONFIG` | No | Path to your personal config folder (default: `~/.claudeclaw`). Contains your `CLAUDE.md`. |
 | `TELEGRAM_BOT_TOKEN` | Yes | From [@BotFather](https://t.me/botfather) |
 | `ALLOWED_CHAT_ID` | Yes | Your chat ID — send `/chatid` to get it |
 | `ANTHROPIC_API_KEY` | No | Pay-per-token instead of Max subscription |
@@ -1169,7 +1170,7 @@ ClaudeClaw is designed to run on your personal machine for your own use. A few t
 ## Common confusions
 
 **"Do I need the mega prompt / Rebuild_Prompt.md?"**
-No. There is no separate prompt to execute and no `Rebuild_Prompt.md` file. `CLAUDE.md` in the repo **is** the prompt — it loads automatically into every Claude Code session. You personalize it once (replace the `[BRACKETED]` placeholders with your info) and forget about it. Just clone the repo, run setup, and go. When you `git pull` updates, your personalized `.env` stays untouched (gitignored) and `CLAUDE.md` changes are merged by git.
+No. There is no separate prompt to execute and no `Rebuild_Prompt.md` file. `CLAUDE.md` is the prompt — it loads automatically into every Claude Code session. The repo ships a generic `CLAUDE.md.example`; the setup wizard copies it to your personal config folder (`~/.claudeclaw` by default) and opens it for you to fill in the `[BRACKETED]` placeholders. Your personalised copy lives outside the repo, so `git pull` never touches it.
 
 **"Does this use Claude Remote?"**
 No. ClaudeClaw has nothing to do with Anthropic's Remote product. It runs the `claude` CLI locally on your own machine (Mac, Linux, or Windows via WSL2) and pipes results to Telegram. No cloud VMs, no remote sessions.

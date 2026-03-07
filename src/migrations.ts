@@ -59,7 +59,7 @@ export function checkPendingMigrations(projectRoot: string): void {
           `    Run \`npm run migrate\` to update, then restart.\n`,
       );
       process.exit(1);
-    }
+    }   
   } catch {
     // If version.json is missing or unreadable, skip the guard
   }
