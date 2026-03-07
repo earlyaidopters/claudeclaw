@@ -3,7 +3,9 @@ import path from 'path';
 
 import { loadAgentConfig } from './agent-config.js';
 import { createBot } from './bot.js';
+
 import { ALLOWED_CHAT_ID, CLAUDECLAW_CONFIG, CLAUDECLAW_WORKSPACE, activeBotToken, STORE_DIR, PROJECT_ROOT, setAgentOverrides } from './config.js';
+
 import { checkPendingMigrations } from './migrations.js';
 import { startDashboard } from './dashboard.js';
 import { initDatabase } from './db.js';
@@ -73,6 +75,7 @@ async function main(): Promise<void> {
   if (AGENT_ID === 'main') {
     showBanner();
   }
+
   checkPendingMigrations(PROJECT_ROOT);
   ensureWorkspace(CLAUDECLAW_CONFIG, CLAUDECLAW_WORKSPACE, PROJECT_ROOT);
 
@@ -131,8 +134,13 @@ async function main(): Promise<void> {
         }
       } else {
         console.log(`\n  ClaudeClaw agent [${AGENT_ID}] online: @${botInfo.username}\n`);
+        console.log(`\n  ClaudeClaw online: @${botInfo.username}\n`);
+
+        if (!ALLOWED_CHAT_ID) {
+          console.log(`  Send /chatid to get your chat ID for ALLOWED_CHAT_ID in .env file\n`);
+        }
       }
-    },
+    }
   });
 }
 

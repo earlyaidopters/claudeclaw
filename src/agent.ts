@@ -1,6 +1,7 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
 import { PROJECT_ROOT, agentCwd, CLAUDECLAW_WORKSPACE } from './config.js';
+
 import { readEnvFile } from './env.js';
 import { logger } from './logger.js';
 
@@ -143,6 +144,7 @@ export async function runAgent(
     for await (const event of query({
       prompt: singleTurn(message),
       options: {
+
         // cwd = agent directory (if running as agent), personal workspace, or project root.
         // Claude Code loads CLAUDE.md from cwd via settingSources: ['project'].
         cwd: agentCwd ?? (CLAUDECLAW_WORKSPACE || PROJECT_ROOT),
