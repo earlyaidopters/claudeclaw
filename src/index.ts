@@ -3,7 +3,10 @@ import path from 'path';
 
 import { loadAgentConfig } from './agent-config.js';
 import { createBot } from './bot.js';
-import { ALLOWED_CHAT_ID, activeBotToken, STORE_DIR, PROJECT_ROOT, setAgentOverrides } from './config.js';
+
+import { ALLOWED_CHAT_ID, CLAUDECLAW_CONFIG, CLAUDECLAW_WORKSPACE, activeBotToken, STORE_DIR, PROJECT_ROOT, setAgentOverrides } from './config.js';
+
+import { checkPendingMigrations } from './migrations.js';
 import { startDashboard } from './dashboard.js';
 import { initDatabase } from './db.js';
 import { logger } from './logger.js';
@@ -11,6 +14,7 @@ import { cleanupOldUploads } from './media.js';
 import { runDecaySweep } from './memory.js';
 import { initScheduler } from './scheduler.js';
 import { setTelegramConnected, setBotInfo } from './state.js';
+import { ensureWorkspace } from './startup.js';
 
 // Parse --agent flag
 const agentFlagIndex = process.argv.indexOf('--agent');
@@ -72,6 +76,9 @@ async function main(): Promise<void> {
     showBanner();
   }
 
+  checkPendingMigrations(PROJECT_ROOT);
+  ensureWorkspace(CLAUDECLAW_CONFIG, CLAUDECLAW_WORKSPACE, PROJECT_ROOT);
+
   if (!activeBotToken) {
     logger.error('Bot token is not set. Add TELEGRAM_BOT_TOKEN (or agent token) to .env and restart.');
     process.exit(1);
@@ -121,12 +128,19 @@ async function main(): Promise<void> {
       setBotInfo(botInfo.username ?? '', botInfo.first_name ?? 'ClaudeClaw');
       logger.info({ username: botInfo.username }, 'ClaudeClaw is running');
       if (AGENT_ID === 'main') {
-        console.log(`\n  ClaudeClaw online: @${botInfo.username}`);
-        console.log(`  Send /chatid to get your chat ID for ALLOWED_CHAT_ID\n`);
+        console.log(`\n  ClaudeClaw online: @${botInfo.username}\n`);
+        if (!ALLOWED_CHAT_ID) {
+          console.log(`  Send /chatid to get your chat ID for ALLOWED_CHAT_ID in .env file\n`);
+        }
       } else {
         console.log(`\n  ClaudeClaw agent [${AGENT_ID}] online: @${botInfo.username}\n`);
+        console.log(`\n  ClaudeClaw online: @${botInfo.username}\n`);
+
+        if (!ALLOWED_CHAT_ID) {
+          console.log(`  Send /chatid to get your chat ID for ALLOWED_CHAT_ID in .env file\n`);
+        }
       }
-    },
+    }
   });
 }
 

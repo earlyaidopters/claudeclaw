@@ -1,0 +1,5 @@
+{
+  "migrations": {
+    "1.2.0": ["setup-config-folder"]
+  }
+}

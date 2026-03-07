@@ -191,12 +191,13 @@ Output looks like:
 
 ## Updating ClaudeClaw
 
-When a new version is released, update in 4 commands:
+When a new version is released, update in 5 commands:
 
 ```bash
 cd claudeclaw          # go to your ClaudeClaw directory
 git pull               # pull the latest code
 npm install            # install any new dependencies
+npm run migrate        # apply any pending migrations
 npm run build          # recompile TypeScript
 ```
 
@@ -1051,6 +1052,7 @@ Browse more: [github.com/anthropics/claude-code](https://github.com/anthropics/c
 
 | Variable | Required | Description |
 |----------|----------|-------------|
+| `CLAUDECLAW_CONFIG` | No | Path to your personal config folder (default: `~/.claudeclaw`). Contains your `CLAUDE.md`. |
 | `TELEGRAM_BOT_TOKEN` | Yes | From [@BotFather](https://t.me/botfather) |
 | `ALLOWED_CHAT_ID` | Yes | Your chat ID — send `/chatid` to get it |
 | `ANTHROPIC_API_KEY` | No | Pay-per-token instead of Max subscription |
@@ -1168,7 +1170,7 @@ ClaudeClaw is designed to run on your personal machine for your own use. A few t
 ## Common confusions
 
 **"Do I need the mega prompt / Rebuild_Prompt.md?"**
-No. There is no separate prompt to execute and no `Rebuild_Prompt.md` file. `CLAUDE.md` in the repo **is** the prompt — it loads automatically into every Claude Code session. You personalize it once (replace the `[BRACKETED]` placeholders with your info) and forget about it. Just clone the repo, run setup, and go. When you `git pull` updates, your personalized `.env` stays untouched (gitignored) and `CLAUDE.md` changes are merged by git.
+No. There is no separate prompt to execute and no `Rebuild_Prompt.md` file. `CLAUDE.md` is the prompt — it loads automatically into every Claude Code session. The repo ships a generic `CLAUDE.md.example`; the setup wizard copies it to your personal config folder (`~/.claudeclaw` by default) and opens it for you to fill in the `[BRACKETED]` placeholders. Your personalised copy lives outside the repo, so `git pull` never touches it.
 
 **"Does this use Claude Remote?"**
 No. ClaudeClaw has nothing to do with Anthropic's Remote product. It runs the `claude` CLI locally on your own machine (Mac, Linux, or Windows via WSL2) and pipes results to Telegram. No cloud VMs, no remote sessions.
@@ -1183,7 +1185,7 @@ Video analysis via Google Gemini. It is **not** for Gmail or Google Calendar (th
 Recommended but not required. The video covers how Claude Code works under the hood, which helps you understand what ClaudeClaw is actually doing. But you can set up ClaudeClaw first and watch it later.
 
 **"How do I update when a new version drops?"**
-`cd claudeclaw && git pull && npm install && npm run build` then restart. See [Updating ClaudeClaw](#updating-claudeclaw) above.
+`cd claudeclaw && git pull && npm install && npm run migrate && npm run build` then restart. See [Updating ClaudeClaw](#updating-claudeclaw) above.
 
 **"Telegram formatting looks broken / not formatting properly"**
 ClaudeClaw converts Claude's Markdown to Telegram-safe HTML (bold, italic, code blocks, links). Telegram's formatting support is limited compared to a full web page. If something looks off, it's usually Telegram's rendering, not a bug. For very long or complex responses, the formatting is intentionally kept simple to avoid Telegram parse errors.

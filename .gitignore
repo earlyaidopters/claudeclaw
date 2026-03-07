@@ -11,6 +11,9 @@ dist/
 store/
 workspace/
 
+# Migration state — local only
+migrations/.applied.json
+
 # Logs
 *.log
 /tmp/claudeclaw.*

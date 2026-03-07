@@ -1,3 +1,4 @@
+import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -15,6 +16,7 @@ const envConfig = readEnvFile([
   'DASHBOARD_PORT',
   'DASHBOARD_TOKEN',
   'DASHBOARD_URL',
+  'CLAUDECLAW_CONFIG',
 ]);
 
 // ── Multi-agent support ──────────────────────────────────────────────
@@ -64,11 +66,23 @@ export const ELEVENLABS_VOICE_ID = envConfig.ELEVENLABS_VOICE_ID ?? '';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// PROJECT_ROOT is the claudeclaw/ directory — where CLAUDE.md lives.
-// The SDK uses this as cwd, which causes Claude Code to load our CLAUDE.md
-// and all global skills from ~/.claude/skills/ via settingSources.
+// PROJECT_ROOT is the claudeclaw/ directory.
+// The SDK uses this as cwd, loading CLAUDE.md and global skills via settingSources.
 export const PROJECT_ROOT = path.resolve(__dirname, '..');
 export const STORE_DIR = path.resolve(PROJECT_ROOT, 'store');
+
+// Personal config folder — stores personal config outside the repo.
+// Tilde is expanded here so the rest of the codebase gets an absolute path.
+export function expandHome(p: string): string {
+  return p.startsWith('~/') ? path.join(os.homedir(), p.slice(2)) : path.resolve(p);
+}
+const rawConfigDir =
+  process.env.CLAUDECLAW_CONFIG || envConfig.CLAUDECLAW_CONFIG;
+export const CLAUDECLAW_CONFIG = rawConfigDir ? expandHome(rawConfigDir) : '';
+
+// Workspace — the cwd passed to the Claude Agent SDK.
+// CLAUDE.md lives here; the SDK loads it as the project-level system prompt.
+export const CLAUDECLAW_WORKSPACE = CLAUDECLAW_CONFIG ? path.join(CLAUDECLAW_CONFIG, 'workspace') : '';
 
 // Telegram limits
 export const MAX_MESSAGE_LENGTH = 4096;
