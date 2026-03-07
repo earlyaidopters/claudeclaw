@@ -585,7 +585,50 @@ async function main() {
     info('Then use /wa in Telegram to access your chats.');
   }
 
-  // ── 15. Summary ───────────────────────────────────────────────────────────
+  // ── 15. Multi-agent setup (optional) ────────────────────────────────────
+  section('Agent team (optional)');
+
+  info('ClaudeClaw can run specialist agents alongside the main bot.');
+  info('Each agent is its own Telegram bot with a focused role, its own');
+  info('context window, and its own chat on your phone.');
+  console.log();
+  bullet('Each agent gets its own 1M context window (separate from main)');
+  bullet('Agents default to Sonnet (cheaper) — use /model opus when needed');
+  bullet('Each agent has its own CLAUDE.md personality and Obsidian folders');
+  bullet('A shared hive mind lets agents see what others have done');
+  bullet('All agents inherit every feature: voice, files, skills, scheduling');
+  console.log();
+
+  const wantAgents = await confirm('Set up specialist agents?', false);
+  if (wantAgents) {
+    console.log();
+    info('Available templates:');
+    console.log(`  1. ${c.bold}comms${c.reset}     — email, Slack, WhatsApp, YouTube comments, Skool, LinkedIn`);
+    console.log(`  2. ${c.bold}content${c.reset}   — YouTube scripts, LinkedIn posts, trend research`);
+    console.log(`  3. ${c.bold}ops${c.reset}       — calendar, billing, Stripe, Gumroad, admin`);
+    console.log(`  4. ${c.bold}research${c.reset}  — deep web research, academic, competitive intel`);
+    console.log();
+    info('For each agent, you\'ll need to create a Telegram bot via @BotFather.');
+    info('Open Telegram → @BotFather → /newbot → choose a name and username.');
+    console.log();
+    info('Run the agent creation wizard after setup finishes:');
+    console.log();
+    console.log(`  ${c.cyan}npm run agent:create${c.reset}`);
+    console.log();
+    info('It walks you through template selection, bot creation, and configuration.');
+    info('Then start each agent in its own terminal:');
+    console.log();
+    console.log(`  ${c.cyan}npm start -- --agent comms${c.reset}      # Terminal 2`);
+    console.log(`  ${c.cyan}npm start -- --agent content${c.reset}    # Terminal 3`);
+    console.log(`  ${c.cyan}npm start -- --agent ops${c.reset}        # Terminal 4`);
+    console.log();
+    info('Or install as background services:');
+    console.log(`  ${c.cyan}bash scripts/agent-service.sh install comms${c.reset}`);
+    console.log();
+    info('Full guide: see "Creating a team of agents" in the README.');
+  }
+
+  // ── 16. Summary ───────────────────────────────────────────────────────────
   console.log();
   console.log(`  ${c.cyan}╔════════════════════════════════════════════╗${c.reset}`);
   console.log(`  ${c.cyan}║${c.reset}${c.bold}           ClaudeClaw is ready!             ${c.reset}${c.cyan}║${c.reset}`);

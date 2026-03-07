@@ -1293,90 +1293,189 @@ Everything else runs without modification.
 
 ---
 
-## Agents (optional)
+## Creating a team of agents
 
-ClaudeClaw supports running **specialist agents** alongside the main bot. Each agent is its own Telegram bot with a focused CLAUDE.md, its own Claude Code session, and its own chat.
+ClaudeClaw can run **specialist agents** alongside the main bot. Each agent is its own Telegram bot with its own personality, its own Claude Code session, and its own chat on your phone.
 
-All agents share the same machine, the same SQLite database, the same global skills, and the same `.env` secrets. A **hive mind** table lets agents log what they did so any agent can see cross-agent activity.
+![Agent avatars](assets/agent-comms.png) ![Agent avatars](assets/agent-content.png) ![Agent avatars](assets/agent-ops.png) ![Agent avatars](assets/agent-research.png)
 
-### Quick start
+*Example setup: Comms, Content, Ops, and Research agents, each with a pop-art avatar generated via Gemini.*
+
+![Multi-agent architecture](assets/multi-agent-architecture.png)
+
+### Why agents?
+
+Your main ClaudeClaw bot does everything. That's powerful but also means one long conversation, one context window, and one personality trying to handle email, research, billing, and content all at once.
+
+Agents let you split the work:
+
+| What | Main bot | Specialist agents |
+|------|----------|-------------------|
+| Context window | Shared across all tasks | Each gets its own 1M window |
+| Personality | General purpose | Focused CLAUDE.md per role |
+| Model | Opus (default) | Sonnet (cheaper, fast enough for routine work) |
+| Scheduled tasks | All fire in one process | Scoped per agent |
+| Obsidian context | Optional | Auto-injected from assigned vault folders |
+| Cost | Full Opus pricing | Sonnet by default, /model opus when needed |
+
+All agents share your machine, your SQLite database, your global skills (`~/.claude/skills/`), and your `.env` secrets. A **hive mind** table lets agents log what they did so any agent (or the main bot) can see cross-agent activity.
+
+**This is 100% optional.** `npm start` with no flags works exactly like before. Zero breaking changes.
+
+### Step 1 -- Decide what agents you want
+
+Think about the roles that make sense for your workflow. Here are the templates we ship:
+
+| Template | What it handles | Default model |
+|----------|----------------|---------------|
+| `comms` | Email, Slack, WhatsApp, YouTube comments, Skool, LinkedIn DMs | Sonnet |
+| `content` | YouTube scripts, LinkedIn posts, carousels, trend research | Sonnet |
+| `ops` | Calendar, billing, Stripe, Gumroad, admin, task management | Sonnet |
+| `research` | Deep web research, academic sources, competitive intel | Sonnet |
+
+You can start with one and add more later. Or use the blank `_template` and define your own role entirely.
+
+### Step 2 -- Create Telegram bots
+
+Each agent needs its own Telegram bot. Open Telegram and message **@BotFather**:
+
+1. Send `/newbot`
+2. Choose a name (e.g., "Mark Comms", "Mark Ops")
+3. Choose a username ending in `_bot` (e.g., `mark_comms_bot`)
+4. Copy the token BotFather gives you
+
+Repeat for each agent you want. Keep the tokens handy.
+
+**Or use the interactive wizard:**
 
 ```bash
 npm run agent:create
 ```
 
-This interactive wizard will:
-1. Let you pick a template (comms, content, ops, research, or blank)
-2. Ask you to create a bot via @BotFather in Telegram
-3. Save the token to `.env`
-4. Create the agent config at `agents/<name>/agent.yaml`
-5. Build and optionally test-start the agent
+It walks you through template selection, bot creation, token setup, and a test start.
 
-### Start an agent
+### Step 3 -- Configure each agent
 
-```bash
-npm start -- --agent comms
+For each agent, you need two files in `agents/<name>/`:
+
+**agent.yaml** -- the agent's config:
+```yaml
+name: Comms
+description: Email, Slack, WhatsApp, YouTube comments, Skool, LinkedIn
+telegram_bot_token_env: COMMS_BOT_TOKEN
+model: claude-sonnet-4-6
+
+# Optional: auto-inject open tasks from your Obsidian vault
+obsidian:
+  vault: /path/to/your/obsidian/vault
+  folders:
+    - Inbox/
+    - Client Work/
+  read_only:
+    - Daily Notes/
 ```
 
-Or as a background service (auto-restarts, runs on boot):
+**CLAUDE.md** -- the agent's personality and instructions:
+```markdown
+# Comms Agent
+
+You handle all human communication on the user's behalf.
+[... focused instructions for this role ...]
+```
+
+Add the bot token to `.env`:
+```
+COMMS_BOT_TOKEN=1234567890:AAFxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+### Step 4 -- Start your agents
+
+Each agent runs in its own terminal. Open a new tab for each:
+
+```bash
+npm start -- --agent comms      # Terminal 1
+npm start -- --agent content    # Terminal 2
+npm start -- --agent ops        # Terminal 3
+npm start -- --agent research   # Terminal 4
+```
+
+Each will show:
+```
+ClaudeClaw agent [comms] online: @mark_comms_bot
+```
+
+Your main bot keeps running in its own terminal as usual (`npm start`).
+
+**Run as background services instead** (auto-restart, survive reboots):
 
 ```bash
 bash scripts/agent-service.sh install comms
+bash scripts/agent-service.sh install content
+bash scripts/agent-service.sh install ops
+bash scripts/agent-service.sh install research
 ```
 
-### Available templates
+### Step 5 -- Message your agents
 
-| Agent | Role | Default model |
-|-------|------|---------------|
-| `comms` | Email, Slack, WhatsApp, YouTube comments, Skool, LinkedIn | Sonnet |
-| `content` | YouTube scripts, LinkedIn posts, trend research | Sonnet |
-| `ops` | Calendar, billing, Stripe, Gumroad, admin | Sonnet |
-| `research` | Deep web research, academic, competitive intel | Sonnet |
+Open each agent's chat in Telegram and send `/start`. They'll respond with their name and role. From there, use them like you use the main bot -- voice notes, photos, files, slash commands -- everything works.
 
-### Create your own agent
+### What each agent gets automatically
 
-1. Copy `agents/_template/` to `agents/myagent/`
-2. Edit `CLAUDE.md` with your agent's role and personality
-3. Copy `agent.yaml.example` to `agent.yaml` and fill in the bot token env var name
-4. Create a bot via @BotFather and add the token to `.env`
-5. `npm start -- --agent myagent`
+Every agent inherits all of ClaudeClaw's features with zero extra config:
 
-### How it works
+- Voice notes (STT via Groq, TTS via ElevenLabs/Gradium/macOS say)
+- Photo, document, and video handling (including Gemini video analysis)
+- File sending (`[SEND_FILE:...]` markers)
+- All slash commands: /newchat, /respin, /voice, /model, /memory, /stop, /wa, /slack
+- All global skills from `~/.claude/skills/`
+- Memory system (FTS5 search, salience decay) -- isolated per agent
+- Context window tracking and compaction warnings
+- WhatsApp and Slack integration
 
-- `npm start` with no flags = main bot, unchanged. Zero breaking changes.
-- `npm start -- --agent comms` loads `agents/comms/CLAUDE.md` instead of the root `CLAUDE.md`.
-- Each agent gets its own bot token, its own Claude Code session, and its own scheduled tasks.
-- The dashboard shows all agents, their status, and the hive mind feed.
-- Agents share the SQLite database (WAL mode handles concurrent access).
+When you add features to the main bot, rebuild once (`npm run build`) and every agent gets them on next restart.
+
+### Obsidian auto-injection
+
+If you use Obsidian, agents can be assigned vault folders. Open tasks (`- [ ]` lines) from those folders are automatically prepended to every message -- the agent just knows what's on your plate without you having to say anything.
+
+```yaml
+# In agent.yaml
+obsidian:
+  vault: /Users/you/ObsidianVault
+  folders:
+    - Client Work/       # agent can read and reference
+    - Inbox/
+  read_only:
+    - Daily Notes/       # reference only
+```
+
+What the agent sees before every message:
+```
+[Obsidian context]
+  Client Work//
+    Open: Send proposal to Acme Corp (Acme Deal)
+    Open: Follow up on invoice #42 (Billing)
+  Inbox//
+    Open: Get back to Brock about podcast (Podcast Invite)
+[End Obsidian context]
+```
+
+Scanned every 5 minutes (cached), only open tasks, only from assigned folders. Lightweight -- typically 200-500 tokens.
 
 ### Hive mind
 
-Agents log meaningful actions to the `hive_mind` table. Any agent can query it:
+When an agent completes a meaningful action, it logs it to the shared `hive_mind` table. Any agent can query what others have done:
 
 ```sql
 SELECT agent_id, action, summary, datetime(created_at, 'unixepoch')
 FROM hive_mind ORDER BY created_at DESC LIMIT 20;
 ```
 
-The dashboard shows the hive mind feed in real-time.
+The dashboard shows the hive mind feed in real-time across all agents.
 
-### Obsidian integration
+### Agent-scoped scheduled tasks
 
-Agents can be assigned Obsidian vault folders in `agent.yaml`. Open tasks from those folders are auto-injected as lightweight context before every message:
-
-```yaml
-obsidian:
-  vault: /path/to/your/obsidian/vault
-  folders:
-    - Prompt Advisers/
-    - Inbox/
-  read_only:
-    - Daily Notes/
-```
-
-### Scheduled tasks with agents
-
-Cron jobs are agent-scoped. A task created in the comms agent only fires in the comms agent's process:
+Cron jobs belong to the agent that creates them. A task created in the comms agent only fires in the comms agent's process:
 
 ```bash
 # Create a task for the comms agent
@@ -1385,6 +1484,50 @@ node dist/schedule-cli.js create "check youtube comments" "0 */4 * * *" --agent 
 # List tasks for a specific agent
 node dist/schedule-cli.js list --agent comms
 ```
+
+### The dashboard with agents
+
+When agents are configured, the dashboard adds two panels at the top:
+
+- **Agent Status Cards** -- shows each agent with a color-coded status (live/offline), model, today's turns and cost
+- **Hive Mind Feed** -- timestamped cross-agent activity, color-coded by agent
+
+All existing dashboard panels (tasks, memory, health, tokens, chat) continue to work as before.
+
+### Create your own agent from scratch
+
+```bash
+# 1. Copy the template
+cp -r agents/_template agents/myagent
+
+# 2. Edit the personality
+vim agents/myagent/CLAUDE.md
+
+# 3. Create agent.yaml from the example
+cp agents/myagent/agent.yaml.example agents/myagent/agent.yaml
+vim agents/myagent/agent.yaml
+
+# 4. Create a bot via @BotFather, add token to .env
+echo "MYAGENT_BOT_TOKEN=your_token_here" >> .env
+
+# 5. Build and start
+npm run build
+npm start -- --agent myagent
+```
+
+### Profile pictures
+
+Use any image generation tool (Gemini, DALL-E, Midjourney) to create pop-art or branded avatars for your agents. Set them via the Telegram Bot API:
+
+```bash
+curl -X POST "https://api.telegram.org/bot<TOKEN>/setMyProfilePhoto" \
+  -F 'photo={"type":"static","photo":"attach://file"}' \
+  -F "file=@assets/agent-comms.png"
+```
+
+### Resource usage
+
+5 Node.js processes (main + 4 agents) use ~500MB RAM total at idle. Each `runAgent()` call spawns a separate Claude Code subprocess that exits when done. SQLite WAL mode handles concurrent access from all processes with no contention.
 
 ---
 

@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.34",
+    "@google/genai": "^1.44.0",
     "@hono/node-server": "^1.19.9",
     "@slack/web-api": "^7.14.1",
     "better-sqlite3": "^11.8.1",
