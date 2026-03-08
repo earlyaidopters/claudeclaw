@@ -1,0 +1,14 @@
+name: RC2
+description: Bot dev interne — améliorations système, projets code, architecture, PR reviews
+
+telegram_bot_token_env: RC2_BOT_TOKEN
+
+model: claude-sonnet-4-6
+
+obsidian:
+  vault: /Users/macminirolland/Library/CloudStorage/GoogleDrive-rm@360sc.io/Mon Drive/OBSIDIAN/CHATTERS
+  folders:
+    - 002 - Projets/PERSO/
+    - 005 - Ressource/051 - AI de Rolland/
+  read_only:
+    - 001 - Planning/

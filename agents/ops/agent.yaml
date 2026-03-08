@@ -6,9 +6,9 @@ telegram_bot_token_env: OPS_BOT_TOKEN
 model: claude-sonnet-4-6
 
 obsidian:
-  vault: /Users/marwankashef/Desktop/Prompt Advisers/Mark's World
+  vault: /Users/macminirolland/Library/CloudStorage/GoogleDrive-rm@360sc.io/Mon Drive/OBSIDIAN/CHATTERS
   folders:
-    - Finance/
-    - Inbox/
+    - 001 - Planning/
+    - 006 - PERSONNEL/
   read_only:
-    - Daily Notes/
+    - 999 - Notes Journaliere 🗓️/

@@ -6,10 +6,9 @@ telegram_bot_token_env: CONTENT_BOT_TOKEN
 model: claude-sonnet-4-6
 
 obsidian:
-  vault: /Users/marwankashef/Desktop/Prompt Advisers/Mark's World
+  vault: /Users/macminirolland/Library/CloudStorage/GoogleDrive-rm@360sc.io/Mon Drive/OBSIDIAN/CHATTERS
   folders:
-    - YouTube/
-    - Content/
-    - Teaching/
+    - 005 - Ressource/
+    - 996 - Prompts/
   read_only:
-    - Daily Notes/
+    - 001 - Planning/

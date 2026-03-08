@@ -4,3 +4,11 @@ description: Deep web research, academic sources, competitive intel, trend analy
 telegram_bot_token_env: RESEARCH_BOT_TOKEN
 
 model: claude-sonnet-4-6
+
+obsidian:
+  vault: /Users/macminirolland/Library/CloudStorage/GoogleDrive-rm@360sc.io/Mon Drive/OBSIDIAN/CHATTERS
+  folders:
+    - 005 - Ressource/
+    - 000 - INBOX 📥/
+  read_only:
+    - 001 - Planning/
