@@ -400,7 +400,7 @@ Any file Claude Code can open: PDFs, code, markdown, CSV, plain text. Caption is
 
 ### Videos → Gemini analysis
 
-ClaudeClaw downloads the video to `workspace/uploads/` and tells Claude to analyze it with the `gemini-api-dev` skill. Without `GOOGLE_API_KEY`, Claude receives the file path but can't understand the content. Telegram caps downloads at 20MB.
+ClaudeClaw downloads the video to `$CLAUDECLAW_CONFIG/agents/{agent-name}/uploads/` and tells Claude to analyze it with the `gemini-api-dev` skill. Without `GOOGLE_API_KEY`, Claude receives the file path but can't understand the content. Telegram caps downloads at 20MB.
 
 ### File sending → Claude sends you files
 
@@ -1052,7 +1052,7 @@ Browse more: [github.com/anthropics/claude-code](https://github.com/anthropics/c
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `CLAUDECLAW_CONFIG` | No | Path to your personal config folder (default: `~/.claudeclaw`). Contains your `CLAUDE.md`. |
+| `CLAUDECLAW_CONFIG` | No | Path to your personal config folder (default: `~/.claudeclaw`). Contains `agents/main/CLAUDE.md` for the main bot and `agents/<name>/` for each specialist agent. |
 | `TELEGRAM_BOT_TOKEN` | Yes | From [@BotFather](https://t.me/botfather) |
 | `ALLOWED_CHAT_ID` | Yes | Your chat ID — send `/chatid` to get it |
 | `ANTHROPIC_API_KEY` | No | Pay-per-token instead of Max subscription |
@@ -1203,7 +1203,7 @@ flowchart TD
     TGAPI -->|long-poll| Bot["bot.ts\n(grammy)"]
 
     Bot -->|voice note| STT["Groq Whisper\nTranscription"]
-    Bot -->|photo / doc / video| DL["Media Download\nworkspace/uploads/"]
+    Bot -->|photo / doc / video| DL["Media Download\n$CLAUDECLAW_CONFIG/agents/main/uploads/"]
     STT --> Handler
     DL --> Handler
     Bot -->|text| Handler["handleMessage()"]
@@ -1283,8 +1283,13 @@ claudeclaw/
 │   ├── claudeclaw.pid    Tracks the running process to prevent duplicates
 │   └── waweb/            WhatsApp session — scan QR once, persists here
 │
-└── workspace/
-    └── uploads/          Telegram media downloads — auto-deleted after 24 hours
+└── $CLAUDECLAW_CONFIG/agents/
+    ├── main/
+    │   ├── CLAUDE.md         Your personalized system prompt for the main bot
+    │   └── uploads/          Telegram media downloads — auto-deleted after 24 hours
+    └── <name>/               Each specialist agent lives here
+        ├── agent.yaml        Agent config (bot token env var, model, obsidian)
+        └── CLAUDE.md         Agent-specific system prompt
 ```
 
 **The only files you need to edit to get started:**
@@ -1358,7 +1363,7 @@ It walks you through template selection, bot creation, token setup, and a test s
 
 ### Step 3 -- Configure each agent
 
-For each agent, you need two files in `agents/<name>/`:
+For each agent, you need two files in `$CLAUDECLAW_CONFIG/agents/<name>/`:
 
 **agent.yaml** -- the agent's config:
 ```yaml
@@ -1499,15 +1504,17 @@ All existing dashboard panels (tasks, memory, health, tokens, chat) continue to 
 ### Create your own agent from scratch
 
 ```bash
-# 1. Copy the template
-cp -r agents/_template agents/myagent
+# 1. Copy the template into your personal config folder
+mkdir -p ~/.claudeclaw/agents/myagent
+cp agents/_template/CLAUDE.md ~/.claudeclaw/agents/myagent/CLAUDE.md
+cp agents/_template/agent.yaml.example ~/.claudeclaw/agents/myagent/agent.yaml.example
 
 # 2. Edit the personality
-vim agents/myagent/CLAUDE.md
+vim ~/.claudeclaw/agents/myagent/CLAUDE.md
 
 # 3. Create agent.yaml from the example
-cp agents/myagent/agent.yaml.example agents/myagent/agent.yaml
-vim agents/myagent/agent.yaml
+cp ~/.claudeclaw/agents/myagent/agent.yaml.example ~/.claudeclaw/agents/myagent/agent.yaml
+vim ~/.claudeclaw/agents/myagent/agent.yaml
 
 # 4. Create a bot via @BotFather, add token to .env
 echo "MYAGENT_BOT_TOKEN=your_token_here" >> .env
@@ -1516,6 +1523,8 @@ echo "MYAGENT_BOT_TOKEN=your_token_here" >> .env
 npm run build
 npm start -- --agent myagent
 ```
+
+> **Tip:** Replace `~/.claudeclaw` with the value of `CLAUDECLAW_CONFIG` from your `.env` if you set a custom path.
 
 ### Profile pictures
 

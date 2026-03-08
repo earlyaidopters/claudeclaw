@@ -77,7 +77,7 @@ describe('ensureWorkspace', () => {
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccx-workspace-test-'));
-    workspaceDir = path.join(tmpDir, 'workspace');
+    workspaceDir = path.join(tmpDir, 'agents', 'main');
     projectRoot = path.join(tmpDir, 'project');
     fs.mkdirSync(workspaceDir, { recursive: true });
     fs.mkdirSync(projectRoot, { recursive: true });

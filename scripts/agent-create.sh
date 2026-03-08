@@ -30,9 +30,25 @@ esac
 
 # Step 2: Name the agent
 read -p "Agent ID (lowercase, no spaces, e.g. 'comms'): " AGENT_ID
-AGENT_DIR="agents/$AGENT_ID"
 
-if [ -d "$AGENT_DIR" ] && [ -f "$AGENT_DIR/agent.yaml" ]; then
+if [ "$AGENT_ID" = "main" ]; then
+  echo "Error: 'main' is reserved for the default agent. Choose a different name."
+  exit 1
+fi
+
+# Step 3: Resolve CLAUDECLAW_CONFIG from environment or .env file
+CLAUDECLAW_CONFIG_RAW="${CLAUDECLAW_CONFIG:-$(grep '^CLAUDECLAW_CONFIG=' .env 2>/dev/null | cut -d'=' -f2-)}"
+if [ -z "$CLAUDECLAW_CONFIG_RAW" ]; then
+  echo "Error: CLAUDECLAW_CONFIG is not set."
+  echo "Set it in your .env file or as an environment variable before creating agents."
+  exit 1
+fi
+# Expand leading ~ to $HOME
+CLAUDECLAW_CONFIG_PATH="${CLAUDECLAW_CONFIG_RAW/#\~/$HOME}"
+
+AGENT_DIR="$CLAUDECLAW_CONFIG_PATH/agents/$AGENT_ID"
+
+if [ -f "$AGENT_DIR/agent.yaml" ]; then
   echo "Agent '$AGENT_ID' already exists at $AGENT_DIR"
   read -p "Overwrite? (y/N): " OVERWRITE
   if [ "$OVERWRITE" != "y" ] && [ "$OVERWRITE" != "Y" ]; then
@@ -41,14 +57,12 @@ if [ -d "$AGENT_DIR" ] && [ -f "$AGENT_DIR/agent.yaml" ]; then
   fi
 fi
 
-# Step 3: Copy template
+# Step 4: Copy template files from repo into config dir
 mkdir -p "$AGENT_DIR"
-if [ "$TEMPLATE" != "$AGENT_ID" ]; then
-  cp "agents/$TEMPLATE/CLAUDE.md" "$AGENT_DIR/CLAUDE.md"
-  cp "agents/$TEMPLATE/agent.yaml.example" "$AGENT_DIR/agent.yaml.example"
-fi
+cp "agents/$TEMPLATE/CLAUDE.md" "$AGENT_DIR/CLAUDE.md"
+cp "agents/$TEMPLATE/agent.yaml.example" "$AGENT_DIR/agent.yaml.example"
 
-# Step 4: Create Telegram bot
+# Step 5: Create Telegram bot
 ENV_KEY=$(echo "${AGENT_ID}_BOT_TOKEN" | tr '[:lower:]' '[:upper:]')
 echo ""
 echo "Now create a Telegram bot for this agent:"
@@ -77,18 +91,18 @@ else
   echo "Token saved to .env as $ENV_KEY"
 fi
 
-# Step 5: Create agent.yaml from example
+# Step 6: Create agent.yaml from example
 sed "s/telegram_bot_token_env:.*/telegram_bot_token_env: $ENV_KEY/" \
   "$AGENT_DIR/agent.yaml.example" > "$AGENT_DIR/agent.yaml"
 
-# Step 6: Show chat ID info
+# Step 7: Show chat ID info
 CHAT_ID=$(grep '^ALLOWED_CHAT_ID=' .env 2>/dev/null | cut -d'=' -f2-)
 if [ -n "$CHAT_ID" ]; then
   echo ""
   echo "Using your existing ALLOWED_CHAT_ID: $CHAT_ID"
 fi
 
-# Step 7: Build
+# Step 8: Build
 echo ""
 echo "Building..."
 npm run build
@@ -100,7 +114,7 @@ echo "To start:  npm start -- --agent $AGENT_ID"
 echo "To test:   Send a message to your new bot in Telegram"
 echo ""
 
-# Step 8: Offer to test start
+# Step 9: Offer to test start
 read -p "Start the agent now for a quick test? (y/N): " START_NOW
 if [ "$START_NOW" = "y" ] || [ "$START_NOW" = "Y" ]; then
   echo "Starting agent '$AGENT_ID'... Press Ctrl+C to stop."

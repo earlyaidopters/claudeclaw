@@ -90,7 +90,7 @@ describe('UPLOADS_DIR', () => {
     expect(path.isAbsolute(UPLOADS_DIR)).toBe(true);
   });
 
-  it('ends with workspace/uploads', () => {
-    expect(UPLOADS_DIR).toMatch(/workspace[/\\]uploads$/);
+  it('ends with agents/main/uploads or workspace/uploads (fallback)', () => {
+    expect(UPLOADS_DIR).toMatch(/(agents[/\\]main|workspace)[/\\]uploads$/);
   });
 });

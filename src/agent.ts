@@ -1,6 +1,6 @@
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
-import { PROJECT_ROOT, agentCwd, CLAUDECLAW_WORKSPACE } from './config.js';
+import { PROJECT_ROOT, agentCwd } from './config.js';
 
 import { readEnvFile } from './env.js';
 import { logger } from './logger.js';
@@ -135,6 +135,9 @@ export async function runAgent(
   // Telegram's "typing..." action expires after ~5s.
   const typingInterval = setInterval(onTyping, 4000);
 
+  if (!agentCwd) {
+    throw new Error('agentCwd is not provided')
+  }
   try {
     logger.info(
       { sessionId: sessionId ?? 'new', messageLen: message.length },
@@ -147,7 +150,7 @@ export async function runAgent(
 
         // cwd = agent directory (if running as agent), personal workspace, or project root.
         // Claude Code loads CLAUDE.md from cwd via settingSources: ['project'].
-        cwd: agentCwd ?? (CLAUDECLAW_WORKSPACE || PROJECT_ROOT),
+        cwd: agentCwd,
 
         // Resume the previous session for this chat (persistent context)
         resume: sessionId,

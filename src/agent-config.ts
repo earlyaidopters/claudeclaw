@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import yaml from 'js-yaml';
 
-import { PROJECT_ROOT } from './config.js';
+import { CLAUDECLAW_CONFIG } from './config.js';
 import { readEnvFile } from './env.js';
 
 export interface AgentConfig {
@@ -19,7 +19,7 @@ export interface AgentConfig {
 }
 
 export function loadAgentConfig(agentId: string): AgentConfig {
-  const agentDir = path.join(PROJECT_ROOT, 'agents', agentId);
+  const agentDir = path.join(CLAUDECLAW_CONFIG, 'agents', agentId);
   const configPath = path.join(agentDir, 'agent.yaml');
 
   if (!fs.existsSync(configPath)) {
@@ -56,11 +56,13 @@ export function loadAgentConfig(agentId: string): AgentConfig {
   return { name, description, botTokenEnv, botToken, model, obsidian };
 }
 
-/** List all configured agent IDs (directories under agents/ with agent.yaml). */
+/** List all configured agent IDs (directories under $CLAUDECLAW_CONFIG/agents/ with agent.yaml). */
 export function listAgentIds(): string[] {
-  const agentsDir = path.join(PROJECT_ROOT, 'agents');
+  if (!CLAUDECLAW_CONFIG) return [];
+  const agentsDir = path.join(CLAUDECLAW_CONFIG, 'agents');
   if (!fs.existsSync(agentsDir)) return [];
   return fs.readdirSync(agentsDir).filter((d) => {
+    if (d === 'main') return false; // 'main' is reserved for the default agent
     if (d.startsWith('_')) return false;
     const yamlPath = path.join(agentsDir, d, 'agent.yaml');
     return fs.existsSync(yamlPath);

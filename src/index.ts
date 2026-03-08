@@ -4,7 +4,7 @@ import path from 'path';
 import { loadAgentConfig } from './agent-config.js';
 import { createBot } from './bot.js';
 
-import { ALLOWED_CHAT_ID, CLAUDECLAW_CONFIG, CLAUDECLAW_WORKSPACE, activeBotToken, STORE_DIR, PROJECT_ROOT, setAgentOverrides } from './config.js';
+import { ALLOWED_CHAT_ID, CLAUDECLAW_CONFIG, agentCwd, activeBotToken, STORE_DIR, PROJECT_ROOT, setAgentOverrides } from './config.js';
 
 import { checkPendingMigrations } from './migrations.js';
 import { startDashboard } from './dashboard.js';
@@ -20,9 +20,9 @@ import { ensureWorkspace } from './startup.js';
 const agentFlagIndex = process.argv.indexOf('--agent');
 const AGENT_ID = agentFlagIndex !== -1 ? process.argv[agentFlagIndex + 1] : 'main';
 
-if (AGENT_ID !== 'main') {
+if (AGENT_ID !== 'main' && CLAUDECLAW_CONFIG) {
+  const agentDir = path.join(CLAUDECLAW_CONFIG, 'agents', AGENT_ID);
   const agentConfig = loadAgentConfig(AGENT_ID);
-  const agentDir = path.join(PROJECT_ROOT, 'agents', AGENT_ID);
   const claudeMdPath = path.join(agentDir, 'CLAUDE.md');
   let systemPrompt: string | undefined;
   try {
@@ -77,7 +77,7 @@ async function main(): Promise<void> {
   }
 
   checkPendingMigrations(PROJECT_ROOT);
-  ensureWorkspace(CLAUDECLAW_CONFIG, CLAUDECLAW_WORKSPACE, PROJECT_ROOT);
+  ensureWorkspace(CLAUDECLAW_CONFIG, agentCwd ?? '', PROJECT_ROOT);
 
   if (!activeBotToken) {
     logger.error('Bot token is not set. Add TELEGRAM_BOT_TOKEN (or agent token) to .env and restart.');

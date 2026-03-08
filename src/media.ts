@@ -3,11 +3,13 @@ import path from 'path';
 import https from 'https';
 import { fileURLToPath } from 'url';
 
+import { agentCwd, PROJECT_ROOT } from './config.js';
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Directory where all Telegram media is saved
-export const UPLOADS_DIR = path.resolve(__dirname, '..', 'workspace', 'uploads');
+// Directory where all Telegram media is saved.
+export const UPLOADS_DIR =  agentCwd ? path.join(agentCwd, 'uploads') : '';;
 
 // Ensure uploads dir exists on module load
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });

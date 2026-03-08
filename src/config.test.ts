@@ -2,7 +2,7 @@ import os from 'os';
 import path from 'path';
 import { describe, expect, it } from 'vitest';
 
-import { expandHome, CLAUDECLAW_CONFIG, CLAUDECLAW_WORKSPACE } from './config.js';
+import { expandHome, CLAUDECLAW_CONFIG, agentCwd } from './config.js';
 
 describe('expandHome', () => {
   it('expands ~/foo to homedir/foo', () => {
@@ -26,12 +26,12 @@ describe('expandHome', () => {
   });
 });
 
-describe('CLAUDECLAW_WORKSPACE', () => {
-  it('is CLAUDECLAW_CONFIG + /workspace when config is set', () => {
+describe('agentCwd', () => {
+  it('defaults to CLAUDECLAW_CONFIG/agents/main when config is set', () => {
     if (CLAUDECLAW_CONFIG) {
-      expect(CLAUDECLAW_WORKSPACE).toBe(path.join(CLAUDECLAW_CONFIG, 'workspace'));
+      expect(agentCwd).toBe(path.join(CLAUDECLAW_CONFIG, 'agents', 'main'));
     } else {
-      expect(CLAUDECLAW_WORKSPACE).toBe('');
+      expect(agentCwd).toBeUndefined();
     }
   });
 });
