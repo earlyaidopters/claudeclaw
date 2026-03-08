@@ -73,10 +73,9 @@ function releaseLock(): void {
 }
 
 async function main(): Promise<void> {
-  if (AGENT_ID === 'main') {
-    showBanner();
-  }
 
+  showBanner();
+  
   checkPendingMigrations(PROJECT_ROOT);
   ensureWorkspace(CLAUDECLAW_CONFIG, agentCwd ?? '', PROJECT_ROOT);
 
