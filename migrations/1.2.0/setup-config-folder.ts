@@ -61,7 +61,7 @@ export async function runMigration(deps: MigrationDeps): Promise<void> {
     break;
   }
 
-  const workspaceDir = path.join(configDir, 'workspace');
+  const workspaceDir = path.join(configDir, 'agents', 'main');
 
   const sourcePath = path.join(projectRoot, 'CLAUDE.md');
   const destPath = path.join(workspaceDir, 'CLAUDE.md');

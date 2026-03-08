@@ -24,7 +24,7 @@ describe('setup-config-folder migration', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccx-migration-test-'));
     projectRoot = path.join(tmpDir, 'project');
     configDir = path.join(tmpDir, 'config');
-    workspaceDir = path.join(configDir, 'workspace');
+    workspaceDir = path.join(configDir, 'agents','main');
     fs.mkdirSync(projectRoot, { recursive: true });
 
     vi.spyOn(process, 'exit').mockImplementation((() => {}) as never);

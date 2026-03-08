@@ -8,6 +8,7 @@ import { promisify } from 'util';
 
 import { logger } from './logger.js';
 import { readEnvFile } from './env.js';
+import { agentCwd } from './config.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -26,14 +27,17 @@ async function hasFfmpeg(): Promise<boolean> {
 
 // ── Upload directory ────────────────────────────────────────────────────────
 
-export const UPLOADS_DIR = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  '..',
-  'workspace',
-  'uploads',
-);
+export const UPLOADS_DIR =  agentCwd ? path.join(agentCwd, 'uploads') : '';;
 
-mkdirSync(UPLOADS_DIR, { recursive: true });
+// This method cannot be called on the module level as we change the agentCwd dynamically
+export function initializeVoiceUploadsFolder() {
+  // Ensure uploads dir exists on module load
+  if (UPLOADS_DIR) {
+    mkdirSync(UPLOADS_DIR, { recursive: true });
+  }
+}
+
+
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 

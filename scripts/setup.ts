@@ -364,7 +364,7 @@ async function main() {
     break;
   }
 
-  const workspaceDir = path.join(configDir, 'workspace');
+  const workspaceDir = path.join(configDir, 'agents','main');
 
   // Create only if it doesn't exist — never touches existing contents
   if (!fs.existsSync(workspaceDir)) {

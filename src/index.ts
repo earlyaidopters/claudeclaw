@@ -10,11 +10,12 @@ import { checkPendingMigrations } from './migrations.js';
 import { startDashboard } from './dashboard.js';
 import { initDatabase } from './db.js';
 import { logger } from './logger.js';
-import { cleanupOldUploads } from './media.js';
+import { cleanupOldUploads, initializeMediaUploadsFolder } from './media.js';
 import { runDecaySweep } from './memory.js';
 import { initScheduler } from './scheduler.js';
 import { setTelegramConnected, setBotInfo } from './state.js';
 import { ensureWorkspace } from './startup.js';
+import { initializeVoiceUploadsFolder } from './voice.js';
 
 // Parse --agent flag
 const agentFlagIndex = process.argv.indexOf('--agent');
@@ -83,6 +84,9 @@ async function main(): Promise<void> {
     logger.error('Bot token is not set. Add TELEGRAM_BOT_TOKEN (or agent token) to .env and restart.');
     process.exit(1);
   }
+
+  initializeVoiceUploadsFolder();
+  initializeMediaUploadsFolder();
 
   acquireLock();
 

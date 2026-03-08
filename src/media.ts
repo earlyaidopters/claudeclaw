@@ -9,10 +9,15 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Directory where all Telegram media is saved.
-export const UPLOADS_DIR =  agentCwd ? path.join(agentCwd, 'uploads') : '';;
+export const UPLOADS_DIR =  agentCwd ? path.join(agentCwd, 'uploads') : '';
 
-// Ensure uploads dir exists on module load
-fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+// This method cannot be called on the module level as we change the agentCwd dynamically
+export function initializeMediaUploadsFolder() {
+  // Ensure uploads dir exists on module load
+  if (UPLOADS_DIR) {
+    fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+  }
+}
 
 /**
  * Make an HTTPS GET request and return the response body as a string.
