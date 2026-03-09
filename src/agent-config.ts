@@ -66,3 +66,51 @@ export function listAgentIds(): string[] {
     return fs.existsSync(yamlPath);
   });
 }
+
+/** Return the capabilities (name + description) for a specific agent. */
+export function getAgentCapabilities(
+  agentId: string,
+): { name: string; description: string } | null {
+  try {
+    const config = loadAgentConfig(agentId);
+    return { name: config.name, description: config.description };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * List all configured agents with their descriptions.
+ * Unlike `listAgentIds()`, this returns richer metadata and silently
+ * skips agents whose config fails to load (e.g. missing token).
+ */
+export function listAllAgents(): Array<{
+  id: string;
+  name: string;
+  description: string;
+  model?: string;
+}> {
+  const ids = listAgentIds();
+  const result: Array<{
+    id: string;
+    name: string;
+    description: string;
+    model?: string;
+  }> = [];
+
+  for (const id of ids) {
+    try {
+      const config = loadAgentConfig(id);
+      result.push({
+        id,
+        name: config.name,
+        description: config.description,
+        model: config.model,
+      });
+    } catch {
+      // Skip agents with broken config
+    }
+  }
+
+  return result;
+}

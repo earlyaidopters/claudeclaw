@@ -125,6 +125,20 @@ function createSchema(database: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_hive_mind_agent ON hive_mind(agent_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_hive_mind_time ON hive_mind(created_at DESC);
 
+    CREATE TABLE IF NOT EXISTS inter_agent_tasks (
+      id            TEXT PRIMARY KEY,
+      from_agent    TEXT NOT NULL,
+      to_agent      TEXT NOT NULL,
+      chat_id       TEXT NOT NULL,
+      prompt        TEXT NOT NULL,
+      status        TEXT NOT NULL DEFAULT 'pending',
+      result        TEXT,
+      created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+      completed_at  TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_inter_agent_tasks_status ON inter_agent_tasks(status, created_at DESC);
+
     CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
       content,
       content=memories,
@@ -881,4 +895,59 @@ export function getSessionTokenUsage(sessionId: string): SessionTokenSummary | n
     firstTurnAt: row.firstTurnAt,
     lastTurnAt: row.lastTurnAt,
   };
+}
+
+// ── Inter-Agent Tasks ──────────────────────────────────────────────────
+
+export interface InterAgentTask {
+  id: string;
+  from_agent: string;
+  to_agent: string;
+  chat_id: string;
+  prompt: string;
+  status: string;
+  result: string | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
+export function createInterAgentTask(
+  id: string,
+  fromAgent: string,
+  toAgent: string,
+  chatId: string,
+  prompt: string,
+): void {
+  db.prepare(
+    `INSERT INTO inter_agent_tasks (id, from_agent, to_agent, chat_id, prompt, status, created_at)
+     VALUES (?, ?, ?, ?, ?, 'pending', datetime('now'))`,
+  ).run(id, fromAgent, toAgent, chatId, prompt);
+}
+
+export function completeInterAgentTask(
+  id: string,
+  status: 'completed' | 'failed',
+  result: string | null,
+): void {
+  db.prepare(
+    `UPDATE inter_agent_tasks SET status = ?, result = ?, completed_at = datetime('now') WHERE id = ?`,
+  ).run(status, result?.slice(0, 2000) ?? null, id);
+}
+
+export function getInterAgentTasks(
+  limit = 20,
+  status?: string,
+): InterAgentTask[] {
+  if (status) {
+    return db
+      .prepare(
+        'SELECT * FROM inter_agent_tasks WHERE status = ? ORDER BY created_at DESC LIMIT ?',
+      )
+      .all(status, limit) as InterAgentTask[];
+  }
+  return db
+    .prepare(
+      'SELECT * FROM inter_agent_tasks ORDER BY created_at DESC LIMIT ?',
+    )
+    .all(limit) as InterAgentTask[];
 }

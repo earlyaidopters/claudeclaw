@@ -19,6 +19,7 @@ import { clearSession, getRecentConversation, getRecentMemories, getSession, set
 import { logger } from './logger.js';
 import { downloadMedia, buildPhotoMessage, buildDocumentMessage, buildVideoMessage } from './media.js';
 import { buildMemoryContext, saveConversationTurn } from './memory.js';
+import { parseDelegation, delegateToAgent, getAvailableAgents } from './orchestrator.js';
 import { emitChatEvent, setProcessing, setActiveAbort, abortActiveQuery } from './state.js';
 
 // ── Context window tracking ──────────────────────────────────────────
@@ -313,6 +314,45 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
   // Emit user message to SSE clients
   emitChatEvent({ type: 'user_message', chatId: chatIdStr, content: message, source: 'telegram' });
 
+  // ── Delegation detection ────────────────────────────────────────────
+  // Intercept @agentId or /delegate syntax before running the main agent.
+  const delegation = parseDelegation(message);
+  if (delegation) {
+    setProcessing(chatIdStr, true);
+    await sendTyping(ctx.api, chatId);
+    try {
+      const delegationResult = await delegateToAgent(
+        delegation.agentId,
+        delegation.prompt,
+        chatIdStr,
+        AGENT_ID,
+        (progressMsg) => {
+          emitChatEvent({ type: 'progress', chatId: chatIdStr, description: progressMsg });
+          void ctx.reply(progressMsg).catch(() => {});
+        },
+      );
+
+      const response = delegationResult.text?.trim() || 'Agent completed with no output.';
+      const header = `[${delegationResult.agentId} — ${Math.round(delegationResult.durationMs / 1000)}s]`;
+
+      if (!skipLog) {
+        saveConversationTurn(chatIdStr, message, response, undefined, AGENT_ID);
+      }
+      emitChatEvent({ type: 'assistant_message', chatId: chatIdStr, content: response, source: 'telegram' });
+
+      for (const part of splitMessage(formatForTelegram(`${header}\n\n${response}`))) {
+        await ctx.reply(part, { parse_mode: 'HTML' });
+      }
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      logger.error({ err, agentId: delegation.agentId }, 'Delegation failed');
+      await ctx.reply(`Delegation to ${delegation.agentId} failed: ${errMsg}`);
+    } finally {
+      setProcessing(chatIdStr, false);
+    }
+    return;
+  }
+
   // Build memory context and prepend to message
   const memCtx = await buildMemoryContext(chatIdStr, message);
   const parts: string[] = [];
@@ -506,6 +546,8 @@ export function createBot(): Bot {
     { command: 'slack', description: 'Recent Slack messages' },
     { command: 'dashboard', description: 'Open web dashboard' },
     { command: 'stop', description: 'Stop current processing' },
+    { command: 'agents', description: 'List available agents' },
+    { command: 'delegate', description: 'Delegate task to agent' },
   ]).catch((err) => logger.warn({ err }, 'Failed to register bot commands with Telegram'));
 
   // /help — list available commands
@@ -522,7 +564,10 @@ export function createBot(): Bot {
       '/wa — WhatsApp messages\n' +
       '/slack — Slack messages\n' +
       '/dashboard — Web dashboard\n' +
-      '/stop — Stop current processing\n\n' +
+      '/stop — Stop current processing\n' +
+      '/agents — List available agents\n' +
+      '/delegate — Delegate task to agent\n\n' +
+      'Delegation: @agentId: prompt or /delegate agentId prompt\n\n' +
       'You can also send voice notes, photos, files, and videos.'
     );
   });
@@ -748,8 +793,41 @@ export function createBot(): Bot {
     }
   });
 
+  // /agents — list available agents for delegation
+  bot.command('agents', async (ctx) => {
+    if (!isAuthorised(ctx.chat!.id)) return;
+    const agents = getAvailableAgents();
+    if (agents.length === 0) {
+      await ctx.reply('No agents configured. Add agent configs under agents/ directory.');
+      return;
+    }
+    const lines = agents.map((a) => `<b>${a.id}</b> — ${a.description || '(no description)'}`).join('\n');
+    await ctx.reply(
+      `<b>Available agents</b>\n\n${lines}\n\n<i>Usage: @agentId: prompt or /delegate agentId prompt</i>`,
+      { parse_mode: 'HTML' },
+    );
+  });
+
+  // /delegate — delegate task to an agent (handled via handleMessage delegation detection)
+  // This command is intercepted by handleMessage's parseDelegation(),
+  // but we register it so grammY doesn't pass it to the text handler.
+  bot.command('delegate', async (ctx) => {
+    if (!isAuthorised(ctx.chat!.id)) return;
+    const args = ctx.match?.trim();
+    if (!args) {
+      const agents = getAvailableAgents();
+      const agentList = agents.length > 0
+        ? agents.map((a) => a.id).join(', ')
+        : '(none configured)';
+      await ctx.reply(`Usage: /delegate <agentId> <prompt>\n\nAvailable agents: ${agentList}`);
+      return;
+    }
+    // Re-construct as /delegate command and pass through handleMessage
+    handleMessage(ctx, `/delegate ${args}`).catch((err) => logger.error({ err }, 'Delegation error'));
+  });
+
   // Text messages — and any slash commands not owned by this bot (skills, e.g. /todo /gmail)
-  const OWN_COMMANDS = new Set(['/start', '/help', '/newchat', '/respin', '/voice', '/model', '/memory', '/forget', '/chatid', '/wa', '/slack', '/dashboard', '/stop']);
+  const OWN_COMMANDS = new Set(['/start', '/help', '/newchat', '/respin', '/voice', '/model', '/memory', '/forget', '/chatid', '/wa', '/slack', '/dashboard', '/stop', '/agents', '/delegate']);
   bot.on('message:text', async (ctx) => {
     const text = ctx.message.text;
     const chatIdStr = ctx.chat!.id.toString();
