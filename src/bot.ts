@@ -929,18 +929,14 @@ export function createBot(): Bot {
       return;
     }
 
-    await sendTyping(ctx.api, chatId);
-    const typingInterval = setInterval(() => void sendTyping(ctx.api, chatId), TYPING_REFRESH_MS);
     try {
       const fileId = ctx.message.voice.file_id;
       const localPath = await downloadTelegramFile(activeBotToken, fileId, UPLOADS_DIR);
       const transcribed = await transcribeAudio(localPath);
-      clearInterval(typingInterval);
       // Only reply with voice if explicitly requested — otherwise execute and respond in text
       const wantsVoiceBack = /\b(respond (with|via|in) voice|send (me )?(a )?voice( note| back)?|voice reply|reply (with|via) voice)\b/i.test(transcribed);
       handleMessage(ctx, `[Voice transcribed]: ${transcribed}`, wantsVoiceBack).catch((err) => logger.error({ err }, 'Unhandled voice message error'));
     } catch (err) {
-      clearInterval(typingInterval);
       logger.error({ err }, 'Voice transcription failed');
       await ctx.reply('Could not transcribe voice message. Try again.');
     }
@@ -957,16 +953,12 @@ export function createBot(): Bot {
       return;
     }
 
-    await sendTyping(ctx.api, chatId);
-    const typingInterval = setInterval(() => void sendTyping(ctx.api, chatId), TYPING_REFRESH_MS);
     try {
       const photo = ctx.message.photo[ctx.message.photo.length - 1];
       const localPath = await downloadMedia(activeBotToken, photo.file_id, 'photo.jpg');
-      clearInterval(typingInterval);
       const msg = buildPhotoMessage(localPath, ctx.message.caption ?? undefined);
       handleMessage(ctx, msg).catch((err) => logger.error({ err }, 'Unhandled photo message error'));
     } catch (err) {
-      clearInterval(typingInterval);
       logger.error({ err }, 'Photo download failed');
       await ctx.reply('Could not download photo. Try again.');
     }
@@ -983,17 +975,13 @@ export function createBot(): Bot {
       return;
     }
 
-    await sendTyping(ctx.api, chatId);
-    const typingInterval = setInterval(() => void sendTyping(ctx.api, chatId), TYPING_REFRESH_MS);
     try {
       const doc = ctx.message.document;
       const filename = doc.file_name ?? 'file';
       const localPath = await downloadMedia(activeBotToken, doc.file_id, filename);
-      clearInterval(typingInterval);
       const msg = buildDocumentMessage(localPath, filename, ctx.message.caption ?? undefined);
       handleMessage(ctx, msg).catch((err) => logger.error({ err }, 'Unhandled document message error'));
     } catch (err) {
-      clearInterval(typingInterval);
       logger.error({ err }, 'Document download failed');
       await ctx.reply('Could not download document. Try again.');
     }
@@ -1008,17 +996,13 @@ export function createBot(): Bot {
       return;
     }
 
-    await sendTyping(ctx.api, chatId);
-    const typingInterval = setInterval(() => void sendTyping(ctx.api, chatId), TYPING_REFRESH_MS);
     try {
       const video = ctx.message.video;
       const filename = video.file_name ?? `video_${Date.now()}.mp4`;
       const localPath = await downloadMedia(activeBotToken, video.file_id, filename);
-      clearInterval(typingInterval);
       const msg = buildVideoMessage(localPath, ctx.message.caption ?? undefined);
       handleMessage(ctx, msg).catch((err) => logger.error({ err }, 'Unhandled video message error'));
     } catch (err) {
-      clearInterval(typingInterval);
       logger.error({ err }, 'Video download failed');
       await ctx.reply('Could not download video. Note: Telegram bots are limited to 20MB downloads.');
     }
@@ -1033,17 +1017,13 @@ export function createBot(): Bot {
       return;
     }
 
-    await sendTyping(ctx.api, chatId);
-    const typingInterval = setInterval(() => void sendTyping(ctx.api, chatId), TYPING_REFRESH_MS);
     try {
       const videoNote = ctx.message.video_note;
       const filename = `video_note_${Date.now()}.mp4`;
       const localPath = await downloadMedia(activeBotToken, videoNote.file_id, filename);
-      clearInterval(typingInterval);
       const msg = buildVideoMessage(localPath, undefined);
       handleMessage(ctx, msg).catch((err) => logger.error({ err }, 'Unhandled video note message error'));
     } catch (err) {
-      clearInterval(typingInterval);
       logger.error({ err }, 'Video note download failed');
       await ctx.reply('Could not download video note. Note: Telegram bots are limited to 20MB downloads.');
     }
