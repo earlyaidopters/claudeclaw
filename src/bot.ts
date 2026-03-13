@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { spawn, ChildProcess } from 'child_process';
 import { Api, Bot, Context, InputFile, RawApi } from 'grammy';
 
 import { runAgent, UsageInfo, AgentProgressEvent } from './agent.js';
@@ -16,6 +17,7 @@ import {
   agentDefaultModel,
   agentSystemPrompt,
   TYPING_REFRESH_MS,
+  agentCwd,
 } from './config.js';
 import { clearSession, getRecentConversation, getRecentMemories, getSession, getSessionConversation, logToHiveMind, setSession, lookupWaChatId, saveWaMessageMap, saveTokenUsage } from './db.js';
 import { logger } from './logger.js';
@@ -108,12 +110,36 @@ interface SlackStateChat { mode: 'chat'; channelId: string; channelName: string 
 type SlackState = SlackStateList | SlackStateChat;
 const slackState = new Map<string, SlackState>();
 
+// Remote control session state (singleton — one active session at a time)
+let rcProcess: ChildProcess | null = null;
+let rcSessionUrl: string | null = null;
+let rcSessionPid: number | null = null;
+
 /**
  * Escape a string for safe inclusion in Telegram HTML messages.
  * Prevents injection of HTML tags from external content (e.g. WhatsApp messages).
  */
 function escapeHtml(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+/** Strip ANSI escape codes from CLI output. */
+function stripAnsi(s: string): string {
+  return s.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+}
+
+/** Kill any active remote control session and reset state. */
+function killRcSession(): void {
+  if (rcProcess) {
+    try {
+      if (rcProcess.pid) process.kill(-rcProcess.pid, 'SIGTERM');
+    } catch {
+      try { rcProcess.kill('SIGTERM'); } catch { /* already exited */ }
+    }
+    rcProcess = null;
+    rcSessionUrl = null;
+    rcSessionPid = null;
+  }
 }
 
 /**
@@ -600,6 +626,7 @@ export function createBot(): Bot {
     { command: 'wa', description: 'Recent WhatsApp messages' },
     { command: 'slack', description: 'Recent Slack messages' },
     { command: 'dashboard', description: 'Open web dashboard' },
+    { command: 'rc', description: 'Remote control — start/stop Claude session' },
     { command: 'stop', description: 'Stop current processing' },
     { command: 'agents', description: 'List available agents' },
     { command: 'delegate', description: 'Delegate task to agent' },
@@ -624,6 +651,7 @@ export function createBot(): Bot {
       '/wa — WhatsApp messages\n' +
       '/slack — Slack messages\n' +
       '/dashboard — Web dashboard\n' +
+      '/rc — Remote control session (start/stop/status)\n' +
       '/stop — Stop current processing\n' +
       '/agents — List available agents\n' +
       '/delegate — Delegate task to agent\n\n' +
@@ -883,6 +911,134 @@ export function createBot(): Bot {
     await ctx.reply(`<a href="${url}">Open Dashboard</a>`, { parse_mode: 'HTML' });
   });
 
+  // /rc — remote control session management
+  bot.command('rc', async (ctx) => {
+    if (!isAuthorised(ctx.chat!.id)) return;
+
+    const args = (ctx.match?.trim() || '').split(/\s+/);
+    const sub = args[0]?.toLowerCase() || 'start';
+
+    // ── /rc stop ──
+    if (sub === 'stop') {
+      if (!rcProcess) {
+        await ctx.reply('No active remote control session.');
+        return;
+      }
+      killRcSession();
+      await ctx.reply('Remote control session stopped.');
+      return;
+    }
+
+    // ── /rc status ──
+    if (sub === 'status') {
+      if (!rcProcess || !rcSessionUrl) {
+        await ctx.reply('No active remote control session.');
+        return;
+      }
+      await ctx.reply(
+        `<b>Remote Control</b>\nPID: <code>${rcSessionPid}</code>\n<a href="${rcSessionUrl}">Open Session</a>`,
+        { parse_mode: 'HTML' },
+      );
+      return;
+    }
+
+    // ── /rc start [name] ──
+    // Kill existing session if any
+    if (rcProcess) {
+      killRcSession();
+    }
+
+    const sessionName = args.slice(sub === 'start' ? 1 : 0).join(' ') || 'remote';
+    const claudePath = process.env.CLAUDE_PATH || 'claude';
+    const cwd = agentCwd ?? process.env.HOME ?? os.homedir();
+
+    const statusMsg = await ctx.reply('Starting remote control session…');
+
+    try {
+      const child = spawn(
+        claudePath,
+        ['remote-control', '--permission-mode', 'bypassPermissions', '--name', sessionName],
+        { cwd, detached: true, stdio: ['ignore', 'pipe', 'pipe'] },
+      );
+
+      rcProcess = child;
+      rcSessionPid = child.pid ?? null;
+      child.unref();
+
+      // Capture URL from stdout/stderr
+      let captured = false;
+      const urlRegex = /https:\/\/claude\.ai\/code[^\s)}\]'"<]*/;
+
+      const onData = (data: Buffer) => {
+        if (captured) return;
+        const text = stripAnsi(data.toString());
+        const match = text.match(urlRegex);
+        if (match) {
+          captured = true;
+          rcSessionUrl = match[0];
+          ctx.api.editMessageText(
+            ctx.chat!.id,
+            statusMsg.message_id,
+            `<b>Remote Control</b>\n<a href="${rcSessionUrl}">Open Session</a>\nPID: <code>${rcSessionPid}</code>\n\n<i>/rc stop to end</i>`,
+            { parse_mode: 'HTML' },
+          ).catch(() => {});
+        }
+      };
+
+      child.stdout?.on('data', onData);
+      child.stderr?.on('data', onData);
+
+      // 30-second timeout for URL capture
+      setTimeout(() => {
+        if (!captured && rcProcess === child) {
+          ctx.api.editMessageText(
+            ctx.chat!.id,
+            statusMsg.message_id,
+            'Remote control started but no URL captured within 30s.\nThe process may still be running — check /rc status.',
+          ).catch(() => {});
+        }
+      }, 30_000);
+
+      // Handle unexpected exit
+      child.on('exit', (code) => {
+        if (rcProcess === child) {
+          rcProcess = null;
+          rcSessionUrl = null;
+          rcSessionPid = null;
+          if (!captured) {
+            ctx.api.editMessageText(
+              ctx.chat!.id,
+              statusMsg.message_id,
+              `Remote control exited${code != null ? ` (code ${code})` : ''} before a URL was captured.`,
+            ).catch(() => {});
+          } else {
+            ctx.reply('Remote control session ended.').catch(() => {});
+          }
+        }
+      });
+
+      child.on('error', (err) => {
+        if (rcProcess === child) {
+          rcProcess = null;
+          rcSessionUrl = null;
+          rcSessionPid = null;
+          ctx.api.editMessageText(
+            ctx.chat!.id,
+            statusMsg.message_id,
+            `Failed to start remote control: ${err.message}\nCheck CLAUDE_PATH in .env if claude is not in PATH.`,
+          ).catch(() => {});
+        }
+      });
+    } catch (err: any) {
+      killRcSession();
+      await ctx.api.editMessageText(
+        ctx.chat!.id,
+        statusMsg.message_id,
+        `Failed to start remote control: ${err.message}`,
+      );
+    }
+  });
+
   // /stop — interrupt the current agent query
   bot.command('stop', async (ctx) => {
     if (!isAuthorised(ctx.chat!.id)) return;
@@ -929,7 +1085,7 @@ export function createBot(): Bot {
   });
 
   // Text messages — and any slash commands not owned by this bot (skills, e.g. /todo /gmail)
-  const OWN_COMMANDS = new Set(['/start', '/help', '/newchat', '/respin', '/voice', '/model', '/memory', '/forget', '/chatid', '/wa', '/slack', '/dashboard', '/stop', '/agents', '/delegate']);
+  const OWN_COMMANDS = new Set(['/start', '/help', '/newchat', '/respin', '/voice', '/model', '/memory', '/forget', '/chatid', '/wa', '/slack', '/dashboard', '/rc', '/stop', '/agents', '/delegate']);
   bot.on('message:text', async (ctx) => {
     const text = ctx.message.text;
     const chatIdStr = ctx.chat!.id.toString();
