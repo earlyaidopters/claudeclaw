@@ -16,6 +16,7 @@ import {
   agentDefaultModel,
   agentSystemPrompt,
   TYPING_REFRESH_MS,
+  AGENT_TIMEOUT_MS,
 } from './config.js';
 import { clearSession, getRecentConversation, getRecentMemories, getSession, getSessionConversation, logToHiveMind, setSession, lookupWaChatId, saveWaMessageMap, saveTokenUsage } from './db.js';
 import { logger } from './logger.js';
@@ -393,6 +394,12 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
     const abortCtrl = new AbortController();
     setActiveAbort(chatIdStr, abortCtrl);
 
+    // Auto-abort if the agent runs too long (prevents runaway commands from blocking the bot)
+    const timeoutId = setTimeout(() => {
+      logger.warn({ chatId: chatIdStr, timeoutMs: AGENT_TIMEOUT_MS }, 'Agent query timed out, aborting');
+      abortCtrl.abort();
+    }, AGENT_TIMEOUT_MS);
+
     const result = await runAgent(
       fullMessage,
       sessionId,
@@ -402,14 +409,18 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
       abortCtrl,
     );
 
+    clearTimeout(timeoutId);
     setActiveAbort(chatIdStr, null);
     clearInterval(typingInterval);
 
-    // Handle abort — send short confirmation and stop
+    // Handle abort (manual /stop or timeout)
     if (result.aborted) {
       setProcessing(chatIdStr, false);
-      emitChatEvent({ type: 'assistant_message', chatId: chatIdStr, content: 'Stopped.', source: 'telegram' });
-      await ctx.reply('Stopped.');
+      const msg = result.text === null
+        ? `Timed out after ${Math.round(AGENT_TIMEOUT_MS / 1000)}s. The task may have been too complex or a command got stuck. Try breaking it into smaller steps.`
+        : 'Stopped.';
+      emitChatEvent({ type: 'assistant_message', chatId: chatIdStr, content: msg, source: 'telegram' });
+      await ctx.reply(msg);
       return;
     }
 
@@ -1265,6 +1276,10 @@ async function processDashboardMessage(
 
     const abortCtrl = new AbortController();
     setActiveAbort(chatIdStr, abortCtrl);
+    const dashTimeout = setTimeout(() => {
+      logger.warn({ chatId: chatIdStr, timeoutMs: AGENT_TIMEOUT_MS }, 'Dashboard agent query timed out, aborting');
+      abortCtrl.abort();
+    }, AGENT_TIMEOUT_MS);
 
     const result = await runAgent(
       fullMessage,
@@ -1275,11 +1290,15 @@ async function processDashboardMessage(
       abortCtrl,
     );
 
+    clearTimeout(dashTimeout);
     setActiveAbort(chatIdStr, null);
 
     // Handle abort
     if (result.aborted) {
-      emitChatEvent({ type: 'assistant_message', chatId: chatIdStr, content: 'Stopped.', source: 'dashboard' });
+      const msg = result.text === null
+        ? `Timed out after ${Math.round(AGENT_TIMEOUT_MS / 1000)}s. Try breaking the task into smaller steps.`
+        : 'Stopped.';
+      emitChatEvent({ type: 'assistant_message', chatId: chatIdStr, content: msg, source: 'dashboard' });
       return;
     }
 
