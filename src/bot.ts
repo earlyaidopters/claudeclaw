@@ -38,6 +38,23 @@ const lastUsage = new Map<string, UsageInfo>();
 const sessionBaseline = new Map<string, number>(); // sessionId -> first turn's input_tokens
 
 /**
+ * Get the context window usage as a percentage (0-100), or null if unavailable.
+ * Standalone function so the status line can use it independently of warnings.
+ */
+function getContextPercent(chatIdStr: string, sessionId: string): number | null {
+  const usage = lastUsage.get(chatIdStr);
+  if (!usage) return null;
+  const baseKey = sessionId || chatIdStr;
+  const baseline = sessionBaseline.get(baseKey) ?? 0;
+  const contextTokens = usage.lastCallInputTokens;
+  if (contextTokens <= 0) return null;
+  if (baseline === 0) return null; // first turn, no baseline yet
+  const available = CONTEXT_LIMIT - baseline;
+  if (available <= 0) return null;
+  return Math.min(100, Math.round(((contextTokens - baseline) / available) * 100));
+}
+
+/**
  * Check if context usage is getting high and return a warning string, or null.
  * Uses input_tokens (total context) not cache_read_input_tokens (partial metric).
  */
@@ -72,6 +89,39 @@ function checkContextWarning(chatId: string, sessionId: string | undefined, usag
 
   return null;
 }
+/**
+ * Format a status line for appending/sending after agent responses.
+ * Shows model name and context percentage in the configured style.
+ */
+function formatStatusLine(config: StatusConfig, modelId: string | undefined, contextPct: number | null): string {
+  const display = modelId ? (MODEL_DISPLAY[modelId] ?? 'Claude') : MODEL_DISPLAY[AVAILABLE_MODELS[DEFAULT_MODEL_LABEL]] ?? 'Claude';
+
+  const pctStr = contextPct != null ? `${contextPct}%` : '';
+
+  if (config.mode === 'custom' && config.customTemplate) {
+    // Interpolate template variables
+    const filled = Math.min(10, Math.round((contextPct ?? 0) / 10));
+    const bar = '\u2588'.repeat(filled) + '\u2591'.repeat(10 - filled);
+    const tokens = contextPct != null ? `${Math.round((contextPct / 100) * (CONTEXT_LIMIT / 1000))}k` : '?';
+    const limit = `${Math.round(CONTEXT_LIMIT / 1000)}k`;
+    return '\u2014\n' + config.customTemplate
+      .replace(/\{model\}/g, display)
+      .replace(/\{pct\}/g, pctStr)
+      .replace(/\{bar\}/g, bar)
+      .replace(/\{tokens\}/g, tokens)
+      .replace(/\{limit\}/g, limit);
+  }
+
+  if (config.mode === 'bar') {
+    const filled = Math.min(10, Math.round((contextPct ?? 0) / 10));
+    const bar = '\u2588'.repeat(filled) + '\u2591'.repeat(10 - filled);
+    return contextPct != null ? `\u2014\n${display} | ${bar} ${pctStr}` : `\u2014\n${display}`;
+  }
+
+  // append (default) and separate
+  return contextPct != null ? `\u2014\n${display} | ${pctStr}` : `\u2014\n${display}`;
+}
+
 import {
   downloadTelegramFile,
   transcribeAudio,
@@ -95,6 +145,21 @@ const AVAILABLE_MODELS: Record<string, string> = {
   haiku: 'claude-haiku-4-5',
 };
 const DEFAULT_MODEL_LABEL = 'opus';
+
+/** Short display names for the Telegram status line. */
+const MODEL_DISPLAY: Record<string, string> = {
+  'claude-opus-4-6': 'Opus 4.6',
+  'claude-sonnet-4-5': 'Sonnet 4.5',
+  'claude-haiku-4-5': 'Haiku 4.5',
+};
+
+// Status line configuration per chat
+type StatusMode = 'append' | 'separate' | 'bar' | 'custom' | 'off';
+interface StatusConfig {
+  mode: StatusMode;
+  customTemplate?: string;
+}
+const chatStatusConfig = new Map<string, StatusConfig>();
 
 // WhatsApp state per Telegram chat
 interface WaStateList { mode: 'list'; chats: WaChat[] }
@@ -451,6 +516,25 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
       }
     }
 
+    // Update usage tracking BEFORE sending so status line can read context percent
+    const activeSessionId = result.newSessionId ?? sessionId;
+    if (result.usage) {
+      lastUsage.set(chatIdStr, result.usage);
+      // Set baseline on first turn (matching checkContextWarning key format)
+      const baseKey = activeSessionId ?? chatIdStr;
+      if (!sessionBaseline.has(baseKey) && result.usage.lastCallInputTokens > 0) {
+        sessionBaseline.set(baseKey, result.usage.lastCallInputTokens);
+      }
+    }
+
+    // Compute status line
+    const statusCfg = chatStatusConfig.get(chatIdStr) ?? { mode: 'append' as StatusMode };
+    const statusModel = chatModelOverride.get(chatIdStr) ?? agentDefaultModel;
+    const statusPct = activeSessionId ? getContextPercent(chatIdStr, activeSessionId) : null;
+    const statusLineRaw = statusCfg.mode !== 'off' ? formatStatusLine(statusCfg, statusModel, statusPct) : null;
+    // Escape for HTML — the status line contains plain text/unicode only
+    const statusLineHtml = statusLineRaw ? escapeHtml(statusLineRaw) : null;
+
     // Voice response: send audio if user sent a voice note (forceVoiceReply)
     // OR if they've toggled /voice on for text messages.
     const caps = voiceCapabilities();
@@ -459,25 +543,67 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
     // Send text response (if there's any left after stripping markers)
     if (responseText) {
       if (shouldSpeakBack) {
+        let ttsSucceeded = false;
         try {
           const audioBuffer = await synthesizeSpeech(responseText);
           await ctx.replyWithVoice(new InputFile(audioBuffer, 'response.ogg'));
+          ttsSucceeded = true;
         } catch (ttsErr) {
           logger.error({ err: ttsErr }, 'TTS failed, falling back to text');
-          for (const part of splitMessage(formatForTelegram(responseText))) {
-            await ctx.reply(part, { parse_mode: 'HTML' });
+          const fallbackParts = splitMessage(formatForTelegram(responseText));
+          for (let i = 0; i < fallbackParts.length; i++) {
+            let chunk = fallbackParts[i];
+            // Append status to last chunk if append/bar/custom mode
+            if (statusLineHtml && i === fallbackParts.length - 1 && statusCfg.mode !== 'separate') {
+              if ((chunk + '\n' + statusLineHtml).length <= MAX_MESSAGE_LENGTH) {
+                chunk += '\n' + statusLineHtml;
+              } else {
+                // Too long — send status separately
+                await ctx.reply(chunk, { parse_mode: 'HTML' });
+                await ctx.reply(statusLineHtml, { parse_mode: 'HTML' });
+                continue;
+              }
+            }
+            await ctx.reply(chunk, { parse_mode: 'HTML' });
+          }
+          // Separate mode: send status after all TTS-fallback chunks
+          if (statusLineHtml && statusCfg.mode === 'separate') {
+            await ctx.reply(statusLineHtml, { parse_mode: 'HTML' });
           }
         }
+        // Voice success: always send status as a separate text message after audio
+        if (ttsSucceeded && statusLineHtml) {
+          await ctx.reply(statusLineHtml, { parse_mode: 'HTML' });
+        }
       } else {
-        for (const part of splitMessage(formatForTelegram(responseText))) {
-          await ctx.reply(part, { parse_mode: 'HTML' });
+        const msgParts = splitMessage(formatForTelegram(responseText));
+        for (let i = 0; i < msgParts.length; i++) {
+          let chunk = msgParts[i];
+          // Append status to last chunk if append/bar/custom mode
+          if (statusLineHtml && i === msgParts.length - 1 && statusCfg.mode !== 'separate') {
+            if ((chunk + '\n' + statusLineHtml).length <= MAX_MESSAGE_LENGTH) {
+              chunk += '\n' + statusLineHtml;
+            } else {
+              // Too long — send status separately
+              await ctx.reply(chunk, { parse_mode: 'HTML' });
+              await ctx.reply(statusLineHtml, { parse_mode: 'HTML' });
+              continue;
+            }
+          }
+          await ctx.reply(chunk, { parse_mode: 'HTML' });
+        }
+        // Separate mode: send status after all chunks
+        if (statusLineHtml && statusCfg.mode === 'separate') {
+          await ctx.reply(statusLineHtml, { parse_mode: 'HTML' });
         }
       }
+    } else if (statusLineHtml) {
+      // No response text but status is on — send status alone
+      await ctx.reply(statusLineHtml, { parse_mode: 'HTML' });
     }
 
     // Log token usage to SQLite and check for context warnings
     if (result.usage) {
-      const activeSessionId = result.newSessionId ?? sessionId;
       try {
         saveTokenUsage(
           chatIdStr,
@@ -600,6 +726,7 @@ export function createBot(): Bot {
     { command: 'wa', description: 'Recent WhatsApp messages' },
     { command: 'slack', description: 'Recent Slack messages' },
     { command: 'dashboard', description: 'Open web dashboard' },
+    { command: 'status', description: 'Configure status line (append/separate/bar/custom/off)' },
     { command: 'stop', description: 'Stop current processing' },
     { command: 'agents', description: 'List available agents' },
     { command: 'delegate', description: 'Delegate task to agent' },
@@ -624,6 +751,7 @@ export function createBot(): Bot {
       '/wa — WhatsApp messages\n' +
       '/slack — Slack messages\n' +
       '/dashboard — Web dashboard\n' +
+      '/status \u2014 Status line after responses (append/separate/bar/custom/off)\n' +
       '/stop — Stop current processing\n' +
       '/agents — List available agents\n' +
       '/delegate — Delegate task to agent\n\n' +
@@ -879,6 +1007,69 @@ export function createBot(): Bot {
     await ctx.reply(`<a href="${url}">Open Dashboard</a>`, { parse_mode: 'HTML' });
   });
 
+  // /status — configure the status line shown after responses
+  bot.command('status', async (ctx) => {
+    if (!isAuthorised(ctx.chat!.id)) return;
+    const chatIdStr = ctx.chat!.id.toString();
+    const arg = (ctx.match?.trim() || '').toLowerCase();
+
+    const current = chatStatusConfig.get(chatIdStr) ?? { mode: 'append' as StatusMode };
+
+    if (!arg) {
+      // Show current mode + preview
+      const modelId = chatModelOverride.get(chatIdStr) ?? agentDefaultModel;
+      const sessionId = getSession(chatIdStr, AGENT_ID);
+      const pct = sessionId ? getContextPercent(chatIdStr, sessionId) : null;
+      const preview = current.mode === 'off' ? '(disabled)' : escapeHtml(formatStatusLine(current, modelId, pct ?? 42));
+      await ctx.reply(
+        `<b>Status line</b>\nMode: <code>${current.mode}</code>\n\nPreview:\n${preview}\n\nUsage: /status append|separate|bar|custom &lt;template&gt;|off`,
+        { parse_mode: 'HTML' },
+      );
+      return;
+    }
+
+    if (arg === 'append') {
+      chatStatusConfig.set(chatIdStr, { mode: 'append' });
+      await ctx.reply('Status line: append (after last message)');
+      return;
+    }
+    if (arg === 'separate') {
+      chatStatusConfig.set(chatIdStr, { mode: 'separate' });
+      await ctx.reply('Status line: separate message');
+      return;
+    }
+    if (arg === 'bar') {
+      chatStatusConfig.set(chatIdStr, { mode: 'bar' });
+      await ctx.reply('Status line: bar mode');
+      return;
+    }
+    if (arg === 'off') {
+      chatStatusConfig.set(chatIdStr, { mode: 'off' });
+      await ctx.reply('Status line disabled.');
+      return;
+    }
+
+    // Custom template
+    const fullArg = ctx.match?.trim() || '';
+    const customMatch = fullArg.match(/^custom\s+([\s\S]+)/i);
+    if (customMatch) {
+      let template = customMatch[1].trim();
+      // If it contains template variables, store as-is
+      const hasVars = /\{(model|pct|bar|tokens|limit)\}/.test(template);
+      if (!hasVars) {
+        // Auto-generate a simple template from their description
+        template = `{model} | {pct}`;
+      }
+      chatStatusConfig.set(chatIdStr, { mode: 'custom', customTemplate: template });
+      const modelId = chatModelOverride.get(chatIdStr) ?? agentDefaultModel;
+      const preview = escapeHtml(formatStatusLine({ mode: 'custom', customTemplate: template }, modelId, 42));
+      await ctx.reply(`Status line: custom\nTemplate: <code>${escapeHtml(template)}</code>\n\nPreview:\n${preview}`, { parse_mode: 'HTML' });
+      return;
+    }
+
+    await ctx.reply('Unknown mode. Usage: /status append|separate|bar|custom <template>|off');
+  });
+
   // /stop — interrupt the current agent query
   bot.command('stop', async (ctx) => {
     if (!isAuthorised(ctx.chat!.id)) return;
@@ -925,7 +1116,7 @@ export function createBot(): Bot {
   });
 
   // Text messages — and any slash commands not owned by this bot (skills, e.g. /todo /gmail)
-  const OWN_COMMANDS = new Set(['/start', '/help', '/newchat', '/respin', '/voice', '/model', '/memory', '/forget', '/chatid', '/wa', '/slack', '/dashboard', '/stop', '/agents', '/delegate']);
+  const OWN_COMMANDS = new Set(['/start', '/help', '/newchat', '/respin', '/voice', '/model', '/memory', '/forget', '/chatid', '/wa', '/slack', '/dashboard', '/status', '/stop', '/agents', '/delegate']);
   bot.on('message:text', async (ctx) => {
     const text = ctx.message.text;
     const chatIdStr = ctx.chat!.id.toString();
