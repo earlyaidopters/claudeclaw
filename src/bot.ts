@@ -17,12 +17,15 @@ import {
   agentSystemPrompt,
   TYPING_REFRESH_MS,
   AGENT_TIMEOUT_MS,
+  DISPATCH_MODE,
 } from './config.js';
 import { clearSession, getRecentConversation, getRecentMemories, getRecentTaskOutputs, getSession, getSessionConversation, logToHiveMind, setSession, lookupWaChatId, saveWaMessageMap, saveTokenUsage } from './db.js';
 import { logger } from './logger.js';
 import { downloadMedia, buildPhotoMessage, buildDocumentMessage, buildVideoMessage } from './media.js';
 import { buildMemoryContext, saveConversationTurn } from './memory.js';
 import { messageQueue } from './message-queue.js';
+import { decomposeMessage } from './decomposer.js';
+import { enqueueBatch } from './dispatch.js';
 import { parseDelegation, delegateToAgent, getAvailableAgents } from './orchestrator.js';
 import { emitChatEvent, setProcessing, setActiveAbort, abortActiveQuery } from './state.js';
 
@@ -374,6 +377,202 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
     parts.push(`[Recent scheduled task context — the user may be replying to this]\n${taskLines.join('\n\n')}\n[End task context]`);
   }
 
+  // ── Compound message decomposition ──────────────────────────────────
+  // Check if this is a compound request that should be split into
+  // multiple sequential tasks. Simple messages pass through unchanged.
+  const decomposition = await decomposeMessage(message);
+
+  if (decomposition.isCompound && decomposition.tasks.length > 1) {
+    logger.info(
+      { taskCount: decomposition.tasks.length, dispatch: DISPATCH_MODE, tasks: decomposition.tasks.map((t) => t.task.slice(0, 60)) },
+      'Compound message detected',
+    );
+
+    // ── Dispatch mode: fan out to background workers ──────────────────
+    if (DISPATCH_MODE) {
+      // Build task prompts with memory/system context prefix
+      const contextPrefix = parts.join('\n\n');
+      const batchItems = decomposition.tasks.map((t) => ({
+        prompt: contextPrefix ? `${contextPrefix}\n\n${t.task}` : t.task,
+        workerHint: t.workerHint,
+      }));
+
+      const taskIds = enqueueBatch(chatIdStr, batchItems, AGENT_ID);
+
+      const taskList = decomposition.tasks
+        .map((t, i) => `${i + 1}. [${t.workerHint}] ${t.task}`)
+        .join('\n');
+
+      await ctx.reply(
+        formatForTelegram(`Dispatched ${taskIds.length} tasks to workers:\n${taskList}\n\nResults will be delivered as they complete.`),
+        { parse_mode: 'HTML' },
+      );
+
+      if (!skipLog) {
+        saveConversationTurn(chatIdStr, message, `[Dispatched ${taskIds.length} tasks to workers]`, undefined, AGENT_ID);
+      }
+
+      return;
+    }
+
+    // ── Inline mode: execute sequentially in this process ─────────────
+    await ctx.reply(
+      formatForTelegram(`Breaking this into ${decomposition.tasks.length} tasks:\n${decomposition.tasks.map((t, i) => `${i + 1}. ${t.task}`).join('\n')}`),
+      { parse_mode: 'HTML' },
+    );
+
+    let sessionId = getSession(chatIdStr, AGENT_ID);
+    const allResponses: string[] = [];
+    let aborted = false;
+
+    setProcessing(chatIdStr, true);
+
+    for (let i = 0; i < decomposition.tasks.length; i++) {
+      const task = decomposition.tasks[i];
+
+      // Notify progress
+      emitChatEvent({ type: 'progress', chatId: chatIdStr, description: `Task ${i + 1}/${decomposition.tasks.length}: ${task.task}` });
+      await ctx.reply(`[${i + 1}/${decomposition.tasks.length}] ${task.task}...`);
+      await sendTyping(ctx.api, chatId);
+
+      const typingInterval = setInterval(
+        () => void sendTyping(ctx.api, chatId),
+        TYPING_REFRESH_MS,
+      );
+
+      const onProgress = (event: AgentProgressEvent) => {
+        if (event.type === 'tool_active') {
+          emitChatEvent({ type: 'progress', chatId: chatIdStr, description: event.description });
+        }
+      };
+
+      const abortCtrl = new AbortController();
+      setActiveAbort(chatIdStr, abortCtrl);
+
+      const timeoutId = setTimeout(() => {
+        logger.warn({ chatId: chatIdStr, taskIndex: i, timeoutMs: AGENT_TIMEOUT_MS }, 'Compound task timed out');
+        abortCtrl.abort();
+      }, AGENT_TIMEOUT_MS);
+
+      // Build the task prompt with context prefix
+      const taskParts = [...parts, task.task];
+      // For tasks after the first, add context about what's been done
+      if (i > 0 && allResponses.length > 0) {
+        taskParts.splice(taskParts.length - 1, 0,
+          `[Previous task results — use as context for the current task]\n${allResponses.map((r, idx) => `Task ${idx + 1} result:\n${r}`).join('\n\n')}\n[End previous results]`
+        );
+      }
+      const taskMessage = taskParts.join('\n\n');
+
+      try {
+        const result = await runAgent(
+          taskMessage,
+          sessionId,
+          () => void sendTyping(ctx.api, chatId),
+          onProgress,
+          chatModelOverride.get(chatIdStr) ?? agentDefaultModel,
+          abortCtrl,
+        );
+
+        clearTimeout(timeoutId);
+        clearInterval(typingInterval);
+
+        if (result.aborted) {
+          aborted = true;
+          await ctx.reply(`Task ${i + 1} timed out. Stopping remaining tasks.`);
+          break;
+        }
+
+        if (result.newSessionId) {
+          sessionId = result.newSessionId;
+          setSession(chatIdStr, result.newSessionId, AGENT_ID);
+        }
+
+        const taskResponse = result.text?.trim() || 'Done.';
+        allResponses.push(taskResponse);
+
+        // Send this task's result immediately — don't batch until the end
+        const { text: taskText, files: taskFiles } = extractFileMarkers(taskResponse);
+
+        // Send any files from this task
+        for (const file of taskFiles) {
+          try {
+            if (fs.existsSync(file.filePath)) {
+              if (file.type === 'photo') {
+                await ctx.replyWithPhoto(new InputFile(file.filePath), { caption: file.caption || undefined });
+              } else {
+                await ctx.replyWithDocument(new InputFile(file.filePath), { caption: file.caption || undefined });
+              }
+            }
+          } catch (fileErr) {
+            logger.error({ err: fileErr, path: file.filePath }, 'Failed to send file');
+          }
+        }
+
+        // Send the task result text
+        for (const part of splitMessage(formatForTelegram(taskText))) {
+          await ctx.reply(part, { parse_mode: 'HTML' });
+        }
+
+        // Save usage if available
+        if (result.usage) {
+          try {
+            saveTokenUsage(
+              chatIdStr,
+              sessionId,
+              result.usage.inputTokens,
+              result.usage.outputTokens,
+              result.usage.lastCallCacheRead,
+              result.usage.lastCallInputTokens,
+              result.usage.totalCostUsd,
+              result.usage.didCompact,
+              AGENT_ID,
+            );
+          } catch { /* DB error, non-fatal */ }
+        }
+      } catch (err) {
+        clearTimeout(timeoutId);
+        clearInterval(typingInterval);
+        const errMsg = err instanceof Error ? err.message : String(err);
+        logger.error({ err, taskIndex: i }, 'Compound task failed');
+        allResponses.push(`[Task ${i + 1} failed: ${errMsg}]`);
+        await ctx.reply(`Task ${i + 1} failed: ${errMsg}`);
+      }
+
+      setActiveAbort(chatIdStr, null);
+    }
+
+    setProcessing(chatIdStr, false);
+
+    // Save conversation log (all completed results, even if later tasks failed/timed out)
+    if (allResponses.length > 0 && !skipLog) {
+      saveConversationTurn(chatIdStr, message, allResponses.join('\n\n---\n\n'), sessionId, AGENT_ID);
+    }
+
+    // Summary line
+    const completed = allResponses.length;
+    const total = decomposition.tasks.length;
+    if (aborted) {
+      await ctx.reply(`Completed ${completed}/${total} tasks. Remaining tasks skipped due to timeout.`);
+    } else if (completed === total) {
+      await ctx.reply(`All ${total} tasks completed.`);
+    }
+
+    // Voice reply for the last completed result
+    if (allResponses.length > 0 && (forceVoiceReply || voiceEnabledChats.has(chatIdStr))) {
+      try {
+        const lastText = extractFileMarkers(allResponses[allResponses.length - 1]).text;
+        const voiceBuffer = await synthesizeSpeech(lastText);
+        if (voiceBuffer) {
+          await ctx.replyWithVoice(new InputFile(voiceBuffer, 'response.ogg'));
+        }
+      } catch { /* voice synthesis failed, text already sent */ }
+    }
+
+    return;
+  }
+
+  // ── Single task (normal flow) ──────────────────────────────────────
   parts.push(message);
   const fullMessage = parts.join('\n\n');
 

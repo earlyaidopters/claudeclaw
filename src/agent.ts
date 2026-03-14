@@ -120,6 +120,11 @@ export async function runAgent(
   }
   if (secrets.ANTHROPIC_API_KEY) {
     sdkEnv.ANTHROPIC_API_KEY = secrets.ANTHROPIC_API_KEY;
+  } else {
+    // If ANTHROPIC_API_KEY is not explicitly set in .env, remove it from
+    // the inherited environment so the subprocess uses Max plan OAuth
+    // instead of pay-per-token billing from shell environment variables.
+    delete sdkEnv.ANTHROPIC_API_KEY;
   }
 
   let newSessionId: string | undefined;

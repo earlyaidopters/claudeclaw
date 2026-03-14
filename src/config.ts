@@ -19,6 +19,7 @@ const envConfig = readEnvFile([
   'CLAUDECLAW_CONFIG',
   'DB_ENCRYPTION_KEY',
   'GOOGLE_API_KEY',
+  'DISPATCH_MODE',
 ]);
 
 // ── Multi-agent support ──────────────────────────────────────────────
@@ -110,6 +111,13 @@ export const AGENT_TIMEOUT_MS = parseInt(
   process.env.AGENT_TIMEOUT_MS || envConfig.AGENT_TIMEOUT_MS || '300000',
   10,
 );
+
+// Dispatch mode: when enabled, compound messages are dispatched to background
+// workers instead of running sequentially in the main bot process.
+// Requires at least one worker running: node dist/worker.js --hint general
+// Default: false (compound tasks run inline sequentially).
+export const DISPATCH_MODE =
+  (process.env.DISPATCH_MODE || envConfig.DISPATCH_MODE || '').toLowerCase() === 'true';
 
 // Context window limit for the model. Opus 4.6 (1M context) = 1,000,000.
 // Override via CONTEXT_LIMIT in .env if using a different model variant.

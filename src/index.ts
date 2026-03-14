@@ -7,7 +7,9 @@ import { checkPendingMigrations } from './migrations.js';
 import { ALLOWED_CHAT_ID, activeBotToken, STORE_DIR, PROJECT_ROOT, CLAUDECLAW_CONFIG, GOOGLE_API_KEY, setAgentOverrides } from './config.js';
 import { startDashboard } from './dashboard.js';
 import { initDatabase } from './db.js';
+import { initDispatch } from './dispatch.js';
 import { logger } from './logger.js';
+import { startResultPoller, stopResultPoller } from './result-poller.js';
 import { cleanupOldUploads } from './media.js';
 import { runConsolidation } from './memory-consolidate.js';
 import { runDecaySweep } from './memory.js';
@@ -120,8 +122,10 @@ async function main(): Promise<void> {
 
   acquireLock();
 
-  initDatabase();
+  const database = initDatabase();
   logger.info('Database ready');
+
+  initDispatch(database);
 
   initOrchestrator();
 
@@ -158,12 +162,16 @@ async function main(): Promise<void> {
       (text) => bot.api.sendMessage(ALLOWED_CHAT_ID, text, { parse_mode: 'HTML' }).then(() => {}).catch((err) => logger.error({ err }, 'Scheduler failed to send message')),
       AGENT_ID,
     );
+
+    // Start polling for completed dispatch tasks (from background workers)
+    startResultPoller(bot.api, ALLOWED_CHAT_ID);
   } else {
     logger.warn('ALLOWED_CHAT_ID not set — scheduler disabled (no destination for results)');
   }
 
   const shutdown = async () => {
     logger.info('Shutting down...');
+    stopResultPoller();
     setTelegramConnected(false);
     releaseLock();
     await bot.stop();

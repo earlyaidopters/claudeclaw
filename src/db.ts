@@ -244,7 +244,7 @@ function createSchema(database: Database.Database): void {
   `);
 }
 
-export function initDatabase(): void {
+export function initDatabase(): Database.Database {
   fs.mkdirSync(STORE_DIR, { recursive: true });
   const dbPath = path.join(STORE_DIR, 'claudeclaw.db');
 
@@ -255,6 +255,7 @@ export function initDatabase(): void {
   db.pragma('journal_mode = WAL');
   createSchema(db);
   runMigrations(db);
+  return db;
 }
 
 /** Add columns that may not exist in older databases. */
