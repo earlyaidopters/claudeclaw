@@ -20,13 +20,16 @@ import {
   TYPING_REFRESH_MS,
   AGENT_TIMEOUT_MS,
 } from './config.js';
-import { clearSession, getRecentConversation, getRecentMemories, getRecentTaskOutputs, getSession, getSessionConversation, logToHiveMind, setSession, lookupWaChatId, saveWaMessageMap, saveTokenUsage } from './db.js';
+import { clearSession, getRecentConversation, getRecentMemories, getRecentTaskOutputs, getSession, getSessionConversation, logConversationTurn, logToHiveMind, setSession, lookupWaChatId, saveWaMessageMap, saveTokenUsage } from './db.js';
 import { logger } from './logger.js';
 import { downloadMedia, buildPhotoMessage, buildDocumentMessage, buildVideoMessage } from './media.js';
-import { buildMemoryContext, saveConversationTurn } from './memory.js';
+import { buildMemoryContext, saveConversationTurn, triggerMemoryIngestion } from './memory.js';
 import { messageQueue } from './message-queue.js';
 import { parseDelegation, delegateToAgent, getAvailableAgents } from './orchestrator.js';
 import { emitChatEvent, setProcessing, setActiveAbort, abortActiveQuery } from './state.js';
+import { createTopic, closeTopic, reopenTopic, listTopics, recordTopicActivity, isForum, findArchivedTopicByName } from './topic-manager.js';
+import { classifyMessage } from './topic-classifier.js';
+import { TOPIC_CLASSIFY_ENABLED, FORUM_CHAT_ID } from './config.js';
 
 // ── Context window tracking ──────────────────────────────────────────
 // Uses input_tokens from the last API call (= actual context window size:
@@ -110,6 +113,14 @@ interface SlackStateList { mode: 'list'; convos: SlackConversation[] }
 interface SlackStateChat { mode: 'chat'; channelId: string; channelName: string }
 type SlackState = SlackStateList | SlackStateChat;
 const slackState = new Map<string, SlackState>();
+
+// ── Pending topic creation offers ────────────────────────────────────
+interface PendingOffer {
+  suggestedName: string;
+  expiresAt: number;
+}
+const pendingTopicOffers = new Map<string, PendingOffer>(); // keyed by chatId
+const OFFER_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 /**
  * Escape a string for safe inclusion in Telegram HTML messages.
@@ -391,6 +402,16 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
 
   setProcessing(chatIdStr, true, topicId);
 
+  // Persist user message BEFORE running the agent.
+  // If the agent times out or crashes, the user's input is still in conversation_log.
+  if (!skipLog) {
+    try {
+      logConversationTurn(chatIdStr, 'user', message, sessionId, AGENT_ID, topicId);
+    } catch (err) {
+      logger.error({ err }, 'Failed to pre-log user message');
+    }
+  }
+
   try {
     // Progress callback: surface sub-agent lifecycle events to Telegram + SSE
     const onProgress = (event: AgentProgressEvent) => {
@@ -449,10 +470,12 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
     // Extract file markers before any formatting
     const { text: responseText, files: fileMarkers } = extractFileMarkers(rawResponse);
 
-    // Save conversation turn to memory (including full log).
-    // Skip logging for synthetic messages like /respin to avoid self-referential growth.
+    // Save assistant response + trigger memory ingestion.
+    // User message was already persisted before runAgent (crash-safe).
+    // Skip for synthetic messages like /respin to avoid self-referential growth.
     if (!skipLog) {
-      saveConversationTurn(chatIdStr, message, rawResponse, result.newSessionId ?? sessionId, AGENT_ID, topicId);
+      logConversationTurn(chatIdStr, 'assistant', rawResponse, result.newSessionId ?? sessionId, AGENT_ID, topicId);
+      triggerMemoryIngestion(chatIdStr, message, rawResponse);
     }
 
     // Emit assistant response to SSE clients
@@ -525,6 +548,11 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
       if (warning) {
         await ctx.reply(warning);
       }
+    }
+
+    // Track activity for forum topics
+    if (topicId) {
+      try { recordTopicActivity(chatIdStr, topicId); } catch { /* best-effort */ }
     }
 
     setProcessing(chatIdStr, false, topicId);
@@ -630,6 +658,9 @@ export function createBot(): Bot {
     { command: 'stop', description: 'Stop current processing' },
     { command: 'agents', description: 'List available agents' },
     { command: 'delegate', description: 'Delegate task to agent' },
+    { command: 'topics', description: 'List active forum topics' },
+    { command: 'close', description: 'Archive current forum topic' },
+    { command: 'reopen', description: 'Reopen archived topic by name' },
   ];
   const skillCommands = discoverSkillCommands();
   const allCommands = [...builtInCommands, ...skillCommands].slice(0, 100); // Telegram limit: 100 commands
@@ -653,7 +684,10 @@ export function createBot(): Bot {
       '/dashboard — Web dashboard\n' +
       '/stop — Stop current processing\n' +
       '/agents — List available agents\n' +
-      '/delegate — Delegate task to agent\n\n' +
+      '/delegate — Delegate task to agent\n' +
+      '/topics — List active forum topics\n' +
+      '/close — Archive current topic\n' +
+      '/reopen — Reopen archived topic\n\n' +
       'Delegation: @agentId: prompt or /delegate agentId prompt\n\n' +
       'You can also send voice notes, photos, files, and videos.'
     );
@@ -965,8 +999,71 @@ export function createBot(): Bot {
     handleMessage(ctx, `/delegate ${args}`, false, false, topicId).catch((err) => logger.error({ err }, 'Delegation error'));
   });
 
+  // /topics — list active forum topics
+  bot.command('topics', async (ctx) => {
+    if (!isAuthorised(ctx.chat!.id)) return;
+    const chatIdStr = ctx.chat!.id.toString();
+    const topics = listTopics(chatIdStr);
+    if (topics.length === 0) {
+      await ctx.reply('No active topics.');
+      return;
+    }
+    const lines = topics.map((t) => {
+      const ago = Math.round((Date.now() / 1000 - t.last_active_at) / 3600);
+      const agoStr = ago < 1 ? 'just now' : ago < 24 ? `${ago}h ago` : `${Math.round(ago / 24)}d ago`;
+      return `<b>${escapeHtml(t.name)}</b> — last active ${agoStr}`;
+    }).join('\n');
+    await ctx.reply(`<b>Active Topics</b>\n\n${lines}`, { parse_mode: 'HTML' });
+  });
+
+  // /close — archive the current forum topic
+  bot.command('close', async (ctx) => {
+    if (!isAuthorised(ctx.chat!.id)) return;
+    const chatIdStr = ctx.chat!.id.toString();
+    const topicId = ctx.message?.message_thread_id?.toString() ?? null;
+
+    if (!topicId) {
+      await ctx.reply('This command only works inside a forum topic thread.');
+      return;
+    }
+
+    try {
+      await closeTopic(ctx.api, chatIdStr, topicId);
+      await ctx.reply('Topic archived.');
+    } catch (err) {
+      logger.error({ err }, '/close command failed');
+      await ctx.reply('Failed to close topic. The bot may need admin rights.');
+    }
+  });
+
+  // /reopen — reopen an archived topic by name
+  bot.command('reopen', async (ctx) => {
+    if (!isAuthorised(ctx.chat!.id)) return;
+    const chatIdStr = ctx.chat!.id.toString();
+    const name = ctx.match?.trim();
+
+    if (!name) {
+      await ctx.reply('Usage: /reopen <topic name>');
+      return;
+    }
+
+    const topic = findArchivedTopicByName(chatIdStr, name);
+    if (!topic) {
+      await ctx.reply(`No archived topic found with name "${name}".`);
+      return;
+    }
+
+    try {
+      await reopenTopic(ctx.api, chatIdStr, topic.topic_id);
+      await ctx.reply(`Topic "<b>${escapeHtml(topic.name)}</b>" reopened.`, { parse_mode: 'HTML' });
+    } catch (err) {
+      logger.error({ err }, '/reopen command failed');
+      await ctx.reply('Failed to reopen topic. The bot may need admin rights.');
+    }
+  });
+
   // Text messages — and any slash commands not owned by this bot (skills, e.g. /todo /gmail)
-  const OWN_COMMANDS = new Set(['/start', '/help', '/newchat', '/respin', '/voice', '/model', '/memory', '/forget', '/chatid', '/wa', '/slack', '/dashboard', '/stop', '/agents', '/delegate']);
+  const OWN_COMMANDS = new Set(['/start', '/help', '/newchat', '/respin', '/voice', '/model', '/memory', '/forget', '/chatid', '/wa', '/slack', '/dashboard', '/stop', '/agents', '/delegate', '/topics', '/close', '/reopen']);
   bot.on('message:text', async (ctx) => {
     const text = ctx.message.text;
     const chatIdStr = ctx.chat!.id.toString();
@@ -1124,11 +1221,64 @@ export function createBot(): Bot {
       }
     }
 
+    // ── Pending topic offer confirmation ─────────────────────────────
+    const offer = pendingTopicOffers.get(chatIdStr);
+    if (offer && !topicId) {
+      pendingTopicOffers.delete(chatIdStr);
+      if (offer.expiresAt > Date.now()) {
+        const lower = text.trim().toLowerCase();
+        const isConfirm = lower === 'y' || lower === 'yes' || lower === 'yeah' || lower === 'yep' || lower === 'sure';
+        if (isConfirm || (lower.length > 0 && lower.length < 60 && !lower.startsWith('/'))) {
+          // User confirmed or provided a custom name
+          const topicName = isConfirm ? offer.suggestedName : text.trim();
+          try {
+            const created = await createTopic(ctx.api, chatIdStr, topicName);
+            await ctx.api.sendMessage(ctx.chat!.id, `Topic "<b>${escapeHtml(topicName)}</b>" created. Continue the conversation there.`, {
+              parse_mode: 'HTML',
+              message_thread_id: created.messageThreadId,
+            });
+          } catch (err) {
+            logger.error({ err }, 'Failed to create topic from offer');
+            await ctx.reply('Failed to create topic. The bot may need admin rights for forum management.');
+          }
+          return;
+        }
+        // User said no or sent something else — fall through to normal processing
+      }
+    }
+
     // Clear WA/Slack state and pass through to Claude
     if (state) waState.delete(chatIdStr);
     if (slkState) slackState.delete(chatIdStr);
     // Fire-and-forget so grammY can process /stop while agent runs
     messageQueue.enqueue(chatIdStr, () => handleMessage(ctx, text, false, false, topicId), topicId);
+
+    // ── Fire-and-forget topic classification ─────────────────────────
+    // Only for General topic messages in forum groups
+    if (!topicId && TOPIC_CLASSIFY_ENABLED && text.length >= 50 && !text.startsWith('/')) {
+      void (async () => {
+        try {
+          const forumChat = await isForum(ctx.api, chatIdStr);
+          if (!forumChat) return;
+
+          const classification = await classifyMessage(text);
+          if (!classification || !classification.isNewWorkStream || classification.confidence < 0.7) return;
+
+          // Store pending offer
+          pendingTopicOffers.set(chatIdStr, {
+            suggestedName: classification.suggestedName,
+            expiresAt: Date.now() + OFFER_TTL_MS,
+          });
+
+          await ctx.reply(
+            `This looks like a new work stream. Create a topic "<b>${escapeHtml(classification.suggestedName)}</b>"?\n\n<i>Reply y/yes, send a custom name, or just keep chatting to skip.</i>`,
+            { parse_mode: 'HTML' },
+          );
+        } catch (err) {
+          logger.debug({ err }, 'Topic classification fire-and-forget failed');
+        }
+      })();
+    }
   });
 
   // Voice messages — real transcription via Groq Whisper

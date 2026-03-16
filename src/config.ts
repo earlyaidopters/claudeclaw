@@ -20,6 +20,10 @@ const envConfig = readEnvFile([
   'DB_ENCRYPTION_KEY',
   'GOOGLE_API_KEY',
   'ALLOWED_CHAT_IDS',
+  'BACKGROUND_MAX_CONCURRENT',
+  'AUTO_ARCHIVE_DAYS',
+  'TOPIC_CLASSIFY_ENABLED',
+  'FORUM_CHAT_ID',
 ]);
 
 // ── Multi-agent support ──────────────────────────────────────────────
@@ -146,6 +150,26 @@ export const GOOGLE_API_KEY =
   process.env.GOOGLE_API_KEY || envConfig.GOOGLE_API_KEY || '';
 
 // ── Forum Topics ────────────────────────────────────────────────
+
+/** Maximum concurrent background tasks (semaphore slots). */
+export const BACKGROUND_MAX_CONCURRENT = parseInt(
+  process.env.BACKGROUND_MAX_CONCURRENT || envConfig.BACKGROUND_MAX_CONCURRENT || '2',
+  10,
+);
+
+/** Days of inactivity before a forum topic is auto-archived. */
+export const AUTO_ARCHIVE_DAYS = parseInt(
+  process.env.AUTO_ARCHIVE_DAYS || envConfig.AUTO_ARCHIVE_DAYS || '7',
+  10,
+);
+
+/** Kill switch for LLM-powered topic classification. */
+export const TOPIC_CLASSIFY_ENABLED =
+  (process.env.TOPIC_CLASSIFY_ENABLED || envConfig.TOPIC_CLASSIFY_ENABLED || 'true').toLowerCase() === 'true';
+
+/** Explicit forum group chat ID. If set, this chat is treated as a forum regardless of auto-detection. */
+export const FORUM_CHAT_ID =
+  process.env.FORUM_CHAT_ID || envConfig.FORUM_CHAT_ID || '';
 
 /**
  * Build a composite key for per-topic state and queue isolation.

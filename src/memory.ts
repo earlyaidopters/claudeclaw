@@ -131,6 +131,19 @@ export function saveConversationTurn(
 
   // Fire-and-forget: LLM-powered memory extraction via Gemini
   // This runs async and never blocks the user's response
+  triggerMemoryIngestion(chatId, userMessage, claudeResponse);
+}
+
+/**
+ * Fire-and-forget memory ingestion. Separated from saveConversationTurn
+ * so callers that pre-write the user message can trigger ingestion without
+ * double-logging conversation turns.
+ */
+export function triggerMemoryIngestion(
+  chatId: string,
+  userMessage: string,
+  claudeResponse: string,
+): void {
   void ingestConversationTurn(chatId, userMessage, claudeResponse).catch((err) => {
     logger.error({ err }, 'Memory ingestion fire-and-forget failed');
   });

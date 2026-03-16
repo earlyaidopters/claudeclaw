@@ -458,6 +458,22 @@ function runMigrations(database: Database.Database): void {
     database.exec(`ALTER TABLE inter_agent_tasks ADD COLUMN topic_id TEXT`);
     logger.info('Migration: added topic_id to inter_agent_tasks');
   }
+
+  // ── Forum Topics table ──────────────────────────────────────────
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS forum_topics (
+      id             INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat_id        TEXT NOT NULL,
+      topic_id       TEXT NOT NULL,
+      name           TEXT NOT NULL,
+      status         TEXT NOT NULL DEFAULT 'active',
+      created_at     INTEGER NOT NULL,
+      last_active_at INTEGER NOT NULL,
+      created_by     TEXT NOT NULL DEFAULT 'user',
+      UNIQUE(chat_id, topic_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_forum_topics_chat ON forum_topics(chat_id, status);
+  `);
 }
 
 /** @internal - for tests only. Creates a fresh in-memory database. */
@@ -1561,4 +1577,64 @@ export function getInterAgentTasks(
       'SELECT * FROM inter_agent_tasks ORDER BY created_at DESC LIMIT ?',
     )
     .all(limit) as InterAgentTask[];
+}
+
+// ── Forum Topics ──────────────────────────────────────────────────────
+
+export interface ForumTopic {
+  id: number;
+  chat_id: string;
+  topic_id: string;
+  name: string;
+  status: string;
+  created_at: number;
+  last_active_at: number;
+  created_by: string;
+}
+
+export function saveForumTopic(
+  chatId: string,
+  topicId: string,
+  name: string,
+  createdBy = 'user',
+): void {
+  const now = Math.floor(Date.now() / 1000);
+  db.prepare(
+    `INSERT OR REPLACE INTO forum_topics (chat_id, topic_id, name, status, created_at, last_active_at, created_by)
+     VALUES (?, ?, ?, 'active', ?, ?, ?)`,
+  ).run(chatId, topicId, name, now, now, createdBy);
+}
+
+export function getForumTopics(chatId: string, status = 'active'): ForumTopic[] {
+  return db
+    .prepare('SELECT * FROM forum_topics WHERE chat_id = ? AND status = ? ORDER BY last_active_at DESC')
+    .all(chatId, status) as ForumTopic[];
+}
+
+export function getForumTopic(chatId: string, topicId: string): ForumTopic | undefined {
+  return db
+    .prepare('SELECT * FROM forum_topics WHERE chat_id = ? AND topic_id = ?')
+    .get(chatId, topicId) as ForumTopic | undefined;
+}
+
+export function getForumTopicByName(chatId: string, name: string): ForumTopic | undefined {
+  return db
+    .prepare('SELECT * FROM forum_topics WHERE chat_id = ? AND LOWER(name) = LOWER(?)')
+    .get(chatId, name) as ForumTopic | undefined;
+}
+
+export function updateTopicActivity(chatId: string, topicId: string): void {
+  const now = Math.floor(Date.now() / 1000);
+  db.prepare('UPDATE forum_topics SET last_active_at = ? WHERE chat_id = ? AND topic_id = ?').run(now, chatId, topicId);
+}
+
+export function updateTopicStatus(chatId: string, topicId: string, status: string): void {
+  db.prepare('UPDATE forum_topics SET status = ? WHERE chat_id = ? AND topic_id = ?').run(status, chatId, topicId);
+}
+
+export function getStaleForumTopics(chatId: string, maxAgeDays: number): ForumTopic[] {
+  const cutoff = Math.floor(Date.now() / 1000) - maxAgeDays * 86400;
+  return db
+    .prepare('SELECT * FROM forum_topics WHERE chat_id = ? AND status = ? AND last_active_at < ?')
+    .all(chatId, 'active', cutoff) as ForumTopic[];
 }

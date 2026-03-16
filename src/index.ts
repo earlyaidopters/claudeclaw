@@ -15,6 +15,7 @@ import { runDecaySweep } from './memory.js';
 import { initOrchestrator } from './orchestrator.js';
 import { initScheduler } from './scheduler.js';
 import { setTelegramConnected, setBotInfo } from './state.js';
+import { initAutoArchive } from './auto-archive.js';
 
 // Parse --agent flag
 const agentFlagIndex = process.argv.indexOf('--agent');
@@ -199,6 +200,10 @@ async function main(): Promise<void> {
       setTelegramConnected(true);
       setBotInfo(botInfo.username ?? '', botInfo.first_name ?? 'ClaudeClaw');
       logger.info({ username: botInfo.username }, 'ClaudeClaw is running');
+      // Initialize auto-archive for forum topics (main bot only)
+      if (AGENT_ID === 'main') {
+        initAutoArchive(bot.api);
+      }
       if (AGENT_ID === 'main') {
         console.log(`\n  ClaudeClaw online: @${botInfo.username}`);
         if (!ALLOWED_CHAT_ID) {
