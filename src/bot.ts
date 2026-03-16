@@ -20,16 +20,30 @@ import {
   TYPING_REFRESH_MS,
   AGENT_TIMEOUT_MS,
 } from './config.js';
-import { clearSession, getRecentConversation, getRecentMemories, getRecentTaskOutputs, getSession, getSessionConversation, logConversationTurn, logToHiveMind, setSession, lookupWaChatId, saveWaMessageMap, saveTokenUsage } from './db.js';
+import { clearSession, getRecentConversation, getRecentMemories, getRecentTaskOutputs, getSession, getSessionConversation, logConversationTurn, logToHiveMind, setSession, lookupWaChatId, saveWaMessageMap, saveTokenUsage, getMission, getMissionsByChat } from './db.js';
 import { logger } from './logger.js';
 import { downloadMedia, buildPhotoMessage, buildDocumentMessage, buildVideoMessage } from './media.js';
 import { buildMemoryContext, saveConversationTurn, triggerMemoryIngestion } from './memory.js';
 import { messageQueue } from './message-queue.js';
-import { parseDelegation, delegateToAgent, getAvailableAgents } from './orchestrator.js';
+import {
+  parseDelegation,
+  delegateToAgent,
+  getAvailableAgents,
+  proposeMission,
+  approveMission,
+  reviseMission,
+  cancelMission,
+  formatPlanForTelegram,
+  MissionProgress,
+} from './mission-control.js';
 import { emitChatEvent, setProcessing, setActiveAbort, abortActiveQuery } from './state.js';
 import { createTopic, closeTopic, reopenTopic, listTopics, recordTopicActivity, isForum, findArchivedTopicByName } from './topic-manager.js';
 import { classifyMessage } from './topic-classifier.js';
 import { TOPIC_CLASSIFY_ENABLED, FORUM_CHAT_ID } from './config.js';
+
+// ── Mission approval state ────────────────────────────────────────────
+// Tracks pending mission IDs per chat so we can intercept go/revise replies.
+const pendingMissions = new Map<string, string>(); // contextKey → missionId
 
 // ── Context window tracking ──────────────────────────────────────────
 // Uses input_tokens from the last API call (= actual context window size:
@@ -331,6 +345,60 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
 
   // Emit user message to SSE clients
   emitChatEvent({ type: 'user_message', chatId: chatIdStr, topicId, content: message, source: 'telegram' });
+
+  // ── Mission approval detection ──────────────────────────────────────
+  // If there's a pending mission for this context, check for approval/revision.
+  const pendingMissionId = pendingMissions.get(ctxKey);
+  if (pendingMissionId) {
+    const lower = message.trim().toLowerCase();
+
+    if (lower === 'go' || lower === 'approve' || lower === 'yes') {
+      pendingMissions.delete(ctxKey);
+      setProcessing(chatIdStr, true, topicId);
+      await ctx.reply('Mission approved. Executing...');
+
+      try {
+        const result = await approveMission(pendingMissionId, (progress: MissionProgress) => {
+          const emoji = progress.status === 'started' ? '▶️' : progress.status === 'completed' ? '✅' : '❌';
+          void ctx.reply(`${emoji} ${progress.description}`).catch(() => {});
+        });
+
+        const costStr = result.totalCostUsd > 0 ? ` | $${result.totalCostUsd.toFixed(3)}` : '';
+        const header = `Mission ${result.status} (${Math.round(result.durationMs / 1000)}s${costStr})`;
+
+        for (const part of splitMessage(formatForTelegram(`<b>${header}</b>\n\n${result.summary}`))) {
+          await ctx.reply(part, { parse_mode: 'HTML' });
+        }
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        logger.error({ err, missionId: pendingMissionId }, 'Mission execution failed');
+        await ctx.reply(`Mission failed: ${errMsg}`);
+      } finally {
+        setProcessing(chatIdStr, false, topicId);
+      }
+      return;
+    }
+
+    const reviseMatch = message.match(/^revise:\s*([\s\S]+)/i);
+    if (reviseMatch) {
+      await sendTyping(ctx.api, chatId);
+      try {
+        const mission = getMission(pendingMissionId);
+        const plan = await reviseMission(pendingMissionId, reviseMatch[1].trim());
+        const planMsg = formatPlanForTelegram(mission?.goal ?? 'Revised mission', plan, pendingMissionId);
+        await ctx.reply(planMsg, { parse_mode: 'HTML' });
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        logger.error({ err }, 'Mission revision failed');
+        await ctx.reply(`Revision failed: ${errMsg}`);
+      }
+      return;
+    }
+
+    // If the message isn't go/revise, clear the pending state and process normally.
+    // User can always re-propose with /mission.
+    pendingMissions.delete(ctxKey);
+  }
 
   // ── Delegation detection ────────────────────────────────────────────
   // Intercept @agentId or /delegate syntax before running the main agent.
@@ -999,6 +1067,69 @@ export function createBot(): Bot {
     handleMessage(ctx, `/delegate ${args}`, false, false, topicId).catch((err) => logger.error({ err }, 'Delegation error'));
   });
 
+  // /mission — propose a multi-agent mission
+  bot.command('mission', async (ctx) => {
+    if (!isAuthorised(ctx.chat!.id)) return;
+    const chatIdStr = ctx.chat!.id.toString();
+    const topicId = ctx.message?.message_thread_id?.toString() ?? null;
+    const ctxKey = contextKey(chatIdStr, topicId);
+    const goal = ctx.match?.trim();
+
+    if (!goal) {
+      // Show recent missions
+      const recent = getMissionsByChat(chatIdStr, 5);
+      if (recent.length === 0) {
+        await ctx.reply('Usage: /mission <goal>\n\nDescribe what you want accomplished. Data will decompose it into subtasks and propose a plan for your approval.');
+        return;
+      }
+      const lines = recent.map((m) => {
+        const status = m.status.toUpperCase();
+        return `<code>${m.id.slice(0, 8)}</code> [${status}] ${escapeHtml(m.goal.slice(0, 60))}`;
+      }).join('\n');
+      await ctx.reply(`<b>Recent Missions</b>\n\n${lines}\n\n<i>/mission &lt;goal&gt; to start a new one</i>`, { parse_mode: 'HTML' });
+      return;
+    }
+
+    await sendTyping(ctx.api, ctx.chat!.id);
+    try {
+      const { missionId, plan } = await proposeMission(goal, chatIdStr, topicId);
+
+      if (plan.needsClarification) {
+        pendingMissions.set(ctxKey, missionId);
+        await ctx.reply(
+          `I need clarification before I can plan this:\n\n${plan.clarificationQuestion ?? 'Can you be more specific about the goal?'}`,
+        );
+        return;
+      }
+
+      pendingMissions.set(ctxKey, missionId);
+      const planMsg = formatPlanForTelegram(goal, plan, missionId);
+      await ctx.reply(planMsg, { parse_mode: 'HTML' });
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      logger.error({ err }, 'Mission proposal failed');
+      await ctx.reply(`Failed to plan mission: ${errMsg}`);
+    }
+  });
+
+  // /cancel — cancel a pending or running mission
+  bot.command('cancel', async (ctx) => {
+    if (!isAuthorised(ctx.chat!.id)) return;
+    const chatIdStr = ctx.chat!.id.toString();
+    const topicId = ctx.message?.message_thread_id?.toString() ?? null;
+    const ctxKey = contextKey(chatIdStr, topicId);
+
+    const missionId = pendingMissions.get(ctxKey) || ctx.match?.trim();
+    if (!missionId) {
+      await ctx.reply('No pending mission. Use /cancel <mission-id> to cancel a specific mission.');
+      return;
+    }
+
+    cancelMission(missionId);
+    pendingMissions.delete(ctxKey);
+    await ctx.reply('Mission canceled.');
+  });
+
   // /topics — list active forum topics
   bot.command('topics', async (ctx) => {
     if (!isAuthorised(ctx.chat!.id)) return;
@@ -1063,7 +1194,7 @@ export function createBot(): Bot {
   });
 
   // Text messages — and any slash commands not owned by this bot (skills, e.g. /todo /gmail)
-  const OWN_COMMANDS = new Set(['/start', '/help', '/newchat', '/respin', '/voice', '/model', '/memory', '/forget', '/chatid', '/wa', '/slack', '/dashboard', '/stop', '/agents', '/delegate', '/topics', '/close', '/reopen']);
+  const OWN_COMMANDS = new Set(['/start', '/help', '/newchat', '/respin', '/voice', '/model', '/memory', '/forget', '/chatid', '/wa', '/slack', '/dashboard', '/stop', '/agents', '/delegate', '/mission', '/cancel', '/topics', '/close', '/reopen']);
   bot.on('message:text', async (ctx) => {
     const text = ctx.message.text;
     const chatIdStr = ctx.chat!.id.toString();

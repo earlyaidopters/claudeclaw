@@ -12,10 +12,11 @@ import { logger } from './logger.js';
 import { cleanupOldUploads } from './media.js';
 import { runConsolidation } from './memory-consolidate.js';
 import { runDecaySweep } from './memory.js';
-import { initOrchestrator } from './orchestrator.js';
+import { initMissionControl } from './mission-control.js';
 import { initScheduler } from './scheduler.js';
 import { setTelegramConnected, setBotInfo } from './state.js';
 import { initAutoArchive } from './auto-archive.js';
+import { initFleetAdvisor } from './fleet-advisor.js';
 
 // Parse --agent flag
 const agentFlagIndex = process.argv.indexOf('--agent');
@@ -144,7 +145,7 @@ async function main(): Promise<void> {
   initDatabase();
   logger.info('Database ready');
 
-  initOrchestrator();
+  initMissionControl();
 
   runDecaySweep();
   setInterval(() => runDecaySweep(), 24 * 60 * 60 * 1000);
@@ -203,6 +204,12 @@ async function main(): Promise<void> {
       // Initialize auto-archive for forum topics (main bot only)
       if (AGENT_ID === 'main') {
         initAutoArchive(bot.api);
+      }
+      // Initialize Fleet Advisor (main bot only, needs ALLOWED_CHAT_ID for sending nudges)
+      if (AGENT_ID === 'main' && ALLOWED_CHAT_ID) {
+        initFleetAdvisor(
+          (text) => bot.api.sendMessage(ALLOWED_CHAT_ID, text, { parse_mode: 'HTML' }).then(() => {}).catch((err) => logger.error({ err }, 'Fleet Advisor send failed')),
+        );
       }
       if (AGENT_ID === 'main') {
         console.log(`\n  ClaudeClaw online: @${botInfo.username}`);
