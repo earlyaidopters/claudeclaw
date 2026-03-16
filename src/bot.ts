@@ -357,10 +357,13 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
     return;
   }
 
+  // Fetch session first — if resuming, the model already has the system prompt in context.
+  const sessionId = getSession(chatIdStr, AGENT_ID);
+
   // Build memory context and prepend to message
   const memCtx = await buildMemoryContext(chatIdStr, message);
   const parts: string[] = [];
-  if (agentSystemPrompt) parts.push(`[Agent role — follow these instructions]\n${agentSystemPrompt}\n[End agent role]`);
+  if (agentSystemPrompt && !sessionId) parts.push(`[Agent role — follow these instructions]\n${agentSystemPrompt}\n[End agent role]`);
   if (memCtx) parts.push(memCtx);
 
   // Inject recent scheduled task outputs so the user can reply to them naturally.
@@ -376,8 +379,6 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
 
   parts.push(message);
   const fullMessage = parts.join('\n\n');
-
-  const sessionId = getSession(chatIdStr, AGENT_ID);
 
   // Start typing immediately, then refresh on interval
   await sendTyping(ctx.api, chatId);
@@ -1274,9 +1275,11 @@ async function processDashboardMessage(
   setProcessing(chatIdStr, true);
 
   try {
+    const sessionId = getSession(chatIdStr, AGENT_ID);
+
     const memCtx = await buildMemoryContext(chatIdStr, text);
     const dashParts: string[] = [];
-    if (agentSystemPrompt) dashParts.push(`[Agent role — follow these instructions]\n${agentSystemPrompt}\n[End agent role]`);
+    if (agentSystemPrompt && !sessionId) dashParts.push(`[Agent role — follow these instructions]\n${agentSystemPrompt}\n[End agent role]`);
     if (memCtx) dashParts.push(memCtx);
 
     const recentDashTasks = getRecentTaskOutputs(AGENT_ID, 30);
@@ -1290,7 +1293,6 @@ async function processDashboardMessage(
 
     dashParts.push(text);
     const fullMessage = dashParts.join('\n\n');
-    const sessionId = getSession(chatIdStr, AGENT_ID);
 
     const onProgress = (event: AgentProgressEvent) => {
       emitChatEvent({ type: 'progress', chatId: chatIdStr, description: event.description });
