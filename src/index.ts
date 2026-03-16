@@ -12,7 +12,7 @@ import { logger } from './logger.js';
 import { cleanupOldUploads } from './media.js';
 import { runConsolidation } from './memory-consolidate.js';
 import { runDecaySweep } from './memory.js';
-import { initOrchestrator } from './orchestrator.js';
+import { initMissionControl } from './mission-control.js';
 import { initScheduler } from './scheduler.js';
 import { setTelegramConnected, setBotInfo } from './state.js';
 import { initAutoArchive } from './auto-archive.js';
@@ -144,7 +144,7 @@ async function main(): Promise<void> {
   initDatabase();
   logger.info('Database ready');
 
-  initOrchestrator();
+  initMissionControl();
 
   runDecaySweep();
   setInterval(() => runDecaySweep(), 24 * 60 * 60 * 1000);

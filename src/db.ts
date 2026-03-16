@@ -241,6 +241,44 @@ function createSchema(database: Database.Database): void {
       INSERT INTO memories_fts(rowid, summary, raw_text, entities, topics)
         VALUES (new.id, new.summary, new.raw_text, new.entities, new.topics);
     END;
+
+    -- ── Mission Control ────────────────────────────────────────────────
+    -- Missions: high-level goals decomposed into subtasks by Data.
+    -- Task lifecycle follows A2A states: pending → approved → working → completed/failed/canceled.
+
+    CREATE TABLE IF NOT EXISTS missions (
+      id              TEXT PRIMARY KEY,
+      chat_id         TEXT NOT NULL,
+      topic_id        TEXT,
+      goal            TEXT NOT NULL,
+      plan_json       TEXT NOT NULL DEFAULT '[]',
+      status          TEXT NOT NULL DEFAULT 'pending',
+      result_summary  TEXT,
+      created_at      INTEGER NOT NULL,
+      approved_at     INTEGER,
+      completed_at    INTEGER
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_missions_status ON missions(status, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_missions_chat ON missions(chat_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS mission_subtasks (
+      id                    TEXT PRIMARY KEY,
+      mission_id            TEXT NOT NULL,
+      agent_id              TEXT,
+      agent_type            TEXT NOT NULL DEFAULT 'worker',
+      prompt                TEXT NOT NULL,
+      verification_criteria TEXT,
+      depends_on            TEXT DEFAULT '[]',
+      status                TEXT NOT NULL DEFAULT 'pending',
+      result                TEXT,
+      error                 TEXT,
+      started_at            INTEGER,
+      completed_at          INTEGER,
+      cost_usd              REAL NOT NULL DEFAULT 0
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_subtasks_mission ON mission_subtasks(mission_id, status);
   `);
 }
 
@@ -1637,4 +1675,152 @@ export function getStaleForumTopics(chatId: string, maxAgeDays: number): ForumTo
   return db
     .prepare('SELECT * FROM forum_topics WHERE chat_id = ? AND status = ? AND last_active_at < ?')
     .all(chatId, 'active', cutoff) as ForumTopic[];
+}
+
+// ── Mission Control CRUD ─────────────────────────────────────────────
+
+export interface Mission {
+  id: string;
+  chat_id: string;
+  topic_id: string | null;
+  goal: string;
+  plan_json: string;
+  status: string;
+  result_summary: string | null;
+  created_at: number;
+  approved_at: number | null;
+  completed_at: number | null;
+}
+
+export interface MissionSubtask {
+  id: string;
+  mission_id: string;
+  agent_id: string | null;
+  agent_type: string;
+  prompt: string;
+  verification_criteria: string | null;
+  depends_on: string;
+  status: string;
+  result: string | null;
+  error: string | null;
+  started_at: number | null;
+  completed_at: number | null;
+  cost_usd: number;
+}
+
+export type MissionStatus = 'pending' | 'approved' | 'working' | 'completed' | 'failed' | 'canceled';
+export type SubtaskStatus = 'pending' | 'working' | 'completed' | 'failed' | 'canceled';
+
+export function createMission(
+  id: string,
+  chatId: string,
+  goal: string,
+  planJson: string,
+  topicId?: string | null,
+): void {
+  const now = Math.floor(Date.now() / 1000);
+  db.prepare(
+    `INSERT INTO missions (id, chat_id, topic_id, goal, plan_json, status, created_at)
+     VALUES (?, ?, ?, ?, ?, 'pending', ?)`,
+  ).run(id, chatId, topicId ?? null, goal, planJson, now);
+}
+
+export function getMission(id: string): Mission | undefined {
+  return db.prepare('SELECT * FROM missions WHERE id = ?').get(id) as Mission | undefined;
+}
+
+export function getMissionsByChat(chatId: string, limit = 10): Mission[] {
+  return db
+    .prepare('SELECT * FROM missions WHERE chat_id = ? ORDER BY created_at DESC LIMIT ?')
+    .all(chatId, limit) as Mission[];
+}
+
+export function getMissionsByStatus(status: MissionStatus, limit = 20): Mission[] {
+  return db
+    .prepare('SELECT * FROM missions WHERE status = ? ORDER BY created_at DESC LIMIT ?')
+    .all(status, limit) as Mission[];
+}
+
+export function updateMissionStatus(id: string, status: MissionStatus): void {
+  const now = Math.floor(Date.now() / 1000);
+  if (status === 'approved') {
+    db.prepare('UPDATE missions SET status = ?, approved_at = ? WHERE id = ?').run(status, now, id);
+  } else if (status === 'completed' || status === 'failed' || status === 'canceled') {
+    db.prepare('UPDATE missions SET status = ?, completed_at = ? WHERE id = ?').run(status, now, id);
+  } else {
+    db.prepare('UPDATE missions SET status = ? WHERE id = ?').run(status, id);
+  }
+}
+
+export function setMissionResult(id: string, summary: string): void {
+  db.prepare('UPDATE missions SET result_summary = ? WHERE id = ?').run(summary, id);
+}
+
+export function updateMissionPlan(id: string, planJson: string): void {
+  db.prepare('UPDATE missions SET plan_json = ? WHERE id = ?').run(planJson, id);
+}
+
+export function createMissionSubtask(
+  id: string,
+  missionId: string,
+  prompt: string,
+  opts: {
+    agentId?: string;
+    agentType?: 'named' | 'worker';
+    verificationCriteria?: string;
+    dependsOn?: string[];
+  } = {},
+): void {
+  db.prepare(
+    `INSERT INTO mission_subtasks (id, mission_id, agent_id, agent_type, prompt, verification_criteria, depends_on, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')`,
+  ).run(
+    id,
+    missionId,
+    opts.agentId ?? null,
+    opts.agentType ?? 'worker',
+    prompt,
+    opts.verificationCriteria ?? null,
+    JSON.stringify(opts.dependsOn ?? []),
+  );
+}
+
+export function getMissionSubtasks(missionId: string): MissionSubtask[] {
+  return db
+    .prepare('SELECT * FROM mission_subtasks WHERE mission_id = ? ORDER BY rowid ASC')
+    .all(missionId) as MissionSubtask[];
+}
+
+export function getSubtask(id: string): MissionSubtask | undefined {
+  return db.prepare('SELECT * FROM mission_subtasks WHERE id = ?').get(id) as MissionSubtask | undefined;
+}
+
+export function updateSubtaskStatus(id: string, status: SubtaskStatus): void {
+  const now = Math.floor(Date.now() / 1000);
+  if (status === 'working') {
+    db.prepare('UPDATE mission_subtasks SET status = ?, started_at = ? WHERE id = ?').run(status, now, id);
+  } else if (status === 'completed' || status === 'failed' || status === 'canceled') {
+    db.prepare('UPDATE mission_subtasks SET status = ?, completed_at = ? WHERE id = ?').run(status, now, id);
+  } else {
+    db.prepare('UPDATE mission_subtasks SET status = ? WHERE id = ?').run(status, id);
+  }
+}
+
+export function setSubtaskResult(id: string, result: string, costUsd = 0): void {
+  db.prepare('UPDATE mission_subtasks SET result = ?, cost_usd = ? WHERE id = ?').run(result, costUsd, id);
+}
+
+export function setSubtaskError(id: string, error: string): void {
+  db.prepare('UPDATE mission_subtasks SET error = ? WHERE id = ?').run(error, id);
+}
+
+export function getReadySubtasks(missionId: string): MissionSubtask[] {
+  const all = getMissionSubtasks(missionId);
+  const completed = new Set(all.filter((s) => s.status === 'completed').map((s) => s.id));
+
+  return all.filter((s) => {
+    if (s.status !== 'pending') return false;
+    const deps: string[] = JSON.parse(s.depends_on || '[]');
+    return deps.every((d) => completed.has(d));
+  });
 }

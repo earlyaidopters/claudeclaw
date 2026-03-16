@@ -5,12 +5,22 @@ import yaml from 'js-yaml';
 import { CLAUDECLAW_CONFIG, PROJECT_ROOT } from './config.js';
 import { readEnvFile } from './env.js';
 
+export interface AgentSkillConfig {
+  name: string;
+  description: string;
+  examples?: string[];
+  verification?: string;
+}
+
 export interface AgentConfig {
   name: string;
   description: string;
+  type: 'named' | 'worker';
   botTokenEnv: string;
   botToken: string;
   model?: string;
+  skills: AgentSkillConfig[];
+  tags: string[];
   obsidian?: {
     vault: string;
     folders: string[];
@@ -58,18 +68,47 @@ export function loadAgentConfig(agentId: string): AgentConfig {
 
   const name = raw['name'] as string;
   const description = (raw['description'] as string) ?? '';
-  const botTokenEnv = raw['telegram_bot_token_env'] as string;
+  const agentType = (raw['type'] as string) === 'worker' ? 'worker' as const : 'named' as const;
+  const botTokenEnv = (raw['telegram_bot_token_env'] as string) ?? '';
   const model = raw['model'] as string | undefined;
 
-  if (!name || !botTokenEnv) {
-    throw new Error(`Agent config ${configPath} must have 'name' and 'telegram_bot_token_env'`);
+  // Named agents require a bot token. Worker agents do not.
+  if (!name) {
+    throw new Error(`Agent config ${configPath} must have 'name'`);
   }
 
-  const env = readEnvFile([botTokenEnv]);
-  const botToken = process.env[botTokenEnv] || env[botTokenEnv] || '';
-  if (!botToken) {
-    throw new Error(`Bot token not found: set ${botTokenEnv} in .env`);
+  let botToken = '';
+  if (agentType === 'named') {
+    if (!botTokenEnv) {
+      throw new Error(`Named agent config ${configPath} must have 'telegram_bot_token_env'`);
+    }
+    const env = readEnvFile([botTokenEnv]);
+    botToken = process.env[botTokenEnv] || env[botTokenEnv] || '';
+    if (!botToken) {
+      throw new Error(`Bot token not found: set ${botTokenEnv} in .env`);
+    }
   }
+
+  // Parse skills array (optional)
+  const skills: AgentSkillConfig[] = [];
+  const rawSkills = raw['skills'] as Array<Record<string, unknown>> | undefined;
+  if (rawSkills && Array.isArray(rawSkills)) {
+    for (const s of rawSkills) {
+      skills.push({
+        name: (s['name'] as string) ?? 'default',
+        description: (s['description'] as string) ?? '',
+        examples: s['examples'] as string[] | undefined,
+        verification: s['verification'] as string | undefined,
+      });
+    }
+  }
+  // Fall back to a single skill from description if none declared
+  if (skills.length === 0 && description) {
+    skills.push({ name: 'default', description });
+  }
+
+  // Parse tags array (optional)
+  const tags = (raw['tags'] as string[]) ?? [];
 
   let obsidian: AgentConfig['obsidian'];
   const obsRaw = raw['obsidian'] as Record<string, unknown> | undefined;
@@ -81,7 +120,7 @@ export function loadAgentConfig(agentId: string): AgentConfig {
     };
   }
 
-  return { name, description, botTokenEnv, botToken, model, obsidian };
+  return { name, description, type: agentType, botTokenEnv, botToken, model, skills, tags, obsidian };
 }
 
 /** List all configured agent IDs (directories under agents/ with agent.yaml).

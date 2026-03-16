@@ -25,7 +25,7 @@ import { logger } from './logger.js';
 import { downloadMedia, buildPhotoMessage, buildDocumentMessage, buildVideoMessage } from './media.js';
 import { buildMemoryContext, saveConversationTurn, triggerMemoryIngestion } from './memory.js';
 import { messageQueue } from './message-queue.js';
-import { parseDelegation, delegateToAgent, getAvailableAgents } from './orchestrator.js';
+import { parseDelegation, delegateToAgent, getAvailableAgents } from './mission-control.js';
 import { emitChatEvent, setProcessing, setActiveAbort, abortActiveQuery } from './state.js';
 import { createTopic, closeTopic, reopenTopic, listTopics, recordTopicActivity, isForum, findArchivedTopicByName } from './topic-manager.js';
 import { classifyMessage } from './topic-classifier.js';
