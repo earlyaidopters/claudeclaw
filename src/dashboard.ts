@@ -337,6 +337,30 @@ export function startDashboard(botApi?: Api<RawApi>): void {
     return c.json({ ok: aborted });
   });
 
+  // Projects status
+  app.get('/api/projects', (c) => {
+    try {
+      const projectsFile = path.join(STORE_DIR, 'projects.json');
+      if (!fs.existsSync(projectsFile)) return c.json({ projects: [] });
+      const data = JSON.parse(fs.readFileSync(projectsFile, 'utf-8'));
+      return c.json(data);
+    } catch {
+      return c.json({ projects: [] });
+    }
+  });
+
+  // Orchestration issues log
+  app.get('/api/orchestration/issues', (c) => {
+    try {
+      const issuesFile = path.join(STORE_DIR, 'orchestration-issues.json');
+      if (!fs.existsSync(issuesFile)) return c.json({ issues: [] });
+      const data = JSON.parse(fs.readFileSync(issuesFile, 'utf-8'));
+      return c.json(data);
+    } catch {
+      return c.json({ issues: [] });
+    }
+  });
+
   serve({ fetch: app.fetch, port: DASHBOARD_PORT }, () => {
     logger.info({ port: DASHBOARD_PORT }, 'Dashboard server running');
   });

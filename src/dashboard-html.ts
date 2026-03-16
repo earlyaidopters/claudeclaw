@@ -188,6 +188,12 @@ export function getDashboardHtml(token: string, chatId: string): string {
   <div id="agents-container" class="flex flex-wrap gap-3"></div>
 </div>
 
+<!-- Projects Status -->
+<div id="projects-section" class="mb-5" style="display:none">
+  <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-2">Projects</h2>
+  <div id="projects-container" class="flex flex-col gap-3"></div>
+</div>
+
 <!-- Hive Mind Feed -->
 <div id="hive-section" class="mb-5" style="display:none">
   <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-2">Hive Mind<button class="privacy-toggle" onclick="toggleSectionBlur('hive')" title="Toggle blur">&#128065;</button></h2>
@@ -320,6 +326,13 @@ export function getDashboardHtml(token: string, chatId: string): string {
 </div><!-- end RIGHT COLUMN -->
 
 </div><!-- end grid -->
+
+<!-- Orchestration Issues -->
+<div id="issues-section" class="mt-5 mb-5" style="display:none">
+  <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-2">Orchestration Issues</h2>
+  <div id="issues-container"></div>
+</div>
+
 </div><!-- end outer wrapper -->
 
 <!-- Memory drill-down drawer -->
@@ -871,10 +884,98 @@ async function loadSummary() {
   } catch {}
 }
 
+// ── Projects & Issues ────────────────────────────────────────────────
+
+const PROJECT_STATUS_COLORS = {
+  in_progress: { bg: 'rgba(59,130,246,0.12)', border: '#1d4ed8', badge: '#3b82f6', label: 'In Progress' },
+  blocked:     { bg: 'rgba(239,68,68,0.1)',   border: '#991b1b', badge: '#ef4444', label: 'Blocked' },
+  paused:      { bg: 'rgba(107,114,128,0.1)', border: '#374151', badge: '#6b7280', label: 'Paused' },
+  complete:    { bg: 'rgba(34,197,94,0.1)',   border: '#166534', badge: '#22c55e', label: 'Complete' },
+};
+
+async function loadProjects() {
+  try {
+    const r = await fetch('/api/projects?token=' + TOKEN);
+    const data = await r.json();
+    const projects = data.projects || [];
+    const section = document.getElementById('projects-section');
+    const container = document.getElementById('projects-container');
+    if (!projects.length) { section.style.display = 'none'; return; }
+    section.style.display = '';
+
+    container.innerHTML = projects.map(p => {
+      const s = PROJECT_STATUS_COLORS[p.status] || PROJECT_STATUS_COLORS.in_progress;
+      const blockers = (p.blockers || []).map(b =>
+        '<div class="text-xs mt-1" style="color:#f87171">&#9888; ' + b + '</div>'
+      ).join('');
+      const waiting = (p.waiting_on_matthew || []).map(w =>
+        '<div class="text-xs mt-1" style="color:#fbbf24">&#9679; Waiting: ' + w + '</div>'
+      ).join('');
+      const agentBadge = p.agent
+        ? '<span class="pill" style="background:rgba(99,102,241,0.2);color:#a5b4fc;margin-left:6px">' + p.agent + '</span>'
+        : '';
+      return \`<div class="card" style="border-color:\${s.border};background:\${s.bg}">
+        <div class="flex items-center justify-between mb-1">
+          <span class="font-semibold text-sm text-white">\${p.name}\${agentBadge}</span>
+          <span class="pill" style="background:\${s.bg};color:\${s.badge};border:1px solid \${s.border}">\${s.label}</span>
+        </div>
+        <div class="text-xs text-gray-400 mb-1">\${p.phase || ''}</div>
+        <div class="text-xs" style="color:#9ca3af">\${p.description || ''}</div>
+        \${blockers}\${waiting}
+      </div>\`;
+    }).join('');
+  } catch(e) { console.error('projects load failed', e); }
+}
+
+const ISSUE_SEVERITY_COLORS = {
+  critical: { bg: 'rgba(248,81,73,0.12)', border: '#991b1b', badge: '#f85149', label: 'CRITICAL' },
+  high:     { bg: 'rgba(240,136,62,0.12)', border: '#92400e', badge: '#f0883e', label: 'HIGH' },
+  medium:   { bg: 'rgba(251,191,36,0.1)',  border: '#78350f', badge: '#fbbf24', label: 'MEDIUM' },
+  low:      { bg: 'rgba(107,114,128,0.1)', border: '#374151', badge: '#6b7280', label: 'LOW' },
+};
+
+const ISSUE_STATUS_COLORS = {
+  open:          '#f85149',
+  investigating: '#fbbf24',
+  resolved:      '#22c55e',
+};
+
+async function loadOrchestrationIssues() {
+  try {
+    const r = await fetch('/api/orchestration/issues?token=' + TOKEN);
+    const data = await r.json();
+    const issues = (data.issues || []).filter(i => i.status !== 'resolved');
+    const section = document.getElementById('issues-section');
+    const container = document.getElementById('issues-container');
+    if (!issues.length) { section.style.display = 'none'; return; }
+    section.style.display = '';
+
+    container.innerHTML = issues.map(issue => {
+      const sev = ISSUE_SEVERITY_COLORS[issue.severity] || ISSUE_SEVERITY_COLORS.low;
+      const statusColor = ISSUE_STATUS_COLORS[issue.status] || '#6b7280';
+      const tags = (issue.tags || []).map(t =>
+        '<span class="pill" style="background:rgba(107,114,128,0.2);color:#9ca3af;font-size:10px">' + t + '</span>'
+      ).join('');
+      return \`<details class="card mb-2" style="border-color:\${sev.border};background:\${sev.bg}">
+        <summary class="flex items-center gap-2 cursor-pointer" style="list-style:none">
+          <span class="pill" style="background:\${sev.bg};color:\${sev.badge};border:1px solid \${sev.border};font-size:10px">\${sev.label}</span>
+          <span class="text-sm font-medium text-white flex-1">\${issue.title}</span>
+          <span class="text-xs" style="color:\${statusColor}">\${issue.status}</span>
+        </summary>
+        <div class="mt-3 text-xs" style="color:#9ca3af">
+          <div class="mb-2">\${issue.description || ''}</div>
+          \${issue.workaround ? '<div class="mt-2" style="color:#fbbf24"><strong>Workaround:</strong> ' + issue.workaround + '</div>' : ''}
+          <div class="mt-2 flex gap-1 flex-wrap">\${tags}</div>
+        </div>
+      </details>\`;
+    }).join('');
+  } catch(e) { console.error('issues load failed', e); }
+}
+
 async function refreshAll() {
   const btn = document.getElementById('refresh-btn').querySelector('svg');
   btn.classList.add('refresh-spin');
-  await Promise.all([loadInfo(), loadTasks(), loadMemories(), loadHealth(), loadTokens(), loadAgents(), loadHiveMind(), loadSummary()]);
+  await Promise.all([loadInfo(), loadTasks(), loadMemories(), loadHealth(), loadTokens(), loadAgents(), loadHiveMind(), loadSummary(), loadProjects(), loadOrchestrationIssues()]);
   btn.classList.remove('refresh-spin');
   document.getElementById('last-updated').textContent = new Date().toLocaleTimeString();
 }
