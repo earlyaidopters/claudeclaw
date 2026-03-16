@@ -1,5 +1,6 @@
 import { generateContent, parseJsonResponse } from './gemini.js';
 import { embedText } from './embeddings.js';
+import { GOOGLE_API_KEY } from './config.js';
 import { saveStructuredMemory, saveMemoryEmbedding } from './db.js';
 import { logger } from './logger.js';
 
@@ -60,6 +61,9 @@ export async function ingestConversationTurn(
   userMessage: string,
   assistantResponse: string,
 ): Promise<boolean> {
+  // Skip if Gemini is not configured
+  if (!GOOGLE_API_KEY) return false;
+
   // Hard filter: skip very short messages and commands
   if (userMessage.length <= 15 || userMessage.startsWith('/')) return false;
 
