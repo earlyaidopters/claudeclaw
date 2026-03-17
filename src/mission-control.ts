@@ -16,7 +16,7 @@ import fs from 'fs';
 import { runAgent, UsageInfo } from './agent.js';
 import { loadAgentConfig, resolveAgentClaudeMd, listAgentIds } from './agent-config.js';
 import { AgentCard, loadAllAgentCards, matchAgents } from './agent-card.js';
-import { PROJECT_ROOT, AGENT_TIMEOUT_MS } from './config.js';
+import { PROJECT_ROOT, SUBTASK_TIMEOUT_MS, MISSION_TIMEOUT_MS, MISSION_MAX_RETRIES } from './config.js';
 import {
   createMission,
   createMissionSubtask,
@@ -81,9 +81,6 @@ let agentCards: AgentCard[] = [];
 
 /** Max concurrent worker agents. Configurable via MISSION_MAX_WORKERS. */
 const MAX_WORKERS = parseInt(process.env.MISSION_MAX_WORKERS || '3', 10);
-
-/** Default timeout for a single subtask (ms). */
-const SUBTASK_TIMEOUT_MS = AGENT_TIMEOUT_MS;
 
 // ── Initialization ───────────────────────────────────────────────────
 
@@ -231,6 +228,7 @@ export async function proposeMission(
 export async function approveMission(
   missionId: string,
   onProgress?: (progress: MissionProgress) => void,
+  externalAbort?: AbortSignal,
 ): Promise<MissionResult> {
   const mission = getMission(missionId);
   if (!mission) throw new Error(`Mission not found: ${missionId}`);
@@ -241,16 +239,28 @@ export async function approveMission(
   updateMissionStatus(missionId, 'approved');
   updateMissionStatus(missionId, 'working');
 
-  const start = Date.now();
+  // Mission-level abort: combines external signal (from /stop) with wall-clock timeout
+  const missionAbort = new AbortController();
+  const missionTimer = setTimeout(() => {
+    logger.warn({ missionId, timeoutMs: MISSION_TIMEOUT_MS }, 'Mission timed out');
+    missionAbort.abort();
+  }, MISSION_TIMEOUT_MS);
+
+  // Forward external abort (e.g. /stop) to mission abort
+  const onExternalAbort = () => missionAbort.abort();
+  externalAbort?.addEventListener('abort', onExternalAbort);
 
   try {
-    const result = await executeMission(missionId, onProgress);
+    const result = await executeMission(missionId, onProgress, missionAbort.signal);
     return result;
   } catch (err) {
     updateMissionStatus(missionId, 'failed');
     const errMsg = err instanceof Error ? err.message : String(err);
     setMissionResult(missionId, `Mission failed: ${errMsg}`);
     throw err;
+  } finally {
+    clearTimeout(missionTimer);
+    externalAbort?.removeEventListener('abort', onExternalAbort);
   }
 }
 
@@ -315,32 +325,62 @@ export function cancelMission(missionId: string): void {
 async function executeMission(
   missionId: string,
   onProgress?: (progress: MissionProgress) => void,
+  missionAbort?: AbortSignal,
 ): Promise<MissionResult> {
   const mission = getMission(missionId)!;
   const start = Date.now();
 
   // Execute subtasks in dependency order, parallelizing where possible
   let hasFailure = false;
+  const retryCounts = new Map<string, number>();
 
   while (true) {
+    // Check mission-level abort before each batch
+    if (missionAbort?.aborted) {
+      logger.warn({ missionId }, 'Mission aborted before next batch');
+      cancelMission(missionId);
+      hasFailure = true;
+      break;
+    }
+
     const ready = getReadySubtasks(missionId);
     if (ready.length === 0) break;
 
     // Run up to MAX_WORKERS subtasks in parallel
     const batch = ready.slice(0, MAX_WORKERS);
     const results = await Promise.allSettled(
-      batch.map((st) => executeSubtask(st, missionId, mission.chat_id, onProgress)),
+      batch.map((st) => executeSubtask(st, missionId, mission.chat_id, onProgress, missionAbort)),
     );
 
     for (let i = 0; i < results.length; i++) {
       const result = results[i];
       if (result.status === 'rejected') {
-        hasFailure = true;
-        logger.error({ subtaskId: batch[i].id, err: result.reason }, 'Subtask execution failed');
+        const subtask = batch[i];
+        const errMsg = result.reason instanceof Error ? result.reason.message : String(result.reason);
+        const isTimeout = errMsg.includes('Timed out') || errMsg.includes('aborted');
+        const retries = retryCounts.get(subtask.id) ?? 0;
+
+        if (isTimeout && !missionAbort?.aborted && retries < MISSION_MAX_RETRIES) {
+          // Retry: reset subtask to pending so getReadySubtasks picks it up next loop
+          retryCounts.set(subtask.id, retries + 1);
+          updateSubtaskStatus(subtask.id, 'pending');
+          setSubtaskError(subtask.id, '');
+          logger.warn({ subtaskId: subtask.id, retryCount: retries + 1 }, 'Retrying timed-out subtask');
+          onProgress?.({
+            missionId, subtaskId: subtask.id, agentId: subtask.agent_id,
+            status: 'started', description: `Retrying (attempt ${retries + 2}): ${subtask.prompt.slice(0, 60)}`,
+          });
+          // Backoff before retry: 5s * 2^retry, max 30s
+          const backoff = Math.min(5000 * Math.pow(2, retries), 30000);
+          await new Promise((r) => setTimeout(r, backoff));
+        } else {
+          hasFailure = true;
+          logger.error({ subtaskId: subtask.id, retryCount: retries, err: result.reason }, 'Subtask permanently failed');
+        }
       }
     }
 
-    // If any subtask failed, stop the mission
+    // If any subtask permanently failed, stop the mission
     if (hasFailure) break;
   }
 
@@ -403,6 +443,7 @@ async function executeSubtask(
   missionId: string,
   chatId: string,
   onProgress?: (progress: MissionProgress) => void,
+  missionAbort?: AbortSignal,
 ): Promise<void> {
   const agentId = subtask.agent_id ?? 'worker';
 
@@ -417,6 +458,10 @@ async function executeSubtask(
 
   const abortCtrl = new AbortController();
   const timer = setTimeout(() => abortCtrl.abort(), SUBTASK_TIMEOUT_MS);
+
+  // Link mission-level abort to this subtask's abort controller
+  const onMissionAbort = () => abortCtrl.abort();
+  missionAbort?.addEventListener('abort', onMissionAbort);
 
   try {
     // Load agent system prompt if agent is specified
@@ -446,6 +491,7 @@ async function executeSubtask(
 
     const result = await runAgent(fullPrompt, undefined, () => {}, undefined, model, abortCtrl);
     clearTimeout(timer);
+    missionAbort?.removeEventListener('abort', onMissionAbort);
 
     if (result.aborted) {
       updateSubtaskStatus(subtask.id, 'failed');
@@ -474,10 +520,27 @@ async function executeSubtask(
     );
   } catch (err) {
     clearTimeout(timer);
+    missionAbort?.removeEventListener('abort', onMissionAbort);
+
+    // P1-6: Normalize abort-during-cleanup as timeout, not unexpected error
+    if (abortCtrl.signal.aborted && !(err instanceof Error && err.message === 'Subtask timed out')) {
+      updateSubtaskStatus(subtask.id, 'failed');
+      setSubtaskError(subtask.id, 'Timed out');
+      onProgress?.({
+        missionId, subtaskId: subtask.id, agentId: subtask.agent_id,
+        status: 'failed', description: 'Subtask timed out',
+      });
+      logToHiveMind(agentId, chatId, 'subtask_error', `Subtask timed out: ${subtask.prompt.slice(0, 60)}`);
+      throw new Error('Subtask timed out');
+    }
+
     const errMsg = err instanceof Error ? err.message : String(err);
 
-    updateSubtaskStatus(subtask.id, 'failed');
-    setSubtaskError(subtask.id, errMsg.slice(0, 2000));
+    // Only update DB if not already marked by the abort path above
+    if (!abortCtrl.signal.aborted) {
+      updateSubtaskStatus(subtask.id, 'failed');
+      setSubtaskError(subtask.id, errMsg.slice(0, 2000));
+    }
 
     onProgress?.({
       missionId, subtaskId: subtask.id, agentId: subtask.agent_id,

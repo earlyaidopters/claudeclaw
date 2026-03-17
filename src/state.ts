@@ -97,3 +97,31 @@ export function abortActiveQuery(chatId: string, topicId?: string | null): boole
   }
   return false;
 }
+
+// ── Active mission abort (separate lifecycle from per-message abort) ──
+
+const _activeMissionAbort = new Map<string, { missionId: string; ctrl: AbortController }>();
+
+export function setActiveMissionAbort(
+  chatId: string, missionId: string, ctrl: AbortController | null, topicId?: string | null,
+): void {
+  const key = contextKey(chatId, topicId);
+  if (ctrl && missionId) _activeMissionAbort.set(key, { missionId, ctrl });
+  else _activeMissionAbort.delete(key);
+}
+
+export function abortActiveMission(chatId: string, topicId?: string | null): boolean {
+  const key = contextKey(chatId, topicId);
+  const entry = _activeMissionAbort.get(key);
+  if (entry) {
+    entry.ctrl.abort();
+    _activeMissionAbort.delete(key);
+    return true;
+  }
+  return false;
+}
+
+export function getActiveMissionId(chatId: string, topicId?: string | null): string | null {
+  const key = contextKey(chatId, topicId);
+  return _activeMissionAbort.get(key)?.missionId ?? null;
+}

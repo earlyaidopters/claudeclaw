@@ -37,7 +37,7 @@ import {
   formatPlanForTelegram,
   MissionProgress,
 } from './mission-control.js';
-import { emitChatEvent, setProcessing, setActiveAbort, abortActiveQuery } from './state.js';
+import { emitChatEvent, setProcessing, setActiveAbort, abortActiveQuery, setActiveMissionAbort, abortActiveMission, getActiveMissionId } from './state.js';
 import { createTopic, closeTopic, reopenTopic, listTopics, recordTopicActivity, isForum, findArchivedTopicByName } from './topic-manager.js';
 import { classifyMessage } from './topic-classifier.js';
 import { TOPIC_CLASSIFY_ENABLED, FORUM_CHAT_ID } from './config.js';
@@ -355,28 +355,40 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
 
     if (lower === 'go' || lower === 'approve' || lower === 'yes') {
       pendingMissions.delete(ctxKey);
-      setProcessing(chatIdStr, true, topicId);
-      await ctx.reply('Mission approved. Executing...');
 
-      try {
-        const result = await approveMission(pendingMissionId, (progress: MissionProgress) => {
-          const emoji = progress.status === 'started' ? '▶️' : progress.status === 'completed' ? '✅' : '❌';
-          void ctx.reply(`${emoji} ${progress.description}`).catch(() => {});
-        });
-
-        const costStr = result.totalCostUsd > 0 ? ` | $${result.totalCostUsd.toFixed(3)}` : '';
-        const header = `Mission ${result.status} (${Math.round(result.durationMs / 1000)}s${costStr})`;
-
-        for (const part of splitMessage(formatForTelegram(`<b>${header}</b>\n\n${result.summary}`))) {
-          await ctx.reply(part, { parse_mode: 'HTML' });
-        }
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        logger.error({ err, missionId: pendingMissionId }, 'Mission execution failed');
-        await ctx.reply(`Mission failed: ${errMsg}`);
-      } finally {
-        setProcessing(chatIdStr, false, topicId);
+      // Reject if a mission is already running in this context
+      const activeMission = getActiveMissionId(chatIdStr, topicId);
+      if (activeMission) {
+        await ctx.reply('A mission is already running. Use /stop to cancel it first.');
+        return;
       }
+
+      const missionAbort = new AbortController();
+      setActiveMissionAbort(chatIdStr, pendingMissionId, missionAbort, topicId);
+      await ctx.reply('Mission approved. Running in background -- updates will appear here.');
+
+      // Fire-and-forget: returns immediately, frees messageQueue
+      void (async () => {
+        try {
+          const result = await approveMission(pendingMissionId, (progress: MissionProgress) => {
+            const emoji = progress.status === 'started' ? '▶️' : progress.status === 'completed' ? '✅' : '❌';
+            void ctx.reply(`${emoji} ${progress.description}`).catch(() => {});
+          }, missionAbort.signal);
+
+          const costStr = result.totalCostUsd > 0 ? ` | $${result.totalCostUsd.toFixed(3)}` : '';
+          const header = `Mission ${result.status} (${Math.round(result.durationMs / 1000)}s${costStr})`;
+
+          for (const part of splitMessage(formatForTelegram(`<b>${header}</b>\n\n${result.summary}`))) {
+            await ctx.reply(part, { parse_mode: 'HTML' });
+          }
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          logger.error({ err, missionId: pendingMissionId }, 'Mission execution failed');
+          await ctx.reply(`Mission failed: ${errMsg}`).catch(() => {});
+        } finally {
+          setActiveMissionAbort(chatIdStr, pendingMissionId, null, topicId);
+        }
+      })();
       return;
     }
 
@@ -1030,14 +1042,16 @@ export function createBot(): Bot {
     await ctx.reply(`<a href="${url}">Open Dashboard</a>`, { parse_mode: 'HTML' });
   });
 
-  // /stop — interrupt the current agent query
+  // /stop — interrupt the current agent query or running mission
   bot.command('stop', async (ctx) => {
     if (!isAuthorised(ctx.chat!.id)) return;
     const chatIdStr = ctx.chat!.id.toString();
     const topicId = ctx.message?.message_thread_id?.toString() ?? null;
-    const aborted = abortActiveQuery(chatIdStr, topicId);
-    if (aborted) {
-      await ctx.reply('Stopped.');
+    const abortedQuery = abortActiveQuery(chatIdStr, topicId);
+    const abortedMission = abortActiveMission(chatIdStr, topicId);
+    if (abortedQuery || abortedMission) {
+      const what = [abortedQuery && 'query', abortedMission && 'mission'].filter(Boolean).join(' + ');
+      await ctx.reply(`Stopped (${what}).`);
     } else {
       await ctx.reply('Nothing running.');
     }
