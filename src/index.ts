@@ -12,12 +12,8 @@ import { logger } from './logger.js';
 import { cleanupOldUploads } from './media.js';
 import { runConsolidation } from './memory-consolidate.js';
 import { runDecaySweep } from './memory.js';
-import { initMissionControl } from './mission-control.js';
 import { initScheduler } from './scheduler.js';
 import { setTelegramConnected, setBotInfo } from './state.js';
-import { initAutoArchive } from './auto-archive.js';
-import { initFleetAdvisor } from './fleet-advisor.js';
-import { initEcosystemAwareness } from './ecosystem-awareness.js';
 
 // Parse --agent flag
 const agentFlagIndex = process.argv.indexOf('--agent');
@@ -146,8 +142,6 @@ async function main(): Promise<void> {
   initDatabase();
   logger.info('Database ready');
 
-  initMissionControl();
-
   runDecaySweep();
   setInterval(() => runDecaySweep(), 24 * 60 * 60 * 1000);
 
@@ -202,22 +196,6 @@ async function main(): Promise<void> {
       setTelegramConnected(true);
       setBotInfo(botInfo.username ?? '', botInfo.first_name ?? 'ClaudeClaw');
       logger.info({ username: botInfo.username }, 'ClaudeClaw is running');
-      // Initialize auto-archive for forum topics (main bot only)
-      if (AGENT_ID === 'main') {
-        initAutoArchive(bot.api);
-      }
-      // Initialize Fleet Advisor (main bot only, needs ALLOWED_CHAT_ID for sending nudges)
-      if (AGENT_ID === 'main' && ALLOWED_CHAT_ID) {
-        initFleetAdvisor(
-          (text) => bot.api.sendMessage(ALLOWED_CHAT_ID, text, { parse_mode: 'HTML' }).then(() => {}).catch((err) => logger.error({ err }, 'Fleet Advisor send failed')),
-        );
-      }
-      // Initialize Ecosystem Awareness (main bot only — reads project manifests, nudges about stale projects)
-      if (AGENT_ID === 'main' && ALLOWED_CHAT_ID) {
-        initEcosystemAwareness(
-          (text) => bot.api.sendMessage(ALLOWED_CHAT_ID, text, { parse_mode: 'HTML' }).then(() => {}).catch((err) => logger.error({ err }, 'Ecosystem Awareness send failed')),
-        );
-      }
       if (AGENT_ID === 'main') {
         console.log(`\n  ClaudeClaw online: @${botInfo.username}`);
         if (!ALLOWED_CHAT_ID) {

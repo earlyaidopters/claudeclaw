@@ -21,30 +21,12 @@ import {
   AGENT_TIMEOUT_MS,
   getTimeoutForMessage,
 } from './config.js';
-import { clearSession, getRecentConversation, getRecentMemories, getRecentTaskOutputs, getSession, getSessionConversation, logConversationTurn, logToHiveMind, setSession, lookupWaChatId, saveWaMessageMap, saveTokenUsage, getMission, getMissionsByChat } from './db.js';
+import { clearSession, getRecentConversation, getRecentMemories, getRecentTaskOutputs, getSession, getSessionConversation, logConversationTurn, logToHiveMind, setSession, lookupWaChatId, saveWaMessageMap, saveTokenUsage } from './db.js';
 import { logger } from './logger.js';
 import { downloadMedia, buildPhotoMessage, buildDocumentMessage, buildVideoMessage } from './media.js';
 import { buildMemoryContext, saveConversationTurn, triggerMemoryIngestion } from './memory.js';
 import { messageQueue } from './message-queue.js';
-import {
-  parseDelegation,
-  delegateToAgent,
-  getAvailableAgents,
-  proposeMission,
-  approveMission,
-  reviseMission,
-  cancelMission,
-  formatPlanForTelegram,
-  MissionProgress,
-} from './mission-control.js';
-import { emitChatEvent, setProcessing, setActiveAbort, abortActiveQuery, setActiveMissionAbort, abortActiveMission, getActiveMissionCount } from './state.js';
-import { createTopic, closeTopic, reopenTopic, listTopics, recordTopicActivity, isForum, findArchivedTopicByName } from './topic-manager.js';
-import { classifyMessage } from './topic-classifier.js';
-import { TOPIC_CLASSIFY_ENABLED, FORUM_CHAT_ID } from './config.js';
-
-// ── Mission approval state ────────────────────────────────────────────
-// Tracks pending mission IDs per chat so we can intercept go/revise replies.
-const pendingMissions = new Map<string, string>(); // contextKey → missionId
+import { emitChatEvent, setProcessing, setActiveAbort, abortActiveQuery } from './state.js';
 
 // ── Context window tracking ──────────────────────────────────────────
 // Uses input_tokens from the last API call (= actual context window size:
@@ -129,13 +111,6 @@ interface SlackStateChat { mode: 'chat'; channelId: string; channelName: string 
 type SlackState = SlackStateList | SlackStateChat;
 const slackState = new Map<string, SlackState>();
 
-// ── Pending topic creation offers ────────────────────────────────────
-interface PendingOffer {
-  suggestedName: string;
-  expiresAt: number;
-}
-const pendingTopicOffers = new Map<string, PendingOffer>(); // keyed by chatId
-const OFFER_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 /**
  * Escape a string for safe inclusion in Telegram HTML messages.
@@ -347,106 +322,6 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
   // Emit user message to SSE clients
   emitChatEvent({ type: 'user_message', chatId: chatIdStr, topicId, content: message, source: 'telegram' });
 
-  // ── Mission approval detection ──────────────────────────────────────
-  // If there's a pending mission for this context, check for approval/revision.
-  const pendingMissionId = pendingMissions.get(ctxKey);
-  if (pendingMissionId) {
-    const lower = message.trim().toLowerCase();
-
-    if (lower === 'go' || lower === 'approve' || lower === 'yes') {
-      pendingMissions.delete(ctxKey);
-
-      const activeMissionCount = getActiveMissionCount(chatIdStr, topicId);
-      const missionAbort = new AbortController();
-      setActiveMissionAbort(chatIdStr, pendingMissionId, missionAbort, topicId);
-      const countNote = activeMissionCount > 0 ? ` (${activeMissionCount + 1} missions running)` : '';
-      await ctx.reply(`Mission approved. Running in background${countNote} -- updates will appear here.`);
-
-      // Fire-and-forget: returns immediately, frees messageQueue
-      void (async () => {
-        try {
-          const result = await approveMission(pendingMissionId, (progress: MissionProgress) => {
-            const emoji = progress.status === 'started' ? '▶️' : progress.status === 'completed' ? '✅' : '❌';
-            void ctx.reply(`${emoji} ${progress.description}`).catch(() => {});
-          }, missionAbort.signal);
-
-          const costStr = result.totalCostUsd > 0 ? ` | $${result.totalCostUsd.toFixed(3)}` : '';
-          const header = `Mission ${result.status} (${Math.round(result.durationMs / 1000)}s${costStr})`;
-
-          for (const part of splitMessage(formatForTelegram(`<b>${header}</b>\n\n${result.summary}`))) {
-            await ctx.reply(part, { parse_mode: 'HTML' });
-          }
-        } catch (err) {
-          const errMsg = err instanceof Error ? err.message : String(err);
-          logger.error({ err, missionId: pendingMissionId }, 'Mission execution failed');
-          await ctx.reply(`Mission failed: ${errMsg}`).catch(() => {});
-        } finally {
-          setActiveMissionAbort(chatIdStr, pendingMissionId, null, topicId);
-        }
-      })();
-      return;
-    }
-
-    const reviseMatch = message.match(/^revise:\s*([\s\S]+)/i);
-    if (reviseMatch) {
-      await sendTyping(ctx.api, chatId);
-      try {
-        const mission = getMission(pendingMissionId);
-        const plan = await reviseMission(pendingMissionId, reviseMatch[1].trim());
-        const planMsg = formatPlanForTelegram(mission?.goal ?? 'Revised mission', plan, pendingMissionId);
-        await ctx.reply(planMsg, { parse_mode: 'HTML' });
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        logger.error({ err }, 'Mission revision failed');
-        await ctx.reply(`Revision failed: ${errMsg}`);
-      }
-      return;
-    }
-
-    // If the message isn't go/revise, clear the pending state and process normally.
-    // User can always re-propose with /mission.
-    pendingMissions.delete(ctxKey);
-  }
-
-  // ── Delegation detection ────────────────────────────────────────────
-  // Intercept @agentId or /delegate syntax before running the main agent.
-  const delegation = parseDelegation(message);
-  if (delegation) {
-    setProcessing(chatIdStr, true, topicId);
-    await sendTyping(ctx.api, chatId);
-    try {
-      const delegationResult = await delegateToAgent(
-        delegation.agentId,
-        delegation.prompt,
-        chatIdStr,
-        AGENT_ID,
-        (progressMsg) => {
-          emitChatEvent({ type: 'progress', chatId: chatIdStr, topicId, description: progressMsg });
-          void ctx.reply(progressMsg).catch(() => {});
-        },
-      );
-
-      const response = delegationResult.text?.trim() || 'Agent completed with no output.';
-      const header = `[${delegationResult.agentId} — ${Math.round(delegationResult.durationMs / 1000)}s]`;
-
-      if (!skipLog) {
-        saveConversationTurn(chatIdStr, message, response, undefined, AGENT_ID, topicId);
-      }
-      emitChatEvent({ type: 'assistant_message', chatId: chatIdStr, topicId, content: response, source: 'telegram' });
-
-      for (const part of splitMessage(formatForTelegram(`${header}\n\n${response}`))) {
-        await ctx.reply(part, { parse_mode: 'HTML' });
-      }
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      logger.error({ err, agentId: delegation.agentId }, 'Delegation failed');
-      await ctx.reply(`Delegation to ${delegation.agentId} failed: ${errMsg}`);
-    } finally {
-      setProcessing(chatIdStr, false, topicId);
-    }
-    return;
-  }
-
   // Build memory context and prepend to message
   const memCtx = await buildMemoryContext(chatIdStr, message);
   const parts: string[] = [];
@@ -629,11 +504,6 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
       }
     }
 
-    // Track activity for forum topics
-    if (topicId) {
-      try { recordTopicActivity(chatIdStr, topicId); } catch { /* best-effort */ }
-    }
-
     setProcessing(chatIdStr, false, topicId);
   } catch (err) {
     if (timeoutId) clearTimeout(timeoutId);
@@ -740,9 +610,6 @@ export function createBot(): Bot {
     { command: 'delegate', description: 'Delegate task to agent' },
     { command: 'mission', description: 'Propose a multi-agent mission' },
     { command: 'cancel', description: 'Cancel pending/running mission' },
-    { command: 'topics', description: 'List active forum topics' },
-    { command: 'close', description: 'Archive current forum topic' },
-    { command: 'reopen', description: 'Reopen archived topic by name' },
   ];
   const skillCommands = discoverSkillCommands();
   const allCommands = [...builtInCommands, ...skillCommands].slice(0, 100); // Telegram limit: 100 commands
@@ -764,16 +631,8 @@ export function createBot(): Bot {
       '/wa — WhatsApp messages\n' +
       '/slack — Slack messages\n' +
       '/dashboard — Web dashboard\n' +
-      '/stop — Stop current processing\n' +
-      '/agents — List available agents\n' +
-      '/delegate — Delegate task to agent\n' +
-      '/mission — Propose a multi-agent mission\n' +
-      '/cancel — Cancel pending/running mission\n' +
-      '/topics — List active forum topics\n' +
-      '/close — Archive current topic\n' +
-      '/reopen — Reopen archived topic\n\n' +
-      'Mission: /mission <goal> → approve with "go" or "revise: feedback"\n' +
-      'Delegation: @agentId: prompt or /delegate agentId prompt\n\n' +
+      '/stop — Stop current processing\n\n' +
+      'Multi-agent orchestration has moved to the Command Center.\n\n' +
       'You can also send voice notes, photos, files, and videos.'
     );
   });
@@ -1043,177 +902,36 @@ export function createBot(): Bot {
     const chatIdStr = ctx.chat!.id.toString();
     const topicId = ctx.message?.message_thread_id?.toString() ?? null;
     const abortedQuery = abortActiveQuery(chatIdStr, topicId);
-    const abortedMission = abortActiveMission(chatIdStr, topicId);
-    if (abortedQuery || abortedMission) {
-      const what = [abortedQuery && 'query', abortedMission && 'mission'].filter(Boolean).join(' + ');
-      await ctx.reply(`Stopped (${what}).`);
+    if (abortedQuery) {
+      await ctx.reply('Stopped (query).');
     } else {
       await ctx.reply('Nothing running.');
     }
   });
 
-  // /agents — list available agents for delegation
+  // /agents, /delegate, /mission, /cancel — orchestration moving to Command Center
   bot.command('agents', async (ctx) => {
     if (!isAuthorised(ctx.chat!.id)) return;
-    const agents = getAvailableAgents();
-    if (agents.length === 0) {
-      await ctx.reply('No agents configured. Add agent configs under agents/ directory.');
-      return;
-    }
-    const lines = agents.map((a) => `<b>${a.id}</b> — ${a.description || '(no description)'}`).join('\n');
-    await ctx.reply(
-      `<b>Available agents</b>\n\n${lines}\n\n<i>Usage: @agentId: prompt or /delegate agentId prompt</i>`,
-      { parse_mode: 'HTML' },
-    );
+    await ctx.reply('Agent management is moving to the Command Center. Use the Command Center UI for multi-agent orchestration.');
   });
 
-  // /delegate — delegate task to an agent (handled via handleMessage delegation detection)
-  // This command is intercepted by handleMessage's parseDelegation(),
-  // but we register it so grammY doesn't pass it to the text handler.
   bot.command('delegate', async (ctx) => {
     if (!isAuthorised(ctx.chat!.id)) return;
-    const args = ctx.match?.trim();
-    if (!args) {
-      const agents = getAvailableAgents();
-      const agentList = agents.length > 0
-        ? agents.map((a) => a.id).join(', ')
-        : '(none configured)';
-      await ctx.reply(`Usage: /delegate <agentId> <prompt>\n\nAvailable agents: ${agentList}`);
-      return;
-    }
-    // Re-construct as /delegate command and pass through handleMessage
-    const topicId = ctx.message?.message_thread_id?.toString() ?? null;
-    handleMessage(ctx, `/delegate ${args}`, false, false, topicId).catch((err) => logger.error({ err }, 'Delegation error'));
+    await ctx.reply('Delegation is moving to the Command Center. Use the Command Center UI for agent dispatch.');
   });
 
-  // /mission — propose a multi-agent mission
   bot.command('mission', async (ctx) => {
     if (!isAuthorised(ctx.chat!.id)) return;
-    const chatIdStr = ctx.chat!.id.toString();
-    const topicId = ctx.message?.message_thread_id?.toString() ?? null;
-    const ctxKey = contextKey(chatIdStr, topicId);
-    const goal = ctx.match?.trim();
-
-    if (!goal) {
-      // Show recent missions
-      const recent = getMissionsByChat(chatIdStr, 5);
-      if (recent.length === 0) {
-        await ctx.reply('Usage: /mission <goal>\n\nDescribe what you want accomplished. Data will decompose it into subtasks and propose a plan for your approval.');
-        return;
-      }
-      const lines = recent.map((m) => {
-        const status = m.status.toUpperCase();
-        return `<code>${m.id.slice(0, 8)}</code> [${status}] ${escapeHtml(m.goal.slice(0, 60))}`;
-      }).join('\n');
-      await ctx.reply(`<b>Recent Missions</b>\n\n${lines}\n\n<i>/mission &lt;goal&gt; to start a new one</i>`, { parse_mode: 'HTML' });
-      return;
-    }
-
-    await sendTyping(ctx.api, ctx.chat!.id);
-    try {
-      const { missionId, plan } = await proposeMission(goal, chatIdStr, topicId);
-
-      if (plan.needsClarification) {
-        pendingMissions.set(ctxKey, missionId);
-        await ctx.reply(
-          `I need clarification before I can plan this:\n\n${plan.clarificationQuestion ?? 'Can you be more specific about the goal?'}`,
-        );
-        return;
-      }
-
-      pendingMissions.set(ctxKey, missionId);
-      const planMsg = formatPlanForTelegram(goal, plan, missionId);
-      await ctx.reply(planMsg, { parse_mode: 'HTML' });
-    } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
-      logger.error({ err }, 'Mission proposal failed');
-      await ctx.reply(`Failed to plan mission: ${errMsg}`);
-    }
+    await ctx.reply('Missions are moving to the Command Center. Use the Command Center UI for multi-agent missions.');
   });
 
-  // /cancel — cancel a pending or running mission
   bot.command('cancel', async (ctx) => {
     if (!isAuthorised(ctx.chat!.id)) return;
-    const chatIdStr = ctx.chat!.id.toString();
-    const topicId = ctx.message?.message_thread_id?.toString() ?? null;
-    const ctxKey = contextKey(chatIdStr, topicId);
-
-    const missionId = pendingMissions.get(ctxKey) || ctx.match?.trim();
-    if (!missionId) {
-      await ctx.reply('No pending mission. Use /cancel <mission-id> to cancel a specific mission.');
-      return;
-    }
-
-    cancelMission(missionId);
-    pendingMissions.delete(ctxKey);
-    await ctx.reply('Mission canceled.');
-  });
-
-  // /topics — list active forum topics
-  bot.command('topics', async (ctx) => {
-    if (!isAuthorised(ctx.chat!.id)) return;
-    const chatIdStr = ctx.chat!.id.toString();
-    const topics = listTopics(chatIdStr);
-    if (topics.length === 0) {
-      await ctx.reply('No active topics.');
-      return;
-    }
-    const lines = topics.map((t) => {
-      const ago = Math.round((Date.now() / 1000 - t.last_active_at) / 3600);
-      const agoStr = ago < 1 ? 'just now' : ago < 24 ? `${ago}h ago` : `${Math.round(ago / 24)}d ago`;
-      return `<b>${escapeHtml(t.name)}</b> — last active ${agoStr}`;
-    }).join('\n');
-    await ctx.reply(`<b>Active Topics</b>\n\n${lines}`, { parse_mode: 'HTML' });
-  });
-
-  // /close — archive the current forum topic
-  bot.command('close', async (ctx) => {
-    if (!isAuthorised(ctx.chat!.id)) return;
-    const chatIdStr = ctx.chat!.id.toString();
-    const topicId = ctx.message?.message_thread_id?.toString() ?? null;
-
-    if (!topicId) {
-      await ctx.reply('This command only works inside a forum topic thread.');
-      return;
-    }
-
-    try {
-      await closeTopic(ctx.api, chatIdStr, topicId);
-      await ctx.reply('Topic archived.');
-    } catch (err) {
-      logger.error({ err }, '/close command failed');
-      await ctx.reply('Failed to close topic. The bot may need admin rights.');
-    }
-  });
-
-  // /reopen — reopen an archived topic by name
-  bot.command('reopen', async (ctx) => {
-    if (!isAuthorised(ctx.chat!.id)) return;
-    const chatIdStr = ctx.chat!.id.toString();
-    const name = ctx.match?.trim();
-
-    if (!name) {
-      await ctx.reply('Usage: /reopen <topic name>');
-      return;
-    }
-
-    const topic = findArchivedTopicByName(chatIdStr, name);
-    if (!topic) {
-      await ctx.reply(`No archived topic found with name "${name}".`);
-      return;
-    }
-
-    try {
-      await reopenTopic(ctx.api, chatIdStr, topic.topic_id);
-      await ctx.reply(`Topic "<b>${escapeHtml(topic.name)}</b>" reopened.`, { parse_mode: 'HTML' });
-    } catch (err) {
-      logger.error({ err }, '/reopen command failed');
-      await ctx.reply('Failed to reopen topic. The bot may need admin rights.');
-    }
+    await ctx.reply('Mission management is moving to the Command Center.');
   });
 
   // Text messages — and any slash commands not owned by this bot (skills, e.g. /todo /gmail)
-  const OWN_COMMANDS = new Set(['/start', '/help', '/newchat', '/respin', '/voice', '/model', '/memory', '/forget', '/chatid', '/wa', '/slack', '/dashboard', '/stop', '/agents', '/delegate', '/mission', '/cancel', '/topics', '/close', '/reopen']);
+  const OWN_COMMANDS = new Set(['/start', '/help', '/newchat', '/respin', '/voice', '/model', '/memory', '/forget', '/chatid', '/wa', '/slack', '/dashboard', '/stop', '/agents', '/delegate', '/mission', '/cancel']);
   bot.on('message:text', async (ctx) => {
     const text = ctx.message.text;
     const chatIdStr = ctx.chat!.id.toString();
@@ -1371,64 +1089,11 @@ export function createBot(): Bot {
       }
     }
 
-    // ── Pending topic offer confirmation ─────────────────────────────
-    const offer = pendingTopicOffers.get(chatIdStr);
-    if (offer && !topicId) {
-      pendingTopicOffers.delete(chatIdStr);
-      if (offer.expiresAt > Date.now()) {
-        const lower = text.trim().toLowerCase();
-        const isConfirm = lower === 'y' || lower === 'yes' || lower === 'yeah' || lower === 'yep' || lower === 'sure';
-        if (isConfirm || (lower.length > 0 && lower.length < 60 && !lower.startsWith('/'))) {
-          // User confirmed or provided a custom name
-          const topicName = isConfirm ? offer.suggestedName : text.trim();
-          try {
-            const created = await createTopic(ctx.api, chatIdStr, topicName);
-            await ctx.api.sendMessage(ctx.chat!.id, `Topic "<b>${escapeHtml(topicName)}</b>" created. Continue the conversation there.`, {
-              parse_mode: 'HTML',
-              message_thread_id: created.messageThreadId,
-            });
-          } catch (err) {
-            logger.error({ err }, 'Failed to create topic from offer');
-            await ctx.reply('Failed to create topic. The bot may need admin rights for forum management.');
-          }
-          return;
-        }
-        // User said no or sent something else — fall through to normal processing
-      }
-    }
-
     // Clear WA/Slack state and pass through to Claude
     if (state) waState.delete(chatIdStr);
     if (slkState) slackState.delete(chatIdStr);
     // Fire-and-forget so grammY can process /stop while agent runs
     messageQueue.enqueue(chatIdStr, () => handleMessage(ctx, text, false, false, topicId), topicId);
-
-    // ── Fire-and-forget topic classification ─────────────────────────
-    // Only for General topic messages in forum groups
-    if (!topicId && TOPIC_CLASSIFY_ENABLED && text.length >= 50 && !text.startsWith('/')) {
-      void (async () => {
-        try {
-          const forumChat = await isForum(ctx.api, chatIdStr);
-          if (!forumChat) return;
-
-          const classification = await classifyMessage(text);
-          if (!classification || !classification.isNewWorkStream || classification.confidence < 0.7) return;
-
-          // Store pending offer
-          pendingTopicOffers.set(chatIdStr, {
-            suggestedName: classification.suggestedName,
-            expiresAt: Date.now() + OFFER_TTL_MS,
-          });
-
-          await ctx.reply(
-            `This looks like a new work stream. Create a topic "<b>${escapeHtml(classification.suggestedName)}</b>"?\n\n<i>Reply y/yes, send a custom name, or just keep chatting to skip.</i>`,
-            { parse_mode: 'HTML' },
-          );
-        } catch (err) {
-          logger.debug({ err }, 'Topic classification fire-and-forget failed');
-        }
-      })();
-    }
   });
 
   // Voice messages — real transcription via Groq Whisper
