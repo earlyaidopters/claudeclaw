@@ -109,17 +109,16 @@ export async function runAgent(
   model?: string,
   abortController?: AbortController,
 ): Promise<AgentResult> {
-  // Read secrets from .env without polluting process.env.
-  // CLAUDE_CODE_OAUTH_TOKEN is optional — the subprocess finds auth via ~/.claude/
-  // automatically. Only needed if you want to override which account is used.
-  const secrets = readEnvFile(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY']);
+  // Auth: The SDK reads OAuth credentials from ~/.claude/.credentials.json
+  // automatically (Max subscription). Do NOT pass ANTHROPIC_API_KEY here —
+  // it overrides OAuth and causes pay-per-token billing instead of Max.
+  const secrets = readEnvFile(['CLAUDE_CODE_OAUTH_TOKEN']);
 
   const sdkEnv: Record<string, string | undefined> = { ...process.env };
+  // Remove ANTHROPIC_API_KEY from env so SDK falls through to OAuth auth
+  delete sdkEnv.ANTHROPIC_API_KEY;
   if (secrets.CLAUDE_CODE_OAUTH_TOKEN) {
     sdkEnv.CLAUDE_CODE_OAUTH_TOKEN = secrets.CLAUDE_CODE_OAUTH_TOKEN;
-  }
-  if (secrets.ANTHROPIC_API_KEY) {
-    sdkEnv.ANTHROPIC_API_KEY = secrets.ANTHROPIC_API_KEY;
   }
 
   let newSessionId: string | undefined;
