@@ -1338,6 +1338,7 @@ export interface SessionTokenSummary {
 
 export interface DashboardMemoryStats {
   total: number;
+  pinned: number;
   consolidations: number;
   avgImportance: number;
   avgSalience: number;
@@ -1359,6 +1360,10 @@ export function getDashboardMemoryStats(chatId: string): DashboardMemoryStats {
     .prepare('SELECT COUNT(*) as cnt FROM consolidations WHERE chat_id = ?')
     .get(chatId) as { cnt: number };
 
+  const pinnedCount = db
+    .prepare('SELECT COUNT(*) as cnt FROM memories WHERE chat_id = ? AND pinned = 1')
+    .get(chatId) as { cnt: number };
+
   const buckets = db
     .prepare(
       `SELECT
@@ -1378,6 +1383,7 @@ export function getDashboardMemoryStats(chatId: string): DashboardMemoryStats {
 
   return {
     total: counts.total,
+    pinned: pinnedCount.cnt,
     consolidations: consolidationCount.cnt,
     avgImportance: counts.avgImportance ?? 0,
     avgSalience: counts.avgSalience ?? 0,
@@ -1446,11 +1452,13 @@ export function getDashboardTokenStats(chatId: string): DashboardTokenStats {
   const allTime = db
     .prepare(
       `SELECT
+         COALESCE(SUM(input_tokens), 0) as allTimeInput,
+         COALESCE(SUM(output_tokens), 0) as allTimeOutput,
          COALESCE(SUM(cost_usd), 0) as allTimeCost,
          COUNT(*) as allTimeTurns
        FROM token_usage WHERE chat_id = ?`,
     )
-    .get(chatId) as { allTimeCost: number; allTimeTurns: number };
+    .get(chatId) as { allTimeInput: number; allTimeOutput: number; allTimeCost: number; allTimeTurns: number };
 
   return { ...today, ...allTime };
 }

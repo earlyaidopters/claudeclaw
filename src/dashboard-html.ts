@@ -4,7 +4,7 @@ export function getDashboardHtml(token: string, chatId: string): string {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<title>ClaudeClaw</title>
+<title>ClaudeClaw Mission Control</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <style>
@@ -22,6 +22,14 @@ export function getDashboardHtml(token: string, chatId: string): string {
   .pill-disconnected { background: #3b0f0f; color: #f87171; }
   .stat-val { font-size: 24px; font-weight: 700; color: #fff; }
   .stat-label { font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; }
+  .model-picker { position: relative; cursor: pointer; margin-top: 2px; }
+  .model-current { font-size: 11px; color: #8b5cf6; }
+  .model-current:hover { color: #a78bfa; }
+  .model-menu { position: absolute; top: 18px; left: 0; z-index: 30; background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px; padding: 4px 0; min-width: 110px; box-shadow: 0 8px 24px rgba(0,0,0,0.5); }
+  .model-opt { padding: 6px 14px; font-size: 12px; color: #9ca3af; cursor: pointer; transition: background 0.1s; }
+  .model-opt:hover { background: #2a2a3e; color: #e0e0e0; }
+  .model-active { color: #8b5cf6; }
+  .model-active::before { content: ''; display: inline-block; width: 4px; height: 4px; border-radius: 50%; background: #8b5cf6; margin-right: 6px; vertical-align: middle; }
   details summary { cursor: pointer; list-style: none; }
   details summary::-webkit-details-marker { display: none; }
   .fade-text { color: #f87171; }
@@ -148,7 +156,7 @@ export function getDashboardHtml(token: string, chatId: string): string {
 <!-- Top bar -->
 <div class="flex items-center justify-between mb-1">
   <div class="flex items-center gap-3">
-    <h1 class="text-xl font-bold text-white">ClaudeClaw</h1>
+    <h1 class="text-xl font-bold text-white">ClaudeClaw <span style="font-size:13px;font-weight:400;color:#6b7280">Mission Control</span></h1>
     <span id="device-badge" class="device-badge"></span>
   </div>
   <div class="flex items-center gap-3">
@@ -164,19 +172,19 @@ export function getDashboardHtml(token: string, chatId: string): string {
 
 <!-- Summary Stats Bar -->
 <div id="summary-bar" class="summary-bar" style="display:none">
-  <div class="summary-stat">
+  <div class="summary-stat clickable-card" onclick="document.getElementById('hive-section').scrollIntoView({behavior:'smooth'})" style="cursor:pointer">
     <span class="summary-stat-val" id="sum-messages">-</span>
     <span class="summary-stat-label">Messages</span>
   </div>
-  <div class="summary-stat">
+  <div class="summary-stat clickable-card" onclick="document.getElementById('agents-section').scrollIntoView({behavior:'smooth'})" style="cursor:pointer">
     <span class="summary-stat-val" id="sum-agents">-</span>
     <span class="summary-stat-label">Agents</span>
   </div>
-  <div class="summary-stat">
+  <div class="summary-stat clickable-card" onclick="document.getElementById('tokens-section').scrollIntoView({behavior:'smooth'})" style="cursor:pointer">
     <span class="summary-stat-val" id="sum-cost">-</span>
-    <span class="summary-stat-label">Cost Today</span>
+    <span class="summary-stat-label">Tokens Today</span>
   </div>
-  <div class="summary-stat">
+  <div class="summary-stat clickable-card" onclick="openMemoryDrawer()" style="cursor:pointer">
     <span class="summary-stat-val" id="sum-memories">-</span>
     <span class="summary-stat-label">Memories</span>
   </div>
@@ -184,7 +192,19 @@ export function getDashboardHtml(token: string, chatId: string): string {
 
 <!-- Agent Status Cards -->
 <div id="agents-section" class="mb-5" style="display:none">
-  <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-2">Agents</h2>
+  <div class="flex items-center justify-between mb-2">
+    <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider">Agents</h2>
+    <div class="flex items-center gap-2">
+      <div class="model-picker" onclick="toggleModelPicker(this)" style="display:inline-block">
+        <span class="model-current" style="color:#6b7280">Set all <span style="font-size:8px;opacity:0.5">&#9662;</span></span>
+        <div class="model-menu" style="display:none;right:0;left:auto">
+          <div class="model-opt" data-model="claude-opus-4-6" onclick="pickGlobalModel(this)">All Opus</div>
+          <div class="model-opt" data-model="claude-sonnet-4-6" onclick="pickGlobalModel(this)">All Sonnet</div>
+          <div class="model-opt" data-model="claude-haiku-4-5" onclick="pickGlobalModel(this)">All Haiku</div>
+        </div>
+      </div>
+    </div>
+  </div>
   <div id="agents-container" class="flex flex-wrap gap-3"></div>
 </div>
 
@@ -240,6 +260,16 @@ export function getDashboardHtml(token: string, chatId: string): string {
   </div>
 </div>
 
+<!-- Agent Detail Modal -->
+<div id="agent-modal-overlay" style="position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:40;opacity:0;pointer-events:none;transition:opacity 0.2s"></div>
+<div id="agent-modal" style="position:fixed;top:50%;left:50%;transform:translate(-50%,-50%) scale(0.95);z-index:50;background:#141414;border:1px solid #2a2a2a;border-radius:12px;width:90%;max-width:500px;max-height:80vh;opacity:0;pointer-events:none;transition:transform 0.2s ease,opacity 0.2s ease;display:flex;flex-direction:column">
+  <div class="flex items-center justify-between px-4 pt-4 pb-2">
+    <h3 class="text-sm font-bold text-white" id="agent-modal-title">Agent</h3>
+    <button onclick="closeAgentModal()" class="text-gray-500 hover:text-white" style="background:none;border:none;cursor:pointer;font-size:16px">&times;</button>
+  </div>
+  <div id="agent-modal-body" style="overflow-y:auto;padding:0 16px 16px;flex:1"></div>
+</div>
+
 <!-- Desktop: 2-column grid. Mobile: stacked. -->
 <div class="lg:grid lg:grid-cols-2 lg:gap-6">
 
@@ -255,15 +285,21 @@ export function getDashboardHtml(token: string, chatId: string): string {
 <!-- Memory Landscape -->
 <div id="memory-section" class="mt-5">
   <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-2">Memory Landscape</h2>
-  <div class="grid grid-cols-2 gap-3 mb-3">
-    <div class="card clickable-card text-center" onclick="openMemoryDrawer()">
+  <div class="grid grid-cols-3 gap-3 mb-3">
+    <div class="card clickable-card text-center" onclick="openMemoryDrawer()" style="cursor:pointer">
       <div class="stat-val" id="mem-total">-</div>
-      <div class="stat-label">Memories<span class="info-tip"><span class="info-icon">\u24D8</span><span class="info-tooltip">Total structured memories extracted from conversations. Only genuinely important information gets stored.</span></span></div>
+      <div class="stat-label">Memories</div>
+      <div class="text-xs text-gray-600 mt-1">Tap to browse</div>
+    </div>
+    <div class="card clickable-card text-center" onclick="openInsightsDrawer()" style="cursor:pointer">
+      <div class="stat-val" id="mem-consolidations">-</div>
+      <div class="stat-label">Insights</div>
       <div class="text-xs text-gray-600 mt-1">Tap to browse</div>
     </div>
     <div class="card text-center">
-      <div class="stat-val" id="mem-consolidations">-</div>
-      <div class="stat-label">Insights<span class="info-tip"><span class="info-icon">\u24D8</span><span class="info-tooltip">Consolidation insights discovered by finding patterns across memories. Generated every 30 minutes.</span></span></div>
+      <div class="stat-val" id="mem-pinned" style="color:#60a5fa">-</div>
+      <div class="stat-label">Pinned</div>
+      <div class="text-xs text-gray-600 mt-1">Never decay</div>
     </div>
   </div>
   <div class="card">
@@ -337,28 +373,25 @@ export function getDashboardHtml(token: string, chatId: string): string {
 
 <!-- Token / Cost -->
 <div id="token-section" class="mt-5 mb-8">
-  <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-2">Tokens &amp; Cost<span class="info-tip"><span class="info-icon">\u24D8</span><span class="info-tooltip">Token consumption (text units processed by the AI) and associated cost in dollars. Today's totals and all-time cumulative.</span></span></h2>
+  <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-2" id="tokens-section">Token Usage<span class="info-tip"><span class="info-icon">\u24D8</span><span class="info-tooltip">Token consumption (text units processed by the AI). Today's totals and all-time cumulative. Included in your Max subscription.</span></span></h2>
   <div class="card">
     <div class="flex justify-between items-baseline">
       <div>
         <div class="stat-val" id="token-today-cost">-</div>
-        <div class="stat-label">Today's spend</div>
+        <div class="stat-label">Tokens Today</div>
       </div>
       <div class="text-right">
         <div class="stat-val text-base" id="token-today-turns">-</div>
         <div class="stat-label">Turns today</div>
       </div>
     </div>
-    <div class="mt-2 text-xs text-gray-500">All-time: <span id="token-alltime-cost">-</span> across <span id="token-alltime-turns">-</span> turns</div>
+    <div class="mt-2 text-xs text-gray-500">All-time: <span id="token-alltime-cost">-</span> tokens across <span id="token-alltime-turns">-</span> turns</div>
   </div>
   <div class="card">
-    <div class="text-xs text-gray-400 mb-2">Cost Timeline (30d)<span class="info-tip"><span class="info-icon">\u24D8</span><span class="info-tooltip">Daily cost trend in dollars over the last 30 days.</span></span></div>
+    <div class="text-xs text-gray-400 mb-2">Usage Timeline (30d)<span class="info-tip"><span class="info-icon">\u24D8</span><span class="info-tooltip">Daily token usage over the last 30 days.</span></span></div>
     <canvas id="cost-chart" height="140"></canvas>
   </div>
-  <div class="card">
-    <div class="text-xs text-gray-400 mb-2">Cache Hit Rate<span class="info-tip"><span class="info-icon">\u24D8</span><span class="info-tooltip">Cache reuse rate. A high percentage means the bot is efficiently reusing previously processed data, which reduces costs.</span></span></div>
-    <canvas id="cache-chart" height="140"></canvas>
-  </div>
+
 </div>
 
 </div><!-- end RIGHT COLUMN -->
@@ -476,6 +509,36 @@ async function openMemoryDrawer() {
   await loadDrawerPage();
 }
 
+async function openInsightsDrawer() {
+  document.getElementById('drawer-title').textContent = 'Consolidation Insights';
+  document.getElementById('drawer-count').textContent = '';
+  document.getElementById('drawer-avg-salience').textContent = '';
+  document.getElementById('drawer-body').innerHTML = '<div class="text-gray-500 text-sm text-center py-8">Loading...</div>';
+  document.getElementById('drawer-load-more').classList.add('hidden');
+  document.getElementById('drawer-overlay').classList.add('open');
+  document.getElementById('drawer').classList.add('open');
+  document.body.style.overflow = 'hidden';
+  try {
+    var data = await api('/api/memories?chatId=' + CHAT_ID);
+    var insights = data.consolidations || [];
+    document.getElementById('drawer-count').textContent = insights.length + ' insights';
+    if (insights.length === 0) {
+      document.getElementById('drawer-body').innerHTML = '<div class="text-gray-500 text-sm text-center py-8">No insights yet. Consolidation runs every 30 minutes.</div>';
+      return;
+    }
+    document.getElementById('drawer-body').innerHTML = insights.map(function(c) {
+      var date = new Date(c.created_at * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      return '<div style="background:#1a1a1a;border:1px solid #2a2a2a;border-radius:8px;padding:12px;margin-bottom:8px">' +
+        '<div class="text-xs text-purple-400 mb-1">' + date + '</div>' +
+        '<div class="text-sm text-white mb-2">' + escapeHtml(c.insight || c.summary) + '</div>' +
+        (c.summary && c.insight ? '<div class="text-xs text-gray-500">' + escapeHtml(c.summary) + '</div>' : '') +
+      '</div>';
+    }).join('');
+  } catch(e) {
+    document.getElementById('drawer-body').innerHTML = '<div class="text-red-400 text-sm text-center py-8">Failed to load insights</div>';
+  }
+}
+
 async function loadDrawerPage() {
   const data = await api('/api/memories/list?chatId=' + CHAT_ID + '&sort=importance&limit=' + DRAWER_PAGE + '&offset=' + drawerOffset);
   drawerTotal = data.total;
@@ -508,7 +571,7 @@ function api(path) {
   return fetch(BASE + path + sep + 'token=' + TOKEN).then(r => r.json());
 }
 
-let salienceChart, memTimelineChart, costChart, cacheChart;
+let salienceChart, memTimelineChart, costChart;
 
 function cronToHuman(cron) {
   const parts = cron.split(' ');
@@ -609,6 +672,7 @@ async function loadMemories() {
     const data = await api('/api/memories?chatId=' + CHAT_ID);
     document.getElementById('mem-total').textContent = data.stats.total;
     document.getElementById('mem-consolidations').textContent = data.stats.consolidations;
+    document.getElementById('mem-pinned').textContent = data.stats.pinned || '0';
 
     // Importance distribution chart
     const bucketLabels = ['0-0.2','0.2-0.4','0.4-0.6','0.6-0.8','0.8-1.0'];
@@ -704,39 +768,28 @@ async function loadHealth() {
 async function loadTokens() {
   try {
     const data = await api('/api/tokens?chatId=' + CHAT_ID);
-    document.getElementById('token-today-cost').textContent = '$' + data.stats.todayCost.toFixed(2);
+    var todayTok = (data.stats.todayInput || 0) + (data.stats.todayOutput || 0);
+    document.getElementById('token-today-cost').textContent = todayTok > 1000 ? Math.round(todayTok / 1000).toLocaleString() + 'k' : todayTok.toString();
     document.getElementById('token-today-turns').textContent = data.stats.todayTurns;
-    document.getElementById('token-alltime-cost').textContent = '$' + data.stats.allTimeCost.toFixed(2);
+    var allTok = (data.stats.allTimeInput || 0) + (data.stats.allTimeOutput || 0);
+    document.getElementById('token-alltime-cost').textContent = allTok > 1000000 ? (allTok / 1000000).toFixed(1) + 'M' : allTok > 1000 ? Math.round(allTok / 1000) + 'k' : allTok.toString();
     document.getElementById('token-alltime-turns').textContent = data.stats.allTimeTurns;
 
-    // Cost timeline
+    // Usage timeline (turns per day)
     if (costChart) costChart.destroy();
     if (data.costTimeline.length > 0) {
       costChart = new Chart(document.getElementById('cost-chart'), {
         type: 'line',
         data: {
           labels: data.costTimeline.map(d => d.date.slice(5)),
-          datasets: [{ label: 'Cost ($)', data: data.costTimeline.map(d => d.cost), borderColor: '#8b5cf6', backgroundColor: 'rgba(139,92,246,0.1)', fill: true, tension: 0.3, pointRadius: 2 }]
+          datasets: [{ label: 'Turns', data: data.costTimeline.map(d => d.turns), borderColor: '#8b5cf6', backgroundColor: 'rgba(139,92,246,0.1)', fill: true, tension: 0.3, pointRadius: 2 }]
         },
-        options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { ticks: { color: '#666', callback: v => '$'+v.toFixed(2) }, grid: { color: '#222' } }, x: { ticks: { color: '#666', maxRotation: 0, autoSkip: true, maxTicksLimit: 8 }, grid: { display: false } } } }
+        options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { ticks: { color: '#666' }, grid: { color: '#222' } }, x: { ticks: { color: '#666', maxRotation: 0, autoSkip: true, maxTicksLimit: 8 }, grid: { display: false } } } }
       });
     }
 
     // Cache doughnut
     if (cacheChart) cacheChart.destroy();
-    if (data.recentUsage.length > 0) {
-      let totalCache = 0, totalInput = 0;
-      data.recentUsage.forEach(r => { totalCache += r.cache_read; totalInput += r.input_tokens; });
-      const hitPct = totalInput > 0 ? Math.round((totalCache / totalInput) * 100) : 0;
-      cacheChart = new Chart(document.getElementById('cache-chart'), {
-        type: 'doughnut',
-        data: {
-          labels: ['Cache Hit', 'Cache Miss'],
-          datasets: [{ data: [hitPct, 100 - hitPct], backgroundColor: ['#22c55e', '#2a2a2a'], borderWidth: 0 }]
-        },
-        options: { responsive: true, cutout: '70%', plugins: { legend: { labels: { color: '#888' } } } }
-      });
-    }
   } catch(e) {
     console.error('Token load error', e);
   }
@@ -792,60 +845,145 @@ async function loadAgents() {
       const color = AGENT_COLORS[a.id] || '#6b7280';
       const dot = a.running ? '<span style="color:#6ee7b7">\u25CF</span>' : '<span style="color:#666">\u25CB</span>';
       const statusText = a.running ? 'live' : 'off';
-      const modelShort = (a.model || '').replace('claude-', '').replace(/-\d+.*/, '');
+      const modelOpts = ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-sonnet-4-5', 'claude-haiku-4-5'];
+      const modelShort = function(m) { return {'claude-opus-4-6':'Opus','claude-sonnet-4-6':'Sonnet','claude-sonnet-4-5':'Sonnet 4.5','claude-haiku-4-5':'Haiku'}[m] || m; };
+      const currentModel = a.model || (a.id === 'main' ? 'claude-opus-4-6' : 'claude-sonnet-4-6');
+      const modelLabel = modelShort(currentModel);
+      const modelSelect = '<div class="model-picker" data-agent="' + a.id + '" onclick="event.stopPropagation();toggleModelPicker(this)">' +
+        '<span class="model-current">' + modelLabel + ' <span style="font-size:8px;opacity:0.5">&#9662;</span></span>' +
+        '<div class="model-menu" style="display:none">' +
+          modelOpts.map(m => '<div class="model-opt' + (currentModel === m ? ' model-active' : '') + '" data-model="' + m + '" onclick="pickModel(this)">' + modelShort(m) + '</div>').join('') +
+        '</div>' +
+      '</div>';
       return '<div class="card clickable-card" style="min-width:130px;flex:1;max-width:220px;border-left:3px solid ' + color + '" data-agent="' + a.id + '" onclick="toggleAgentDetail(this.dataset.agent)">' +
         '<div class="font-bold text-white text-sm">' + a.name + '</div>' +
         '<div class="text-xs mt-1">' + dot + ' ' + statusText + '</div>' +
-        '<div class="text-xs text-gray-500">' + modelShort + '</div>' +
-        (a.running ? '<div class="text-xs text-gray-400 mt-1">' + a.todayTurns + ' turns &middot; $' + (a.todayCost||0).toFixed(2) + '</div>' : '') +
-        '<div id="agent-detail-' + a.id + '" style="display:none" class="mt-2 pt-2" style="border-top:1px solid #333"></div>' +
+        modelSelect +
+        (a.running ? '<div class="text-xs text-gray-400 mt-1">' + a.todayTurns + ' turns</div>' : '') +
       '</div>';
     }).join('');
   } catch {}
 }
 
-async function toggleAgentDetail(agentId) {
-  const el = document.getElementById('agent-detail-' + agentId);
-  if (!el) return;
-  if (el.style.display !== 'none') { el.style.display = 'none'; return; }
-  el.style.display = '';
-  el.innerHTML = '<div class="text-xs text-gray-500">Loading...</div>';
+function toggleModelPicker(el) {
+  var menu = el.querySelector('.model-menu');
+  var isOpen = menu.style.display !== 'none';
+  // Close all other menus first
+  document.querySelectorAll('.model-menu').forEach(function(m) { m.style.display = 'none'; });
+  menu.style.display = isOpen ? 'none' : '';
+}
+
+async function pickModel(optEl) {
+  var model = optEl.dataset.model;
+  var picker = optEl.closest('.model-picker');
+  var agentId = picker.dataset.agent;
+  picker.querySelector('.model-menu').style.display = 'none';
   try {
-    const [tasks, hive, convo] = await Promise.all([
+    await fetch(BASE + '/api/agents/' + agentId + '/model?token=' + TOKEN, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: model }),
+    });
+    await loadAgents();
+  } catch(e) { console.error('Model update failed:', e); }
+}
+
+async function pickGlobalModel(optEl) {
+  var model = optEl.dataset.model;
+  optEl.closest('.model-menu').style.display = 'none';
+  try {
+    await fetch(BASE + '/api/agents/model?token=' + TOKEN, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: model }),
+    });
+    await loadAgents();
+  } catch(e) { console.error('Global model update failed:', e); }
+}
+
+// Close model menus when clicking outside
+document.addEventListener('click', function(e) {
+  if (!e.target.closest('.model-picker')) {
+    document.querySelectorAll('.model-menu').forEach(function(m) { m.style.display = 'none'; });
+  }
+});
+
+async function toggleAgentDetail(agentId) {
+  var overlay = document.getElementById('agent-modal-overlay');
+  var modal = document.getElementById('agent-modal');
+  var title = document.getElementById('agent-modal-title');
+  var body = document.getElementById('agent-modal-body');
+
+  // Find agent info
+  var agent = missionAgentsList.find(function(a) { return a.id === agentId; });
+  var color = AGENT_COLORS[agentId] || '#6b7280';
+  title.innerHTML = '<span style="color:' + color + '">' + (agent ? agent.name : agentId) + '</span>';
+  body.innerHTML = '<div class="text-gray-500 text-sm text-center py-8">Loading...</div>';
+
+  overlay.style.opacity = '1';
+  overlay.style.pointerEvents = 'auto';
+  modal.style.opacity = '1';
+  modal.style.pointerEvents = 'auto';
+  modal.style.transform = 'translate(-50%,-50%) scale(1)';
+
+  try {
+    var results = await Promise.all([
       api('/api/agents/' + agentId + '/tasks'),
-      api('/api/hive-mind?agent=' + agentId + '&limit=5'),
-      api('/api/agents/' + agentId + '/conversation?chatId=' + CHAT_ID + '&limit=4'),
+      api('/api/hive-mind?agent=' + agentId + '&limit=8'),
+      api('/api/agents/' + agentId + '/conversation?chatId=' + CHAT_ID + '&limit=6'),
     ]);
-    let html = '';
+    var tasks = results[0], hive = results[1], convo = results[2];
+    var html = '';
+
     // Last conversation
     if (convo.turns && convo.turns.length > 0) {
-      html += '<div class="text-xs text-gray-400 font-semibold mb-1" style="border-top:1px solid #333;padding-top:8px">Last conversation</div>';
-      const sorted = convo.turns.slice().reverse();
-      html += sorted.map(t => {
-        const role = t.role === 'user' ? '<span style="color:#818cf8">You</span>' : '<span style="color:#6ee7b7">Agent</span>';
-        const text = t.content.length > 120 ? t.content.slice(0, 120) + '...' : t.content;
-        return '<div class="text-xs text-gray-400 mt-1">' + role + ': ' + escapeHtml(text) + '</div>';
+      html += '<div class="text-xs text-gray-400 font-semibold mb-2 uppercase">Recent conversation</div>';
+      var sorted = convo.turns.slice().reverse();
+      html += sorted.map(function(t) {
+        var role = t.role === 'user' ? '<span style="color:#818cf8">You</span>' : '<span style="color:#6ee7b7">Agent</span>';
+        var text = t.content.length > 200 ? t.content.slice(0, 200) + '...' : t.content;
+        return '<div style="background:#1a1a1a;border-radius:6px;padding:8px;margin-bottom:4px">' +
+          '<div class="text-xs" style="margin-bottom:2px">' + role + '</div>' +
+          '<div class="text-xs text-gray-400">' + escapeHtml(text) + '</div></div>';
       }).join('');
     }
-    // Hive mind
+
+    // Hive mind activity
     if (hive.entries && hive.entries.length > 0) {
-      html += '<div class="text-xs text-gray-400 font-semibold mt-2 mb-1" style="border-top:1px solid #333;padding-top:8px">Hive mind</div>';
-      html += hive.entries.map(e => {
-        const time = new Date(e.created_at * 1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
-        return '<div class="text-xs text-gray-400">' + time + ' ' + e.action + ' — ' + e.summary + '</div>';
+      html += '<div class="text-xs text-gray-400 font-semibold mt-3 mb-2 uppercase">Hive Mind activity</div>';
+      html += hive.entries.map(function(e) {
+        var time = new Date(e.created_at * 1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+        return '<div style="background:#1a1a1a;border-radius:6px;padding:8px;margin-bottom:4px">' +
+          '<span class="text-xs text-gray-500">' + time + '</span> ' +
+          '<span class="text-xs text-gray-400">' + escapeHtml(e.summary) + '</span></div>';
       }).join('');
     }
-    // Tasks
+
+    // Scheduled tasks
     if (tasks.tasks && tasks.tasks.length > 0) {
-      html += '<div class="text-xs text-gray-400 font-semibold mt-2 mb-1" style="border-top:1px solid #333;padding-top:8px">Scheduled (' + tasks.tasks.length + ')</div>';
-      html += tasks.tasks.slice(0, 3).map(t =>
-        '<div class="text-xs text-gray-500">' + t.prompt.slice(0, 60) + (t.prompt.length > 60 ? '...' : '') + '</div>'
-      ).join('');
+      html += '<div class="text-xs text-gray-400 font-semibold mt-3 mb-2 uppercase">Scheduled tasks (' + tasks.tasks.length + ')</div>';
+      html += tasks.tasks.slice(0, 5).map(function(t) {
+        return '<div style="background:#1a1a1a;border-radius:6px;padding:8px;margin-bottom:4px">' +
+          '<div class="text-xs text-gray-300">' + escapeHtml(t.prompt.slice(0, 100)) + '</div>' +
+          '<div class="text-xs text-gray-600 mt-1">' + t.schedule + '</div></div>';
+      }).join('');
     }
-    if (!html) html = '<div class="text-xs text-gray-500">No activity yet</div>';
-    el.innerHTML = html;
-  } catch { el.innerHTML = '<div class="text-xs text-red-400">Failed to load</div>'; }
+
+    if (!html) html = '<div class="text-gray-500 text-sm text-center py-8">No activity yet for this agent.</div>';
+    body.innerHTML = html;
+  } catch(e) { body.innerHTML = '<div class="text-red-400 text-sm text-center py-8">Failed to load agent details</div>'; }
 }
+
+function closeAgentModal() {
+  var overlay = document.getElementById('agent-modal-overlay');
+  var modal = document.getElementById('agent-modal');
+  overlay.style.opacity = '0';
+  overlay.style.pointerEvents = 'none';
+  modal.style.opacity = '0';
+  modal.style.pointerEvents = 'none';
+  modal.style.transform = 'translate(-50%,-50%) scale(0.95)';
+}
+document.getElementById('agent-modal-overlay').addEventListener('click', closeAgentModal);
 
 async function loadHiveMind() {
   try {
@@ -925,7 +1063,8 @@ async function loadSummary() {
     document.getElementById('sum-messages').textContent = tokens.stats.todayTurns || '0';
     const activeCount = agents.agents ? agents.agents.filter(a => a.running).length : 0;
     document.getElementById('sum-agents').textContent = activeCount + '/' + (agents.agents ? agents.agents.length : 0);
-    document.getElementById('sum-cost').textContent = '$' + (tokens.stats.todayCost || 0).toFixed(2);
+    var totalTokens = (tokens.stats.todayInput || 0) + (tokens.stats.todayOutput || 0);
+    document.getElementById('sum-cost').textContent = totalTokens > 1000 ? Math.round(totalTokens / 1000) + 'k' : totalTokens.toString();
     document.getElementById('sum-memories').textContent = mems.stats.total || '0';
   } catch {}
 }
@@ -1387,7 +1526,8 @@ async function loadSessionInfo() {
     ]);
     document.getElementById('sess-ctx').textContent = (health.contextPct || 0) + '%';
     document.getElementById('sess-turns').textContent = health.turns || tokens.todayTurns || '0';
-    document.getElementById('sess-cost').textContent = '$' + (tokens.todayCost || 0).toFixed(2);
+    var sessTokens = (tokens.todayInput || 0) + (tokens.todayOutput || 0);
+    document.getElementById('sess-cost').textContent = sessTokens > 1000 ? Math.round(sessTokens / 1000) + 'k' : sessTokens.toString();
     document.getElementById('sess-model').textContent = health.model || agentId;
   } catch(e) { console.error('Session info error', e); }
 }
@@ -1654,7 +1794,7 @@ async function abortProcessing() {
   <div class="chat-session-bar" id="chat-session-bar">
     <span class="session-stat"><span class="session-stat-val" id="sess-ctx">-</span> ctx</span>
     <span class="session-stat"><span class="session-stat-val" id="sess-turns">-</span> turns</span>
-    <span class="session-stat"><span class="session-stat-val" id="sess-cost">-</span> cost</span>
+    <span class="session-stat"><span class="session-stat-val" id="sess-cost">-</span> tokens</span>
     <span class="session-model" id="sess-model">-</span>
   </div>
   <div class="chat-quick-actions">

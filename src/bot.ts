@@ -103,6 +103,10 @@ const AVAILABLE_MODELS: Record<string, string> = {
 };
 const DEFAULT_MODEL_LABEL = 'opus';
 
+export function setMainModelOverride(model: string): void {
+  if (ALLOWED_CHAT_ID) chatModelOverride.set(ALLOWED_CHAT_ID, model);
+}
+
 // WhatsApp state per Telegram chat
 interface WaStateList { mode: 'list'; chats: WaChat[] }
 interface WaStateChat { mode: 'chat'; chatId: string; chatName: string }

@@ -38,7 +38,7 @@ import {
   getMissionTaskHistory,
 } from './db.js';
 import { generateContent, parseJsonResponse } from './gemini.js';
-import { listAgentIds, loadAgentConfig } from './agent-config.js';
+import { listAgentIds, loadAgentConfig, setAgentModel } from './agent-config.js';
 import { processMessageFromDashboard } from './bot.js';
 import { getDashboardHtml } from './dashboard-html.js';
 import { logger } from './logger.js';
@@ -396,6 +396,47 @@ export function startDashboard(botApi?: Api<RawApi>): void {
     const agentId = c.req.param('id');
     const stats = getAgentTokenStats(agentId);
     return c.json(stats);
+  });
+
+  // Update agent model
+  app.patch('/api/agents/:id/model', async (c) => {
+    const agentId = c.req.param('id');
+    const body = await c.req.json<{ model?: string }>();
+    const model = body?.model?.trim();
+    if (!model) return c.json({ error: 'model required' }, 400);
+
+    const validModels = ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-sonnet-4-5', 'claude-haiku-4-5'];
+    if (!validModels.includes(model)) return c.json({ error: `Invalid model. Valid: ${validModels.join(', ')}` }, 400);
+
+    try {
+      if (agentId === 'main') {
+        // Main agent uses in-memory override (same as /model command)
+        const { setMainModelOverride } = await import('./bot.js');
+        setMainModelOverride(model);
+      } else {
+        setAgentModel(agentId, model);
+      }
+      return c.json({ ok: true, agent: agentId, model });
+    } catch (err) {
+      return c.json({ error: 'Failed to update model' }, 500);
+    }
+  });
+
+  // Update ALL agent models at once
+  app.patch('/api/agents/model', async (c) => {
+    const body = await c.req.json<{ model?: string }>();
+    const model = body?.model?.trim();
+    if (!model) return c.json({ error: 'model required' }, 400);
+
+    const validModels = ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-sonnet-4-5', 'claude-haiku-4-5'];
+    if (!validModels.includes(model)) return c.json({ error: `Invalid model` }, 400);
+
+    const agentIds = listAgentIds();
+    const updated: string[] = [];
+    for (const id of agentIds) {
+      try { setAgentModel(id, model); updated.push(id); } catch {}
+    }
+    return c.json({ ok: true, model, updated });
   });
 
   // Hive mind feed
