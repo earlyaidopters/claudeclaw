@@ -39,6 +39,7 @@ if (AGENT_ID !== 'main') {
     model: agentConfig.model,
     obsidian: agentConfig.obsidian,
     systemPrompt,
+    mcpServers: agentConfig.mcpServers,
   });
   logger.info({ agentId: AGENT_ID, name: agentConfig.name }, 'Running as agent');
 } else {

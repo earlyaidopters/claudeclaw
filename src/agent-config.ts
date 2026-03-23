@@ -11,6 +11,7 @@ export interface AgentConfig {
   botTokenEnv: string;
   botToken: string;
   model?: string;
+  mcpServers?: string[];
   obsidian?: {
     vault: string;
     folders: string[];
@@ -87,7 +88,9 @@ export function loadAgentConfig(agentId: string): AgentConfig {
     };
   }
 
-  return { name, description, botTokenEnv, botToken, model, obsidian };
+  const mcpServers = raw['mcp_servers'] as string[] | undefined;
+
+  return { name, description, botTokenEnv, botToken, model, mcpServers, obsidian };
 }
 
 /** Update the model field in an agent's agent.yaml file. */

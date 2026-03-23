@@ -156,7 +156,8 @@ export async function delegateToAgent(
   onProgress?.(`Delegating to ${agent.name}...`);
 
   try {
-    // Load agent config to get its system prompt
+    // Load agent config to get its system prompt and MCP allowlist
+    const agentConfig = loadAgentConfig(agentId);
     const claudeMdPath = resolveAgentClaudeMd(agentId);
     let systemPrompt = '';
     if (claudeMdPath) {
@@ -193,6 +194,8 @@ export async function delegateToAgent(
         undefined, // no progress callback for inner agent
         undefined, // use default model
         abortCtrl,
+        undefined, // no streaming for delegation
+        agentConfig.mcpServers,
       );
 
       clearTimeout(timer);

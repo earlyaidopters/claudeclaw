@@ -1,8 +1,66 @@
+import fs from 'fs';
+import path from 'path';
+
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
 import { PROJECT_ROOT, agentCwd } from './config.js';
 import { readEnvFile } from './env.js';
 import { logger } from './logger.js';
+
+// ── MCP server loading ──────────────────────────────────────────────
+// The Agent SDK's settingSources loads CLAUDE.md and permissions from
+// project/user settings, but does NOT load mcpServers from those files.
+// We read them ourselves and pass them via the `mcpServers` option.
+
+interface McpStdioConfig {
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+}
+
+function loadMcpServers(allowlist?: string[]): Record<string, McpStdioConfig> {
+  const merged: Record<string, McpStdioConfig> = {};
+
+  // Load from project settings (.claude/settings.json in cwd)
+  const projectSettings = path.join(agentCwd ?? PROJECT_ROOT, '.claude', 'settings.json');
+  // Load from user settings (~/.claude/settings.json)
+  const userSettings = path.join(
+    process.env.HOME ?? '/tmp',
+    '.claude',
+    'settings.json',
+  );
+
+  for (const file of [userSettings, projectSettings]) {
+    try {
+      const raw = JSON.parse(fs.readFileSync(file, 'utf-8'));
+      const servers = raw?.mcpServers;
+      if (servers && typeof servers === 'object') {
+        for (const [name, config] of Object.entries(servers)) {
+          const cfg = config as Record<string, unknown>;
+          if (cfg.command && typeof cfg.command === 'string') {
+            merged[name] = {
+              command: cfg.command,
+              ...(cfg.args ? { args: cfg.args as string[] } : {}),
+              ...(cfg.env ? { env: cfg.env as Record<string, string> } : {}),
+            };
+          }
+        }
+      }
+    } catch {
+      // File doesn't exist or is invalid — skip
+    }
+  }
+
+  // If an allowlist is provided, only keep the MCPs in that list
+  if (allowlist) {
+    const allowed = new Set(allowlist);
+    for (const name of Object.keys(merged)) {
+      if (!allowed.has(name)) delete merged[name];
+    }
+  }
+
+  return merged;
+}
 
 export interface UsageInfo {
   inputTokens: number;
@@ -109,6 +167,7 @@ export async function runAgent(
   model?: string,
   abortController?: AbortController,
   onStreamText?: (accumulatedText: string) => void,
+  mcpAllowlist?: string[],
 ): Promise<AgentResult> {
   // Read secrets from .env without polluting process.env.
   // CLAUDE_CODE_OAUTH_TOKEN is optional — the subprocess finds auth via ~/.claude/
@@ -137,10 +196,16 @@ export async function runAgent(
   const typingInterval = setInterval(onTyping, 4000);
 
   try {
+    // Load MCP servers from project + user settings files, filtered by agent allowlist
+    const mcpServers = loadMcpServers(mcpAllowlist);
+    const mcpServerNames = Object.keys(mcpServers);
     logger.info(
-      { sessionId: sessionId ?? 'new', messageLen: message.length },
+      { sessionId: sessionId ?? 'new', messageLen: message.length, mcpServers: mcpServerNames },
       'Starting agent query',
     );
+
+    // SDK Options.mcpServers expects Record<string, McpServerConfig>
+    const mcpServerSpecs = mcpServerNames.length > 0 ? mcpServers : undefined;
 
     for await (const event of query({
       prompt: singleTurn(message),
@@ -161,6 +226,9 @@ export async function runAgent(
 
         // Pass secrets to the subprocess without polluting our own process.env
         env: sdkEnv,
+
+        // MCP servers loaded from .claude/settings.json and ~/.claude/settings.json
+        ...(mcpServerSpecs ? { mcpServers: mcpServerSpecs } : {}),
 
         // Stream partial text so Telegram can show progressive updates
         includePartialMessages: !!onStreamText,
