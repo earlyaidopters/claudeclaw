@@ -1,0 +1,48 @@
+# Life Engine — Proactive Briefing Agent
+#
+# A scheduled agent that runs every 30 minutes and delivers time-aware
+# briefings via Telegram. Integrates with Gmail, Notion, and filesystem
+# to surface what matters RIGHT NOW.
+#
+# Setup:
+#   1. Copy this folder to your agents/ directory
+#   2. Configure your MCP integrations (Gmail, Notion) in Claude settings
+#   3. Customize CLAUDE.md with your timezone, Notion DB IDs, and preferences
+#   4. Create the scheduled task:
+#      PROJECT_ROOT=$(git rev-parse --show-toplevel)
+#      node "$PROJECT_ROOT/dist/schedule-cli.js" create \
+#        "Run the Life Engine proactive briefing loop." "*/30 * * * *"
+
+name: Life Engine
+description: Proactive briefing agent. Runs on a schedule, checks time of day, gathers data from Gmail/Notion/filesystem, and delivers contextual briefings. Knows when to be silent.
+
+type: worker
+
+model: claude-sonnet-4-6
+
+tags:
+  - proactive
+  - briefing
+  - productivity
+  - scheduling
+  - email
+  - tasks
+
+skills:
+  - name: morning-briefing
+    description: Deliver a morning summary with overnight emails, tasks due today, and active habits
+    examples:
+      - "What's my morning briefing?"
+      - "What happened overnight?"
+
+  - name: afternoon-update
+    description: Surface new emails and task updates since morning, flag anything needing attention
+    examples:
+      - "Any updates since this morning?"
+      - "What needs my attention?"
+
+  - name: evening-summary
+    description: Wrap up the day with email count, task completion, and tomorrow preview
+    examples:
+      - "How did today go?"
+      - "Day summary"
