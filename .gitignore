@@ -40,3 +40,4 @@ scripts/waste-reminder.sh
 CLAUDE.md
 agents/*/agent.yaml
 agents/*/CLAUDE.md
+.gitnexus

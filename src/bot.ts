@@ -22,6 +22,7 @@ import {
   getTimeoutForMessage,
 } from './config.js';
 import { clearSession, getRecentConversation, getRecentMemories, getRecentTaskOutputs, getSession, getSessionConversation, logConversationTurn, logToHiveMind, setSession, lookupWaChatId, saveWaMessageMap, saveTokenUsage, getMission, getMissionsByChat } from './db.js';
+import { trackCredits, formatCreditStatus } from './credit-tracker.js';
 import { logger } from './logger.js';
 import { downloadMedia, buildPhotoMessage, buildDocumentMessage, buildVideoMessage } from './media.js';
 import { buildMemoryContext, saveConversationTurn, triggerMemoryIngestion } from './memory.js';
@@ -623,6 +624,12 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
         logger.error({ err: dbErr }, 'Failed to save token usage');
       }
 
+      // Credit tracking (M2AI VAs)
+      const creditResult = trackCredits(chatIdStr, activeSessionId, result.usage.totalCostUsd);
+      if (creditResult.warning) {
+        await ctx.reply(creditResult.warning);
+      }
+
       const warning = checkContextWarning(ctxKey, activeSessionId, result.usage);
       if (warning) {
         await ctx.reply(warning);
@@ -1037,6 +1044,12 @@ export function createBot(): Bot {
     await ctx.reply(`<a href="${url}">Open Dashboard</a>`, { parse_mode: 'HTML' });
   });
 
+  // /credits — show credit usage for this billing period
+  bot.command('credits', async (ctx) => {
+    if (!isAuthorised(ctx.chat!.id)) return;
+    await ctx.reply(formatCreditStatus());
+  });
+
   // /stop — interrupt the current agent query or running mission
   bot.command('stop', async (ctx) => {
     if (!isAuthorised(ctx.chat!.id)) return;
@@ -1213,7 +1226,7 @@ export function createBot(): Bot {
   });
 
   // Text messages — and any slash commands not owned by this bot (skills, e.g. /todo /gmail)
-  const OWN_COMMANDS = new Set(['/start', '/help', '/newchat', '/respin', '/voice', '/model', '/memory', '/forget', '/chatid', '/wa', '/slack', '/dashboard', '/stop', '/agents', '/delegate', '/mission', '/cancel', '/topics', '/close', '/reopen']);
+  const OWN_COMMANDS = new Set(['/start', '/help', '/newchat', '/respin', '/voice', '/model', '/memory', '/forget', '/chatid', '/wa', '/slack', '/dashboard', '/credits', '/stop', '/agents', '/delegate', '/mission', '/cancel', '/topics', '/close', '/reopen']);
   bot.on('message:text', async (ctx) => {
     const text = ctx.message.text;
     const chatIdStr = ctx.chat!.id.toString();
@@ -1682,6 +1695,14 @@ async function processDashboardMessage(
         );
       } catch (dbErr) {
         logger.error({ err: dbErr }, 'Failed to save token usage');
+      }
+
+      // Credit tracking (M2AI VAs)
+      const creditResult = trackCredits(chatIdStr, activeSessionId, result.usage.totalCostUsd);
+      if (creditResult.warning) {
+        try {
+          await botApi.sendMessage(parseInt(chatIdStr), creditResult.warning);
+        } catch { /* best-effort */ }
       }
     }
   } catch (err) {

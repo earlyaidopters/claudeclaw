@@ -279,6 +279,28 @@ function createSchema(database: Database.Database): void {
     );
 
     CREATE INDEX IF NOT EXISTS idx_subtasks_mission ON mission_subtasks(mission_id, status);
+
+    -- ── Credit Tracking (M2AI VAs) ──────────────────────────────────────
+    -- Tracks credit consumption per interaction for client billing.
+    -- Credits are derived from token_usage cost_usd via bucket thresholds.
+
+    CREATE TABLE IF NOT EXISTS credit_ledger (
+      id                INTEGER PRIMARY KEY AUTOINCREMENT,
+      chat_id           TEXT NOT NULL,
+      session_id        TEXT,
+      token_usage_id    INTEGER,
+      credits_consumed  REAL NOT NULL DEFAULT 1,
+      cost_usd          REAL NOT NULL DEFAULT 0,
+      reason            TEXT,
+      created_at        INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_credit_ledger_chat ON credit_ledger(chat_id, created_at DESC);
+
+    CREATE TABLE IF NOT EXISTS client_config (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
   `);
 }
 
@@ -1959,4 +1981,55 @@ export function logPreferenceChange(
     `INSERT INTO preference_history (preference_id, old_value, new_value, old_confidence, new_confidence, reason, changed_at)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
   ).run(preferenceId, oldValue, newValue, oldConfidence, newConfidence, reason, now);
+}
+
+// ── Credit Tracking ────────────────────────────────────────────────────
+
+export function saveCredits(
+  chatId: string,
+  sessionId: string | undefined,
+  tokenUsageId: number | undefined,
+  creditsConsumed: number,
+  costUsd: number,
+  reason: string,
+): void {
+  const now = Math.floor(Date.now() / 1000);
+  db.prepare(
+    `INSERT INTO credit_ledger (chat_id, session_id, token_usage_id, credits_consumed, cost_usd, reason, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(chatId, sessionId ?? null, tokenUsageId ?? null, creditsConsumed, costUsd, reason, now);
+}
+
+export function getCreditsUsedThisPeriod(): number {
+  const periodStart = getClientConfig('period_start');
+  if (!periodStart) return 0;
+  const row = db
+    .prepare('SELECT COALESCE(SUM(credits_consumed), 0) as total FROM credit_ledger WHERE created_at >= ?')
+    .get(parseInt(periodStart, 10)) as { total: number };
+  return row.total;
+}
+
+export function getCreditLimit(): number {
+  const limit = getClientConfig('monthly_credit_limit');
+  return limit ? parseInt(limit, 10) : 0;
+}
+
+export function isOverageEnabled(): boolean {
+  return getClientConfig('overage_enabled') === 'true';
+}
+
+export function getClientConfig(key: string): string | undefined {
+  const row = db.prepare('SELECT value FROM client_config WHERE key = ?').get(key) as { value: string } | undefined;
+  return row?.value;
+}
+
+export function setClientConfig(key: string, value: string): void {
+  db.prepare(
+    'INSERT INTO client_config (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+  ).run(key, value);
+}
+
+export function getLastTokenUsageId(): number | undefined {
+  const row = db.prepare('SELECT id FROM token_usage ORDER BY id DESC LIMIT 1').get() as { id: number } | undefined;
+  return row?.id;
 }

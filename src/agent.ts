@@ -123,6 +123,7 @@ export async function runAgent(
 
   let newSessionId: string | undefined;
   let resultText: string | null = null;
+  let lastAssistantText: string | null = null;
   let usage: UsageInfo | null = null;
   let didCompact = false;
   let preCompactTokens: number | null = null;
@@ -188,7 +189,8 @@ export async function runAgent(
       // Each assistant message represents one API call; its usage reflects
       // that single call's context size (not cumulative across the turn).
       if (ev['type'] === 'assistant') {
-        const msgUsage = (ev['message'] as Record<string, unknown>)?.['usage'] as Record<string, number> | undefined;
+        const msg = ev['message'] as Record<string, unknown> | undefined;
+        const msgUsage = msg?.['usage'] as Record<string, number> | undefined;
         const callCacheRead = msgUsage?.['cache_read_input_tokens'] ?? 0;
         const callInputTokens = msgUsage?.['input_tokens'] ?? 0;
         if (callCacheRead > 0) {
@@ -196,6 +198,15 @@ export async function runAgent(
         }
         if (callInputTokens > 0) {
           lastCallInputTokens = callInputTokens;
+        }
+
+        // SDK 0.2.83+: result.result may be empty; capture text from assistant content blocks
+        const content = msg?.['content'] as Array<{ type: string; text?: string }> | undefined;
+        if (content) {
+          const textParts = content.filter((b) => b.type === 'text' && b.text).map((b) => b.text!);
+          if (textParts.length > 0) {
+            lastAssistantText = textParts.join('');
+          }
         }
       }
 
@@ -264,5 +275,6 @@ export async function runAgent(
     clearInterval(typingInterval);
   }
 
-  return { text: resultText, newSessionId, usage };
+  // SDK 0.2.83+: result.result may be empty; fall back to last assistant text block
+  return { text: resultText || lastAssistantText, newSessionId, usage };
 }
