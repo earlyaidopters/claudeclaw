@@ -12,6 +12,7 @@ import { logger } from './logger.js';
 import { cleanupOldUploads } from './media.js';
 import { runConsolidation } from './memory-consolidate.js';
 import { runDecaySweep } from './memory.js';
+import { initOAuthHealthCheck } from './oauth-health.js';
 import { initOrchestrator } from './orchestrator.js';
 import { initScheduler } from './scheduler.js';
 import { setTelegramConnected, setBotInfo } from './state.js';
@@ -187,6 +188,16 @@ async function main(): Promise<void> {
       },
       AGENT_ID,
     );
+
+    // Proactive OAuth health monitoring - alerts before token expires
+    initOAuthHealthCheck(async (text) => {
+      const { splitMessage } = await import('./bot.js');
+      for (const chunk of splitMessage(text)) {
+        await bot.api.sendMessage(ALLOWED_CHAT_ID, chunk, { parse_mode: 'HTML' }).catch((err) =>
+          logger.error({ err }, 'OAuth health alert failed'),
+        );
+      }
+    });
   } else {
     logger.warn('ALLOWED_CHAT_ID not set — scheduler disabled (no destination for results)');
   }
