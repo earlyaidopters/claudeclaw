@@ -3,8 +3,11 @@ import {
   getUnconsolidatedMemories,
   markMemoriesConsolidated,
   saveConsolidation,
+  saveConsolidationEmbedding,
+  supersedeMemory,
   updateMemoryConnections,
 } from './db.js';
+import { embedText } from './embeddings.js';
 import { logger } from './logger.js';
 
 interface ConsolidationResult {
@@ -14,6 +17,11 @@ interface ConsolidationResult {
     from_id: number;
     to_id: number;
     relationship: string;
+  }>;
+  contradictions?: Array<{
+    stale_id: number;
+    supersedes_id: number;
+    reason: string;
   }>;
 }
 
@@ -27,6 +35,7 @@ Your job:
 2. Create a synthesized summary that captures the overall picture
 3. Identify one key insight that emerges from these memories together
 4. Map connections between specific memories (use their IDs)
+5. Check for CONTRADICTIONS: if any memory updates, corrects, or supersedes an earlier one, flag it. IMPORTANT: Compare the created_at timestamps to determine which is newer. The memory with the LATER timestamp is authoritative (it's the correction). Set stale_id to the OLDER memory's ID and supersedes_id to the NEWER memory's ID.
 
 Return JSON:
 {
@@ -34,13 +43,16 @@ Return JSON:
   "insight": "One key pattern or insight that emerges",
   "connections": [
     {"from_id": N, "to_id": M, "relationship": "description of how they relate"}
+  ],
+  "contradictions": [
+    {"stale_id": N, "supersedes_id": M, "reason": "why the newer one replaces the older"}
   ]
 }
 
-If memories are unrelated, still summarize but note they cover different topics. Connections array can be empty if no clear links exist.`;
+If memories are unrelated, still summarize but note they cover different topics. Connections and contradictions arrays can be empty if none exist.`;
 
-// Guard against overlapping consolidation runs
-let isConsolidating = false;
+// Guard against overlapping consolidation runs (keyed by chatId)
+const consolidatingChats = new Set<string>();
 
 /**
  * Run consolidation for a given chat. Finds patterns across unconsolidated
@@ -48,12 +60,12 @@ let isConsolidating = false;
  * a no-op if fewer than 2 memories are pending or if already running.
  */
 export async function runConsolidation(chatId: string): Promise<void> {
-  if (isConsolidating) {
-    logger.debug('Consolidation already running, skipping');
+  if (consolidatingChats.has(chatId)) {
+    logger.debug({ chatId }, 'Consolidation already running for this chat, skipping');
     return;
   }
 
-  isConsolidating = true;
+  consolidatingChats.add(chatId);
   try {
     const memories = getUnconsolidatedMemories(chatId, 20);
 
@@ -91,7 +103,18 @@ export async function runConsolidation(chatId: string): Promise<void> {
     const sourceIds = memories.map((m) => m.id);
 
     // Save the consolidation record
-    saveConsolidation(chatId, sourceIds, result.summary, result.insight);
+    const consolidationId = saveConsolidation(chatId, sourceIds, result.summary, result.insight);
+
+    // Generate embedding for semantic retrieval of consolidation insights
+    try {
+      const embeddingText = `${result.summary} ${result.insight}`;
+      const embedding = await embedText(embeddingText);
+      if (embedding.length > 0) {
+        saveConsolidationEmbedding(consolidationId, embedding);
+      }
+    } catch (embErr) {
+      logger.warn({ err: embErr, consolidationId }, 'Failed to embed consolidation');
+    }
 
     // Wire up connections between memories
     if (result.connections && result.connections.length > 0) {
@@ -106,6 +129,39 @@ export async function runConsolidation(chatId: string): Promise<void> {
         updateMemoryConnections(conn.to_id, [
           { linked_to: conn.from_id, relationship: conn.relationship },
         ]);
+      }
+    }
+
+    // Handle contradictions: mark stale memories as superseded
+    if (result.contradictions && result.contradictions.length > 0) {
+      for (const contra of result.contradictions) {
+        if (!sourceIds.includes(contra.stale_id) || !sourceIds.includes(contra.supersedes_id)) {
+          logger.warn(
+            { staleId: contra.stale_id, supersededBy: contra.supersedes_id, reason: contra.reason },
+            'Contradiction detected but IDs not in current batch, skipping',
+          );
+          continue;
+        }
+        // Verify timestamp order: the newer memory should be the authoritative one.
+        // If the LLM got the direction wrong, swap the IDs.
+        const staleMem = memories.find((m) => m.id === contra.stale_id);
+        const newMem = memories.find((m) => m.id === contra.supersedes_id);
+        let staleId = contra.stale_id;
+        let supersededBy = contra.supersedes_id;
+        if (staleMem && newMem && staleMem.created_at > newMem.created_at) {
+          // LLM got it backwards: the "stale" one is actually newer
+          staleId = contra.supersedes_id;
+          supersededBy = contra.stale_id;
+          logger.warn(
+            { originalStale: contra.stale_id, correctedStale: staleId },
+            'Corrected contradiction direction (LLM assigned newer memory as stale)',
+          );
+        }
+        supersedeMemory(staleId, supersededBy);
+        logger.info(
+          { staleId, supersededBy, reason: contra.reason },
+          'Memory superseded (contradiction resolved)',
+        );
       }
     }
 
@@ -124,6 +180,6 @@ export async function runConsolidation(chatId: string): Promise<void> {
   } catch (err) {
     logger.error({ err }, 'Consolidation failed');
   } finally {
-    isConsolidating = false;
+    consolidatingChats.delete(chatId);
   }
 }

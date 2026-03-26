@@ -3,7 +3,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('./db.js', () => ({
   searchMemories: vi.fn(),
   getRecentHighImportanceMemories: vi.fn(),
+  getOtherAgentActivity: vi.fn(() => []),
+  getConsolidationsWithEmbeddings: vi.fn(() => []),
   touchMemory: vi.fn(),
+  penalizeMemory: vi.fn(),
+  batchUpdateMemoryRelevance: vi.fn(),
   decayMemories: vi.fn(),
   logConversationTurn: vi.fn(),
   pruneConversationLog: vi.fn(),
@@ -20,6 +24,11 @@ vi.mock('./memory-ingest.js', () => ({
 vi.mock('./embeddings.js', () => ({
   embedText: vi.fn(() => Promise.resolve([])),
   cosineSimilarity: vi.fn(() => 0),
+}));
+
+vi.mock('./gemini.js', () => ({
+  generateContent: vi.fn(() => Promise.resolve('[]')),
+  parseJsonResponse: vi.fn(() => []),
 }));
 
 import {
@@ -54,6 +63,7 @@ function makeMemory(overrides: Record<string, unknown> = {}) {
     id: 1,
     chat_id: 'chat1',
     source: 'conversation',
+    agent_id: 'main',
     raw_text: 'raw text',
     summary: 'A test memory',
     entities: '[]',
@@ -62,6 +72,7 @@ function makeMemory(overrides: Record<string, unknown> = {}) {
     importance: 0.7,
     salience: 1.0,
     consolidated: 0,
+    pinned: 0,
     embedding: null,
     created_at: 100,
     accessed_at: 100,
@@ -80,8 +91,8 @@ describe('buildMemoryContext', () => {
     mockSearchMemories.mockReturnValue([]);
     mockGetRecentHighImportance.mockReturnValue([]);
 
-    const result = await buildMemoryContext('chat1', 'hello');
-    expect(result).toBe('');
+    const { contextText } = await buildMemoryContext('chat1', 'hello');
+    expect(contextText).toBe('');
   });
 
   it('returns formatted string when FTS results exist', async () => {
@@ -90,12 +101,12 @@ describe('buildMemoryContext', () => {
     ]);
     mockGetRecentHighImportance.mockReturnValue([]);
 
-    const result = await buildMemoryContext('chat1', 'pizza');
-    expect(result).toContain('[Memory context]');
-    expect(result).toContain('User enjoys pizza');
-    expect(result).toContain('food');
-    expect(result).toContain('[0.8]');
-    expect(result).toContain('[End memory context]');
+    const { contextText } = await buildMemoryContext('chat1', 'pizza');
+    expect(contextText).toContain('[Memory context]');
+    expect(contextText).toContain('User enjoys pizza');
+    expect(contextText).toContain('food');
+    expect(contextText).toContain('[0.8]');
+    expect(contextText).toContain('[End memory context]');
   });
 
   it('deduplicates between FTS and recent results', async () => {
@@ -103,12 +114,12 @@ describe('buildMemoryContext', () => {
     mockSearchMemories.mockReturnValue([mem]);
     mockGetRecentHighImportance.mockReturnValue([mem]);
 
-    const result = await buildMemoryContext('chat1', 'shared');
-    const occurrences = result.split('shared memory').length - 1;
+    const { contextText } = await buildMemoryContext('chat1', 'shared');
+    const occurrences = contextText.split('shared memory').length - 1;
     expect(occurrences).toBe(1);
   });
 
-  it('touches returned memories', async () => {
+  it('does NOT touch memories at retrieval (feedback loop handles this)', async () => {
     mockSearchMemories.mockReturnValue([
       makeMemory({ id: 10 }),
     ]);
@@ -116,10 +127,11 @@ describe('buildMemoryContext', () => {
       makeMemory({ id: 20 }),
     ]);
 
-    await buildMemoryContext('chat1', 'test');
-    expect(mockTouchMemory).toHaveBeenCalledWith(10);
-    expect(mockTouchMemory).toHaveBeenCalledWith(20);
-    expect(mockTouchMemory).toHaveBeenCalledTimes(2);
+    const { surfacedMemoryIds, surfacedMemorySummaries } = await buildMemoryContext('chat1', 'test');
+    expect(mockTouchMemory).not.toHaveBeenCalled();
+    expect(surfacedMemoryIds).toContain(10);
+    expect(surfacedMemoryIds).toContain(20);
+    expect(surfacedMemorySummaries.get(10)).toBe('A test memory');
   });
 });
 
@@ -136,7 +148,7 @@ describe('saveConversationTurn', () => {
 
   it('fires async ingestion', () => {
     saveConversationTurn('chat1', 'I prefer TypeScript over JavaScript always and forever', 'Noted.');
-    expect(mockIngest).toHaveBeenCalledWith('chat1', 'I prefer TypeScript over JavaScript always and forever', 'Noted.');
+    expect(mockIngest).toHaveBeenCalledWith('chat1', 'I prefer TypeScript over JavaScript always and forever', 'Noted.', 'main');
   });
 });
 
@@ -152,9 +164,9 @@ describe('buildMemoryContext with consolidations', () => {
       { id: 1, chat_id: 'chat1', source_ids: '[1,2]', summary: 'Morning routine synthesis', insight: 'User has structured morning workflow', created_at: 100 },
     ]);
 
-    const result = await buildMemoryContext('chat1', 'morning routine');
-    expect(result).toContain('Insights:');
-    expect(result).toContain('User has structured morning workflow');
+    const { contextText } = await buildMemoryContext('chat1', 'morning routine');
+    expect(contextText).toContain('Insights:');
+    expect(contextText).toContain('User has structured morning workflow');
   });
 
   it('falls back to recent consolidations when search returns empty', async () => {
@@ -163,16 +175,16 @@ describe('buildMemoryContext with consolidations', () => {
       { id: 1, chat_id: 'chat1', source_ids: '[1]', summary: 'General insight', insight: 'User values productivity', created_at: 100 },
     ]);
 
-    const result = await buildMemoryContext('chat1', 'unrelated query');
-    expect(result).toContain('User values productivity');
+    const { contextText } = await buildMemoryContext('chat1', 'unrelated query');
+    expect(contextText).toContain('User values productivity');
   });
 
   it('returns empty when no memories and no insights exist', async () => {
     mockSearchConsolidations.mockReturnValue([]);
     mockGetRecentConsolidations.mockReturnValue([]);
 
-    const result = await buildMemoryContext('chat1', 'anything');
-    expect(result).toBe('');
+    const { contextText } = await buildMemoryContext('chat1', 'anything');
+    expect(contextText).toBe('');
   });
 
   it('includes both memories and insights when both exist', async () => {
@@ -183,11 +195,11 @@ describe('buildMemoryContext with consolidations', () => {
       { id: 1, chat_id: 'chat1', source_ids: '[1]', summary: 'UI summary', insight: 'User cares deeply about UI aesthetics', created_at: 100 },
     ]);
 
-    const result = await buildMemoryContext('chat1', 'UI preferences');
-    expect(result).toContain('Prefers dark mode');
-    expect(result).toContain('User cares deeply about UI aesthetics');
-    expect(result).toContain('Relevant memories:');
-    expect(result).toContain('Insights:');
+    const { contextText } = await buildMemoryContext('chat1', 'UI preferences');
+    expect(contextText).toContain('Prefers dark mode');
+    expect(contextText).toContain('User cares deeply about UI aesthetics');
+    expect(contextText).toContain('Relevant memories:');
+    expect(contextText).toContain('Insights:');
   });
 });
 
@@ -204,9 +216,9 @@ describe('buildMemoryContext topic formatting', () => {
     ]);
     mockGetRecentHighImportance.mockReturnValue([]);
 
-    const result = await buildMemoryContext('chat1', 'hiking');
-    expect(result).toContain('outdoor');
-    expect(result).toContain('fitness');
+    const { contextText } = await buildMemoryContext('chat1', 'hiking');
+    expect(contextText).toContain('outdoor');
+    expect(contextText).toContain('fitness');
   });
 
   it('handles empty topics gracefully', async () => {
@@ -215,10 +227,10 @@ describe('buildMemoryContext topic formatting', () => {
     ]);
     mockGetRecentHighImportance.mockReturnValue([]);
 
-    const result = await buildMemoryContext('chat1', 'query');
-    expect(result).toContain('No topics memory');
+    const { contextText } = await buildMemoryContext('chat1', 'query');
+    expect(contextText).toContain('No topics memory');
     // Should not have trailing topic parentheses
-    expect(result).not.toContain('()');
+    expect(contextText).not.toContain('()');
   });
 
   it('handles malformed topics JSON gracefully', async () => {
@@ -227,8 +239,8 @@ describe('buildMemoryContext topic formatting', () => {
     ]);
     mockGetRecentHighImportance.mockReturnValue([]);
 
-    const result = await buildMemoryContext('chat1', 'query');
-    expect(result).toContain('Bad topics');
+    const { contextText } = await buildMemoryContext('chat1', 'query');
+    expect(contextText).toContain('Bad topics');
     // Should not crash
   });
 });

@@ -111,6 +111,26 @@ node "$PROJECT_ROOT/dist/schedule-cli.js" pause <id>
 node "$PROJECT_ROOT/dist/schedule-cli.js" resume <id>
 ```
 
+## Mission Tasks (Delegating to Other Agents)
+
+When [YOUR NAME] asks you to delegate work to another agent, or says things like "have research look into X" or "get comms to handle Y", create a mission task using the CLI. Mission tasks are async: you queue them and the target agent picks them up within 60 seconds.
+
+```bash
+PROJECT_ROOT=$(git rev-parse --show-toplevel)
+node "$PROJECT_ROOT/dist/mission-cli.js" create --agent research --title "Short label" "Full detailed prompt for the agent"
+```
+
+The task appears on the Mission Control dashboard. You do NOT need to wait for the result.
+
+```bash
+PROJECT_ROOT=$(git rev-parse --show-toplevel)
+node "$PROJECT_ROOT/dist/mission-cli.js" list                    # see all tasks
+node "$PROJECT_ROOT/dist/mission-cli.js" result <task-id>         # get a task's result
+node "$PROJECT_ROOT/dist/mission-cli.js" cancel <task-id>         # cancel a queued task
+```
+
+Available agents: main, research, comms, content, ops. Use `--priority 10` for high priority, `--priority 0` for low (default is 5).
+
 ## Sending Files via Telegram
 
 When [YOUR NAME] asks you to create a file and send it to them (PDF, spreadsheet, image, etc.), include a file marker in your response. The bot will parse these markers and send the files as Telegram attachments.
@@ -147,7 +167,16 @@ Let me know if you need any changes.
 
 ## Memory
 
-You maintain context between messages via Claude Code session resumption. You don't need to re-introduce yourself each time. If [YOUR NAME] references something from earlier in the conversation, you have that context.
+You have TWO memory systems. Use both before ever saying "I don't remember":
+
+1. **Session context**: Claude Code session resumption keeps the current conversation alive between messages. If [YOUR NAME] references something from earlier in this session, you already have it.
+
+2. **Persistent memory database**: A SQLite database stores extracted memories, conversation history, and consolidation insights across ALL sessions. This is injected automatically as `[Memory context]` at the top of each message. When [YOUR NAME] asks "do you remember" or "what do we know about X", check:
+   - The `[Memory context]` block already in your prompt (extracted facts from past conversations)
+   - The `[Conversation history recall]` block (raw exchanges matching the query, if present)
+   - The database directly: `sqlite3 $(git rev-parse --show-toplevel)/store/claudeclaw.db "SELECT role, substr(content, 1, 200) FROM conversation_log WHERE agent_id = 'AGENT_ID_HERE' AND content LIKE '%keyword%' ORDER BY created_at DESC LIMIT 10;"`
+
+**NEVER say "I don't have memory of that" or "each session starts fresh" without checking these sources first.** The memory system exists specifically so you retain knowledge across sessions.
 
 ## Special Commands
 

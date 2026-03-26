@@ -86,8 +86,8 @@ const testCases: TestCase[] = [
   {
     label: 'Business rule',
     shouldStore: true,
-    user: 'For any Skool community posts, always respond within 24 hours. If I miss one, flag it in our next morning briefing.',
-    assistant: 'Understood. I will monitor Skool and flag any posts older than 24 hours without a response.',
+    user: 'For any community forum posts, always respond within 24 hours. If I miss one, flag it in our next morning briefing.',
+    assistant: 'Understood. I will monitor community forum and flag any posts older than 24 hours without a response.',
   },
   {
     label: 'Behavioral correction (feedback)',
@@ -122,7 +122,7 @@ const testCases: TestCase[] = [
   {
     label: 'Identity/role info',
     shouldStore: true,
-    user: 'I run two businesses: BuildersHub (a Skool community for AI builders) and Acme Consulting (AI consulting for enterprises). Both are growing fast.',
+    user: 'I run two businesses: Acme Community (an online community for builders) and Acme Consulting (AI consulting for enterprises). Both are growing fast.',
     assistant: 'Got it. Two businesses, community and consulting.',
   },
   {

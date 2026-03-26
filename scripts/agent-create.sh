@@ -17,7 +17,7 @@ echo ""
 
 # Step 1: Pick a template or start blank
 echo "Available templates:"
-echo "  1. comms     -- Email, Slack, WhatsApp, YouTube comments, Skool, LinkedIn"
+echo "  1. comms     -- Email, Slack, WhatsApp, YouTube comments, community forums, LinkedIn"
 echo "  2. content   -- YouTube, LinkedIn, writing, trend research"
 echo "  3. ops       -- Calendar, billing, Stripe, Gumroad, admin"
 echo "  4. research  -- Deep research, academic, competitive intel"

@@ -8,11 +8,15 @@ import {
   markTaskRunning,
   updateTaskAfterRun,
   resetStuckTasks,
+  claimNextMissionTask,
+  completeMissionTask,
+  resetStuckMissionTasks,
 } from './db.js';
 import { logger } from './logger.js';
 import { messageQueue } from './message-queue.js';
 import { runAgent } from './agent.js';
-import { formatForTelegram } from './bot.js';
+import { formatForTelegram, splitMessage } from './bot.js';
+import { emitChatEvent } from './state.js';
 
 type Sender = (text: string) => Promise<void>;
 
@@ -45,6 +49,10 @@ export function initScheduler(send: Sender, agentId = 'main'): void {
   if (recovered > 0) {
     logger.warn({ recovered, agentId }, 'Reset stuck tasks from previous crash');
   }
+  const recoveredMission = resetStuckMissionTasks(agentId);
+  if (recoveredMission > 0) {
+    logger.warn({ recovered: recoveredMission, agentId }, 'Reset stuck mission tasks from previous crash');
+  }
 
   setInterval(() => void runDueTasks(), 60_000);
   logger.info({ agentId }, 'Scheduler started (checking every 60s)');
@@ -52,9 +60,10 @@ export function initScheduler(send: Sender, agentId = 'main'): void {
 
 async function runDueTasks(): Promise<void> {
   const tasks = getDueTasks(schedulerAgentId);
-  if (tasks.length === 0) return;
 
-  logger.info({ count: tasks.length }, 'Running due scheduled tasks');
+  if (tasks.length > 0) {
+    logger.info({ count: tasks.length }, 'Running due scheduled tasks');
+  }
 
   for (const task of tasks) {
     // In-memory guard: skip if already running in this process
@@ -94,7 +103,9 @@ async function runDueTasks(): Promise<void> {
         }
 
         const text = result.text?.trim() || 'Task completed with no output.';
-        await sender(formatForTelegram(text));
+        for (const chunk of splitMessage(formatForTelegram(text))) {
+          await sender(chunk);
+        }
 
         // Inject task output into the active chat session so user replies have context
         if (ALLOWED_CHAT_ID) {
@@ -122,6 +133,70 @@ async function runDueTasks(): Promise<void> {
       }
     });
   }
+
+  // Also check for queued mission tasks (one-shot async tasks from Mission Control)
+  await runDueMissionTasks();
+}
+
+async function runDueMissionTasks(): Promise<void> {
+  const mission = claimNextMissionTask(schedulerAgentId);
+  if (!mission) return;
+
+  const missionKey = 'mission-' + mission.id;
+  if (runningTaskIds.has(missionKey)) return;
+  runningTaskIds.add(missionKey);
+
+  logger.info({ missionId: mission.id, title: mission.title }, 'Running mission task');
+
+  const chatId = ALLOWED_CHAT_ID || 'mission';
+  messageQueue.enqueue(chatId, async () => {
+    const abortController = new AbortController();
+    const timeout = setTimeout(() => abortController.abort(), TASK_TIMEOUT_MS);
+
+    try {
+      const result = await runAgent(mission.prompt, undefined, () => {}, undefined, undefined, abortController);
+      clearTimeout(timeout);
+
+      if (result.aborted) {
+        completeMissionTask(mission.id, null, 'failed', 'Timed out after 10 minutes');
+        logger.warn({ missionId: mission.id }, 'Mission task timed out');
+        try { await sender('Mission task timed out: "' + mission.title + '"'); } catch {}
+      } else {
+        const text = result.text?.trim() || 'Task completed with no output.';
+        completeMissionTask(mission.id, text, 'completed');
+        logger.info({ missionId: mission.id }, 'Mission task completed');
+
+        // Send result to Telegram
+        for (const chunk of splitMessage(formatForTelegram(text))) {
+          await sender(chunk);
+        }
+
+        // Inject into conversation context so agent can reference it
+        if (ALLOWED_CHAT_ID) {
+          const activeSession = getSession(ALLOWED_CHAT_ID, schedulerAgentId);
+          logConversationTurn(ALLOWED_CHAT_ID, 'user', '[Mission task: ' + mission.title + ']: ' + mission.prompt, activeSession ?? undefined, schedulerAgentId);
+          logConversationTurn(ALLOWED_CHAT_ID, 'assistant', text, activeSession ?? undefined, schedulerAgentId);
+        }
+      }
+
+      emitChatEvent({
+        type: 'mission_update' as 'progress',
+        chatId,
+        content: JSON.stringify({
+          id: mission.id,
+          status: result.aborted ? 'failed' : 'completed',
+          title: mission.title,
+        }),
+      });
+    } catch (err) {
+      clearTimeout(timeout);
+      const errMsg = err instanceof Error ? err.message : String(err);
+      completeMissionTask(mission.id, null, 'failed', errMsg.slice(0, 500));
+      logger.error({ err, missionId: mission.id }, 'Mission task failed');
+    } finally {
+      runningTaskIds.delete(missionKey);
+    }
+  });
 }
 
 export function computeNextRun(cronExpression: string): number {

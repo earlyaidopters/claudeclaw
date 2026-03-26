@@ -63,7 +63,7 @@ const agentTests: AgentTest[] = [
     ],
     meaningful: [
       {
-        user: 'For Skool community replies, always lead with validation of their point before adding my perspective. Never start with a counterargument.',
+        user: 'For community forum replies, always lead with validation of their point before adding my perspective. Never start with a counterargument.',
         assistant: 'Got it. Validate first, then add perspective. No leading with pushback.',
       },
       {
@@ -85,7 +85,7 @@ const agentTests: AgentTest[] = [
     ],
     meaningful: [
       {
-        user: 'All Gumroad products for the Acme Consulting brand should use the consulting logo at /tmp/logos/consulting.png. For BuildersHub use /tmp/logos/community.jpg.',
+        user: 'All Gumroad products for the Acme Consulting brand should use the consulting logo at /tmp/logos/consulting.png. For CommunityHub use /tmp/logos/community.jpg.',
         assistant: 'Got it. Different logos for each brand on Gumroad.',
       },
       {

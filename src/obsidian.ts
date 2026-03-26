@@ -1,6 +1,8 @@
 import fs from 'fs';
 import path from 'path';
 
+import { logger } from './logger.js';
+
 export interface ObsidianConfig {
   vault: string;
   folders: string[];
@@ -19,6 +21,15 @@ const CACHE_TTL_MS = 5 * 60 * 1000;
 
 export function buildObsidianContext(config: ObsidianConfig | undefined): string {
   if (!config) return '';
+
+  // Validate vault path exists on first cache build
+  if (_cacheTime === 0 && !fs.existsSync(config.vault)) {
+    logger.warn(
+      { vault: config.vault },
+      'Obsidian vault path does not exist. Check agent.yaml obsidian.vault setting. Obsidian integration is disabled.',
+    );
+    return '';
+  }
 
   const now = Date.now();
   if (now - _cacheTime > CACHE_TTL_MS) {

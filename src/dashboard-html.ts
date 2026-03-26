@@ -4,7 +4,7 @@ export function getDashboardHtml(token: string, chatId: string): string {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<title>ClaudeClaw</title>
+<title>ClaudeClaw Mission Control</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 <style>
@@ -22,6 +22,14 @@ export function getDashboardHtml(token: string, chatId: string): string {
   .pill-disconnected { background: #3b0f0f; color: #f87171; }
   .stat-val { font-size: 24px; font-weight: 700; color: #fff; }
   .stat-label { font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; }
+  .model-picker { position: relative; cursor: pointer; margin-top: 2px; }
+  .model-current { font-size: 11px; color: #8b5cf6; }
+  .model-current:hover { color: #a78bfa; }
+  .model-menu { position: absolute; top: 18px; left: 0; z-index: 30; background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px; padding: 4px 0; min-width: 110px; box-shadow: 0 8px 24px rgba(0,0,0,0.5); }
+  .model-opt { padding: 6px 14px; font-size: 12px; color: #9ca3af; cursor: pointer; transition: background 0.1s; }
+  .model-opt:hover { background: #2a2a3e; color: #e0e0e0; }
+  .model-active { color: #8b5cf6; }
+  .model-active::before { content: ''; display: inline-block; width: 4px; height: 4px; border-radius: 50%; background: #8b5cf6; margin-right: 6px; vertical-align: middle; }
   details summary { cursor: pointer; list-style: none; }
   details summary::-webkit-details-marker { display: none; }
   .fade-text { color: #f87171; }
@@ -148,7 +156,7 @@ export function getDashboardHtml(token: string, chatId: string): string {
 <!-- Top bar -->
 <div class="flex items-center justify-between mb-1">
   <div class="flex items-center gap-3">
-    <h1 class="text-xl font-bold text-white">ClaudeClaw</h1>
+    <h1 class="text-xl font-bold text-white">ClaudeClaw <span style="font-size:13px;font-weight:400;color:#6b7280">Mission Control</span></h1>
     <span id="device-badge" class="device-badge"></span>
   </div>
   <div class="flex items-center gap-3">
@@ -164,19 +172,19 @@ export function getDashboardHtml(token: string, chatId: string): string {
 
 <!-- Summary Stats Bar -->
 <div id="summary-bar" class="summary-bar" style="display:none">
-  <div class="summary-stat">
+  <div class="summary-stat clickable-card" onclick="document.getElementById('hive-section').scrollIntoView({behavior:'smooth'})" style="cursor:pointer">
     <span class="summary-stat-val" id="sum-messages">-</span>
     <span class="summary-stat-label">Messages</span>
   </div>
-  <div class="summary-stat">
+  <div class="summary-stat clickable-card" onclick="document.getElementById('agents-section').scrollIntoView({behavior:'smooth'})" style="cursor:pointer">
     <span class="summary-stat-val" id="sum-agents">-</span>
     <span class="summary-stat-label">Agents</span>
   </div>
-  <div class="summary-stat">
+  <div class="summary-stat clickable-card" onclick="document.getElementById('tokens-section').scrollIntoView({behavior:'smooth'})" style="cursor:pointer">
     <span class="summary-stat-val" id="sum-cost">-</span>
-    <span class="summary-stat-label">Cost Today</span>
+    <span class="summary-stat-label">Tokens Today</span>
   </div>
-  <div class="summary-stat">
+  <div class="summary-stat clickable-card" onclick="openMemoryDrawer()" style="cursor:pointer">
     <span class="summary-stat-val" id="sum-memories">-</span>
     <span class="summary-stat-label">Memories</span>
   </div>
@@ -184,7 +192,20 @@ export function getDashboardHtml(token: string, chatId: string): string {
 
 <!-- Agent Status Cards -->
 <div id="agents-section" class="mb-5" style="display:none">
-  <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-2">Agents</h2>
+  <div class="flex items-center justify-between mb-2">
+    <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider">Agents</h2>
+    <div class="flex items-center gap-2">
+      <button onclick="openCreateAgentWizard()" style="background:#4f46e5;color:#fff;border:none;border-radius:8px;padding:4px 12px;font-size:12px;font-weight:600;cursor:pointer">+ New Agent</button>
+      <div class="model-picker" onclick="toggleModelPicker(this)" style="display:inline-block">
+        <span class="model-current" style="color:#6b7280">Set all <span style="font-size:8px;opacity:0.5">&#9662;</span></span>
+        <div class="model-menu" style="display:none;right:0;left:auto">
+          <div class="model-opt" data-model="claude-opus-4-6" onclick="pickGlobalModel(this)">All Opus</div>
+          <div class="model-opt" data-model="claude-sonnet-4-6" onclick="pickGlobalModel(this)">All Sonnet</div>
+          <div class="model-opt" data-model="claude-haiku-4-5" onclick="pickGlobalModel(this)">All Haiku</div>
+        </div>
+      </div>
+    </div>
+  </div>
   <div id="agents-container" class="flex flex-wrap gap-3"></div>
 </div>
 
@@ -216,6 +237,157 @@ export function getDashboardHtml(token: string, chatId: string): string {
   </div>
 </div>
 
+<!-- Tasks Inbox -->
+<div id="tasks-inbox-section" class="mb-5" style="display:none">
+  <div class="flex items-center justify-between mb-2">
+    <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider">Tasks</h2>
+    <div class="flex gap-2">
+      <button onclick="autoAssignAll()" id="auto-assign-all-btn" style="background:#1a1a1a;color:#a78bfa;border:1px solid #2a2a2a;border-radius:8px;padding:4px 12px;font-size:12px;font-weight:600;cursor:pointer;display:none">Auto-assign All</button>
+      <button onclick="openMissionModal()" style="background:#4f46e5;color:#fff;border:none;border-radius:8px;padding:4px 12px;font-size:12px;font-weight:600;cursor:pointer">+ New</button>
+    </div>
+  </div>
+  <div id="tasks-inbox" class="flex flex-wrap gap-3"></div>
+</div>
+
+<!-- Mission Control -->
+<div id="mission-section" class="mb-5" style="display:none">
+  <div class="flex items-center justify-between mb-2">
+    <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider">Mission Control</h2>
+    <button onclick="openTaskHistory()" style="background:none;border:none;color:#6b7280;font-size:12px;cursor:pointer">History &rarr;</button>
+  </div>
+  <div id="mission-board" class="flex gap-3 overflow-x-auto pb-2" style="scroll-snap-type: x mandatory;">
+  </div>
+</div>
+
+<!-- Mission Task Creation Modal -->
+<div id="mission-overlay" style="position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:40;opacity:0;pointer-events:none;transition:opacity 0.2s"></div>
+<div id="mission-modal" style="position:fixed;top:50%;left:50%;transform:translate(-50%,-50%) scale(0.95);z-index:50;background:#141414;border:1px solid #2a2a2a;border-radius:12px;width:90%;max-width:440px;opacity:0;pointer-events:none;transition:transform 0.2s ease,opacity 0.2s ease">
+  <div class="flex items-center justify-between px-4 pt-4 pb-2">
+    <h3 class="text-sm font-bold text-white">New Task</h3>
+    <button onclick="closeMissionModal()" class="text-gray-500 hover:text-white" style="background:none;border:none;cursor:pointer;font-size:16px">&times;</button>
+  </div>
+  <div style="padding:0 16px 16px">
+    <input type="text" id="mission-title" placeholder="Title" style="width:100%;background:#1a1a1a;border:1px solid #2a2a2a;border-radius:8px;padding:8px 12px;color:#e0e0e0;font-size:13px;outline:none;margin-bottom:8px;box-sizing:border-box" maxlength="200">
+    <textarea id="mission-prompt" rows="3" placeholder="What should the agent do?" style="width:100%;background:#1a1a1a;border:1px solid #2a2a2a;border-radius:8px;padding:8px 12px;color:#e0e0e0;font-size:13px;outline:none;resize:vertical;margin-bottom:8px;box-sizing:border-box" maxlength="10000"></textarea>
+    <div class="flex gap-2 items-center">
+      <select id="mission-priority" style="background:#1a1a1a;border:1px solid #2a2a2a;border-radius:8px;padding:6px 10px;color:#e0e0e0;font-size:12px;outline:none">
+        <option value="0">Low</option>
+        <option value="5" selected>Medium</option>
+        <option value="10">High</option>
+      </select>
+      <button onclick="createMissionTask()" style="flex:1;background:#4f46e5;color:#fff;border:none;border-radius:8px;padding:8px;font-size:13px;font-weight:600;cursor:pointer">Create</button>
+    </div>
+    <div id="mission-error" class="text-red-400 text-xs mt-2" style="display:none"></div>
+  </div>
+</div>
+
+<!-- Agent Detail Modal -->
+<div id="agent-modal-overlay" style="position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:40;opacity:0;pointer-events:none;transition:opacity 0.2s"></div>
+<div id="agent-modal" style="position:fixed;top:50%;left:50%;transform:translate(-50%,-50%) scale(0.95);z-index:50;background:#141414;border:1px solid #2a2a2a;border-radius:12px;width:90%;max-width:500px;max-height:80vh;opacity:0;pointer-events:none;transition:transform 0.2s ease,opacity 0.2s ease;display:flex;flex-direction:column">
+  <div class="flex items-center justify-between px-4 pt-4 pb-2">
+    <h3 class="text-sm font-bold text-white" id="agent-modal-title">Agent</h3>
+    <button onclick="closeAgentModal()" class="text-gray-500 hover:text-white" style="background:none;border:none;cursor:pointer;font-size:16px">&times;</button>
+  </div>
+  <div id="agent-modal-body" style="overflow-y:auto;padding:0 16px 16px;flex:1"></div>
+</div>
+
+<!-- Create Agent Wizard Modal -->
+<div id="create-agent-overlay" style="position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:40;opacity:0;pointer-events:none;transition:opacity 0.2s"></div>
+<div id="create-agent-modal" style="position:fixed;top:50%;left:50%;transform:translate(-50%,-50%) scale(0.95);z-index:50;background:#141414;border:1px solid #2a2a2a;border-radius:12px;width:90%;max-width:480px;max-height:85vh;opacity:0;pointer-events:none;transition:transform 0.2s ease,opacity 0.2s ease;display:flex;flex-direction:column">
+  <div class="flex items-center justify-between px-4 pt-4 pb-2">
+    <h3 class="text-sm font-bold text-white" id="create-agent-title">New Agent</h3>
+    <button onclick="closeCreateAgentWizard()" class="text-gray-500 hover:text-white" style="background:none;border:none;cursor:pointer;font-size:16px">&times;</button>
+  </div>
+  <!-- Step indicators -->
+  <div class="flex gap-2 px-4 mb-3">
+    <div id="caw-step-1-dot" style="flex:1;height:3px;border-radius:2px;background:#4f46e5;transition:background 0.2s"></div>
+    <div id="caw-step-2-dot" style="flex:1;height:3px;border-radius:2px;background:#2a2a2a;transition:background 0.2s"></div>
+    <div id="caw-step-3-dot" style="flex:1;height:3px;border-radius:2px;background:#2a2a2a;transition:background 0.2s"></div>
+  </div>
+  <div id="create-agent-body" style="overflow-y:auto;padding:0 16px 16px;flex:1">
+    <!-- Step 1: Basics -->
+    <div id="caw-step-1">
+      <label class="text-xs text-gray-400 block mb-1">Agent ID <span class="text-gray-600">(lowercase, no spaces)</span></label>
+      <input type="text" id="caw-id" placeholder="e.g. analytics" style="width:100%;background:#1a1a1a;border:1px solid #2a2a2a;border-radius:8px;padding:8px 12px;color:#e0e0e0;font-size:13px;outline:none;margin-bottom:4px;box-sizing:border-box" maxlength="30" oninput="cawIdChanged()">
+      <div id="caw-id-status" class="text-xs mb-3" style="min-height:16px"></div>
+
+      <label class="text-xs text-gray-400 block mb-1">Display Name</label>
+      <input type="text" id="caw-name" placeholder="e.g. Analytics" style="width:100%;background:#1a1a1a;border:1px solid #2a2a2a;border-radius:8px;padding:8px 12px;color:#e0e0e0;font-size:13px;outline:none;margin-bottom:8px;box-sizing:border-box" maxlength="50" oninput="cawNameManuallyEdited=true">
+
+      <label class="text-xs text-gray-400 block mb-1">Description</label>
+      <input type="text" id="caw-desc" placeholder="What this agent does" style="width:100%;background:#1a1a1a;border:1px solid #2a2a2a;border-radius:8px;padding:8px 12px;color:#e0e0e0;font-size:13px;outline:none;margin-bottom:8px;box-sizing:border-box" maxlength="200">
+
+      <div class="flex gap-2 mb-3">
+        <div style="flex:1">
+          <label class="text-xs text-gray-400 block mb-1">Model</label>
+          <select id="caw-model" style="width:100%;background:#1a1a1a;border:1px solid #2a2a2a;border-radius:8px;padding:8px 10px;color:#e0e0e0;font-size:12px;outline:none">
+            <option value="claude-sonnet-4-6" selected>Sonnet 4.6</option>
+            <option value="claude-opus-4-6">Opus 4.6</option>
+            <option value="claude-haiku-4-5">Haiku 4.5</option>
+          </select>
+        </div>
+        <div style="flex:1">
+          <label class="text-xs text-gray-400 block mb-1">Template</label>
+          <select id="caw-template" style="width:100%;background:#1a1a1a;border:1px solid #2a2a2a;border-radius:8px;padding:8px 10px;color:#e0e0e0;font-size:12px;outline:none">
+            <option value="_template">Blank</option>
+          </select>
+        </div>
+      </div>
+
+      <div id="caw-step1-error" class="text-red-400 text-xs mb-2" style="display:none"></div>
+      <button onclick="cawGoStep2()" style="width:100%;background:#4f46e5;color:#fff;border:none;border-radius:8px;padding:10px;font-size:13px;font-weight:600;cursor:pointer">Next: Set up Telegram bot</button>
+    </div>
+
+    <!-- Step 2: BotFather + Token -->
+    <div id="caw-step-2" style="display:none">
+      <div style="background:#1a1a1a;border:1px solid #2a2a2a;border-radius:10px;padding:14px;margin-bottom:12px">
+        <div class="text-xs text-gray-400 font-semibold uppercase mb-2">Create a Telegram bot</div>
+        <div class="text-xs text-gray-300 leading-relaxed">
+          1. Open <a href="https://t.me/BotFather" target="_blank" rel="noopener" style="color:#60a5fa;text-decoration:none">@BotFather</a> in Telegram<br>
+          2. Send <code style="background:#222;padding:1px 4px;border-radius:3px">/newbot</code><br>
+          3. Name it: <span id="caw-suggested-name" style="color:#a78bfa;cursor:pointer" onclick="copyToClipboard(this.textContent)" title="Click to copy"></span><br>
+          4. Username: <span id="caw-suggested-username" style="color:#a78bfa;cursor:pointer" onclick="copyToClipboard(this.textContent)" title="Click to copy"></span><br>
+          5. Copy the token BotFather gives you
+        </div>
+      </div>
+
+      <label class="text-xs text-gray-400 block mb-1">Bot Token</label>
+      <div style="position:relative">
+        <input type="text" id="caw-token" placeholder="Paste token from BotFather" style="width:100%;background:#1a1a1a;border:1px solid #2a2a2a;border-radius:8px;padding:8px 12px;padding-right:70px;color:#e0e0e0;font-size:13px;outline:none;box-sizing:border-box;font-family:monospace" oninput="cawTokenChanged()">
+        <div id="caw-token-status" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);font-size:11px"></div>
+      </div>
+      <div id="caw-token-info" class="text-xs mt-2" style="min-height:16px"></div>
+
+      <div class="flex gap-2 mt-3">
+        <button onclick="cawGoStep1()" style="flex:0 0 auto;background:#1a1a1a;color:#9ca3af;border:1px solid #2a2a2a;border-radius:8px;padding:10px 16px;font-size:13px;cursor:pointer">Back</button>
+        <button id="caw-create-btn" onclick="cawCreate()" style="flex:1;background:#4f46e5;color:#fff;border:none;border-radius:8px;padding:10px;font-size:13px;font-weight:600;cursor:pointer;opacity:0.5;pointer-events:none">Create Agent</button>
+      </div>
+      <div id="caw-step2-error" class="text-red-400 text-xs mt-2" style="display:none"></div>
+    </div>
+
+    <!-- Step 3: Confirmation + Activate -->
+    <div id="caw-step-3" style="display:none">
+      <div style="text-align:center;margin-bottom:16px">
+        <div style="width:48px;height:48px;border-radius:50%;background:#064e3b;margin:0 auto 8px;display:flex;align-items:center;justify-content:center">
+          <svg width="24" height="24" fill="none" stroke="#6ee7b7" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+        </div>
+        <div class="text-sm font-semibold text-white">Agent Created</div>
+      </div>
+
+      <div style="background:#1a1a1a;border:1px solid #2a2a2a;border-radius:10px;padding:14px;margin-bottom:12px">
+        <div id="caw-summary" class="text-xs text-gray-300 leading-relaxed"></div>
+      </div>
+
+      <div id="caw-activate-section">
+        <button id="caw-activate-btn" onclick="cawActivate()" style="width:100%;background:#064e3b;color:#6ee7b7;border:1px solid #065f46;border-radius:8px;padding:10px;font-size:13px;font-weight:600;cursor:pointer">Activate (install service + start)</button>
+        <div id="caw-activate-status" class="text-xs text-center mt-2" style="min-height:16px"></div>
+      </div>
+
+      <button onclick="closeCreateAgentWizard();loadAgents();loadMissionControl();" style="width:100%;background:#1a1a1a;color:#9ca3af;border:1px solid #2a2a2a;border-radius:8px;padding:8px;font-size:12px;cursor:pointer;margin-top:8px">Done</button>
+    </div>
+  </div>
+</div>
+
 <!-- Desktop: 2-column grid. Mobile: stacked. -->
 <div class="lg:grid lg:grid-cols-2 lg:gap-6">
 
@@ -231,15 +403,21 @@ export function getDashboardHtml(token: string, chatId: string): string {
 <!-- Memory Landscape -->
 <div id="memory-section" class="mt-5">
   <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-2">Memory Landscape</h2>
-  <div class="grid grid-cols-2 gap-3 mb-3">
-    <div class="card clickable-card text-center" onclick="openMemoryDrawer()">
+  <div class="grid grid-cols-3 gap-3 mb-3">
+    <div class="card clickable-card text-center" onclick="openMemoryDrawer()" style="cursor:pointer">
       <div class="stat-val" id="mem-total">-</div>
-      <div class="stat-label">Memories<span class="info-tip"><span class="info-icon">\u24D8</span><span class="info-tooltip">Total structured memories extracted from conversations. Only genuinely important information gets stored.</span></span></div>
+      <div class="stat-label">Memories</div>
       <div class="text-xs text-gray-600 mt-1">Tap to browse</div>
     </div>
-    <div class="card text-center">
+    <div class="card clickable-card text-center" onclick="openInsightsDrawer()" style="cursor:pointer">
       <div class="stat-val" id="mem-consolidations">-</div>
-      <div class="stat-label">Insights<span class="info-tip"><span class="info-icon">\u24D8</span><span class="info-tooltip">Consolidation insights discovered by finding patterns across memories. Generated every 30 minutes.</span></span></div>
+      <div class="stat-label">Insights</div>
+      <div class="text-xs text-gray-600 mt-1">Tap to browse</div>
+    </div>
+    <div class="card clickable-card text-center" onclick="openPinnedDrawer()" style="cursor:pointer">
+      <div class="stat-val" id="mem-pinned" style="color:#60a5fa">-</div>
+      <div class="stat-label">Pinned</div>
+      <div class="text-xs text-gray-600 mt-1">Tap to browse</div>
     </div>
   </div>
   <div class="card">
@@ -313,28 +491,25 @@ export function getDashboardHtml(token: string, chatId: string): string {
 
 <!-- Token / Cost -->
 <div id="token-section" class="mt-5 mb-8">
-  <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-2">Tokens &amp; Cost<span class="info-tip"><span class="info-icon">\u24D8</span><span class="info-tooltip">Token consumption (text units processed by the AI) and associated cost in dollars. Today's totals and all-time cumulative.</span></span></h2>
+  <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-2" id="tokens-section">Token Usage<span class="info-tip"><span class="info-icon">\u24D8</span><span class="info-tooltip">Token consumption (text units processed by the AI). Today's totals and all-time cumulative. Included in your Max subscription.</span></span></h2>
   <div class="card">
     <div class="flex justify-between items-baseline">
       <div>
         <div class="stat-val" id="token-today-cost">-</div>
-        <div class="stat-label">Today's spend</div>
+        <div class="stat-label">Tokens Today</div>
       </div>
       <div class="text-right">
         <div class="stat-val text-base" id="token-today-turns">-</div>
         <div class="stat-label">Turns today</div>
       </div>
     </div>
-    <div class="mt-2 text-xs text-gray-500">All-time: <span id="token-alltime-cost">-</span> across <span id="token-alltime-turns">-</span> turns</div>
+    <div class="mt-2 text-xs text-gray-500">All-time: <span id="token-alltime-cost">-</span> tokens across <span id="token-alltime-turns">-</span> turns</div>
   </div>
   <div class="card">
-    <div class="text-xs text-gray-400 mb-2">Cost Timeline (30d)<span class="info-tip"><span class="info-icon">\u24D8</span><span class="info-tooltip">Daily cost trend in dollars over the last 30 days.</span></span></div>
+    <div class="text-xs text-gray-400 mb-2">Usage Timeline (30d)<span class="info-tip"><span class="info-icon">\u24D8</span><span class="info-tooltip">Daily token usage over the last 30 days.</span></span></div>
     <canvas id="cost-chart" height="140"></canvas>
   </div>
-  <div class="card">
-    <div class="text-xs text-gray-400 mb-2">Cache Hit Rate<span class="info-tip"><span class="info-icon">\u24D8</span><span class="info-tooltip">Cache reuse rate. A high percentage means the bot is efficiently reusing previously processed data, which reduces costs.</span></span></div>
-    <canvas id="cache-chart" height="140"></canvas>
-  </div>
+
 </div>
 
 </div><!-- end RIGHT COLUMN -->
@@ -365,6 +540,21 @@ export function getDashboardHtml(token: string, chatId: string): string {
   <div class="drawer-body" id="drawer-body"></div>
   <div id="drawer-load-more" class="px-4 pb-4 hidden">
     <button onclick="loadMoreMemories()" class="w-full py-2 text-sm text-gray-400 bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg hover:text-white transition">Load more</button>
+  </div>
+</div>
+
+<!-- Task History Drawer -->
+<div id="history-overlay" class="drawer-overlay" onclick="closeTaskHistory()"></div>
+<div id="history-drawer" class="drawer">
+  <div class="drawer-handle"></div>
+  <div class="flex items-center justify-between px-4 pt-3 pb-1">
+    <h3 class="text-base font-bold text-white">Task History</h3>
+    <button onclick="closeTaskHistory()" class="text-gray-500 hover:text-white text-xl leading-none">&times;</button>
+  </div>
+  <div class="px-4 pb-2"><span class="text-xs text-gray-500" id="history-count"></span></div>
+  <div class="drawer-body" id="history-body"></div>
+  <div id="history-load-more" class="px-4 pb-4 hidden">
+    <button onclick="loadMoreHistory()" class="w-full py-2 text-sm text-gray-400 bg-[#1a1a1a] border border-[#2a2a2a] rounded-lg hover:text-white transition">Load more</button>
   </div>
 </div>
 
@@ -444,6 +634,59 @@ async function openMemoryDrawer() {
   await loadDrawerPage();
 }
 
+async function openPinnedDrawer() {
+  document.getElementById('drawer-title').textContent = 'Pinned Memories';
+  document.getElementById('drawer-count').textContent = '';
+  document.getElementById('drawer-avg-salience').textContent = '';
+  document.getElementById('drawer-body').innerHTML = '<div class="text-gray-500 text-sm text-center py-8">Loading...</div>';
+  document.getElementById('drawer-load-more').classList.add('hidden');
+  document.getElementById('drawer-overlay').classList.add('open');
+  document.getElementById('drawer').classList.add('open');
+  document.body.style.overflow = 'hidden';
+  try {
+    var data = await api('/api/memories/pinned?chatId=' + CHAT_ID);
+    var mems = data.memories || [];
+    document.getElementById('drawer-count').textContent = mems.length + ' pinned';
+    if (mems.length === 0) {
+      document.getElementById('drawer-body').innerHTML = '<div class="text-gray-500 text-sm text-center py-8">No pinned memories. Use /pin to make important memories permanent.</div>';
+      return;
+    }
+    document.getElementById('drawer-body').innerHTML = mems.map(renderMemoryItem).join('');
+  } catch(e) {
+    document.getElementById('drawer-body').innerHTML = '<div class="text-red-400 text-sm text-center py-8">Failed to load pinned memories</div>';
+  }
+}
+
+async function openInsightsDrawer() {
+  document.getElementById('drawer-title').textContent = 'Consolidation Insights';
+  document.getElementById('drawer-count').textContent = '';
+  document.getElementById('drawer-avg-salience').textContent = '';
+  document.getElementById('drawer-body').innerHTML = '<div class="text-gray-500 text-sm text-center py-8">Loading...</div>';
+  document.getElementById('drawer-load-more').classList.add('hidden');
+  document.getElementById('drawer-overlay').classList.add('open');
+  document.getElementById('drawer').classList.add('open');
+  document.body.style.overflow = 'hidden';
+  try {
+    var data = await api('/api/memories?chatId=' + CHAT_ID);
+    var insights = data.consolidations || [];
+    document.getElementById('drawer-count').textContent = insights.length + ' insights';
+    if (insights.length === 0) {
+      document.getElementById('drawer-body').innerHTML = '<div class="text-gray-500 text-sm text-center py-8">No insights yet. Consolidation runs every 30 minutes.</div>';
+      return;
+    }
+    document.getElementById('drawer-body').innerHTML = insights.map(function(c) {
+      var date = new Date(c.created_at * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      return '<div style="background:#1a1a1a;border:1px solid #2a2a2a;border-radius:8px;padding:12px;margin-bottom:8px">' +
+        '<div class="text-xs text-purple-400 mb-1">' + date + '</div>' +
+        '<div class="text-sm text-white mb-2">' + escapeHtml(c.insight || c.summary) + '</div>' +
+        (c.summary && c.insight ? '<div class="text-xs text-gray-500">' + escapeHtml(c.summary) + '</div>' : '') +
+      '</div>';
+    }).join('');
+  } catch(e) {
+    document.getElementById('drawer-body').innerHTML = '<div class="text-red-400 text-sm text-center py-8">Failed to load insights</div>';
+  }
+}
+
 async function loadDrawerPage() {
   const data = await api('/api/memories/list?chatId=' + CHAT_ID + '&sort=importance&limit=' + DRAWER_PAGE + '&offset=' + drawerOffset);
   drawerTotal = data.total;
@@ -476,7 +719,7 @@ function api(path) {
   return fetch(BASE + path + sep + 'token=' + TOKEN).then(r => r.json());
 }
 
-let salienceChart, memTimelineChart, costChart, cacheChart;
+let salienceChart, memTimelineChart, costChart;
 
 function cronToHuman(cron) {
   const parts = cron.split(' ');
@@ -577,6 +820,7 @@ async function loadMemories() {
     const data = await api('/api/memories?chatId=' + CHAT_ID);
     document.getElementById('mem-total').textContent = data.stats.total;
     document.getElementById('mem-consolidations').textContent = data.stats.consolidations;
+    document.getElementById('mem-pinned').textContent = data.stats.pinned || '0';
 
     // Importance distribution chart
     const bucketLabels = ['0-0.2','0.2-0.4','0.4-0.6','0.6-0.8','0.8-1.0'];
@@ -672,39 +916,28 @@ async function loadHealth() {
 async function loadTokens() {
   try {
     const data = await api('/api/tokens?chatId=' + CHAT_ID);
-    document.getElementById('token-today-cost').textContent = '$' + data.stats.todayCost.toFixed(2);
+    var todayTok = (data.stats.todayInput || 0) + (data.stats.todayOutput || 0);
+    document.getElementById('token-today-cost').textContent = todayTok > 1000 ? Math.round(todayTok / 1000).toLocaleString() + 'k' : todayTok.toString();
     document.getElementById('token-today-turns').textContent = data.stats.todayTurns;
-    document.getElementById('token-alltime-cost').textContent = '$' + data.stats.allTimeCost.toFixed(2);
+    var allTok = (data.stats.allTimeInput || 0) + (data.stats.allTimeOutput || 0);
+    document.getElementById('token-alltime-cost').textContent = allTok > 1000000 ? (allTok / 1000000).toFixed(1) + 'M' : allTok > 1000 ? Math.round(allTok / 1000) + 'k' : allTok.toString();
     document.getElementById('token-alltime-turns').textContent = data.stats.allTimeTurns;
 
-    // Cost timeline
+    // Usage timeline (turns per day)
     if (costChart) costChart.destroy();
     if (data.costTimeline.length > 0) {
       costChart = new Chart(document.getElementById('cost-chart'), {
         type: 'line',
         data: {
           labels: data.costTimeline.map(d => d.date.slice(5)),
-          datasets: [{ label: 'Cost ($)', data: data.costTimeline.map(d => d.cost), borderColor: '#8b5cf6', backgroundColor: 'rgba(139,92,246,0.1)', fill: true, tension: 0.3, pointRadius: 2 }]
+          datasets: [{ label: 'Turns', data: data.costTimeline.map(d => d.turns), borderColor: '#8b5cf6', backgroundColor: 'rgba(139,92,246,0.1)', fill: true, tension: 0.3, pointRadius: 2 }]
         },
-        options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { ticks: { color: '#666', callback: v => '$'+v.toFixed(2) }, grid: { color: '#222' } }, x: { ticks: { color: '#666', maxRotation: 0, autoSkip: true, maxTicksLimit: 8 }, grid: { display: false } } } }
+        options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { ticks: { color: '#666' }, grid: { color: '#222' } }, x: { ticks: { color: '#666', maxRotation: 0, autoSkip: true, maxTicksLimit: 8 }, grid: { display: false } } } }
       });
     }
 
     // Cache doughnut
     if (cacheChart) cacheChart.destroy();
-    if (data.recentUsage.length > 0) {
-      let totalCache = 0, totalInput = 0;
-      data.recentUsage.forEach(r => { totalCache += r.cache_read; totalInput += r.input_tokens; });
-      const hitPct = totalInput > 0 ? Math.round((totalCache / totalInput) * 100) : 0;
-      cacheChart = new Chart(document.getElementById('cache-chart'), {
-        type: 'doughnut',
-        data: {
-          labels: ['Cache Hit', 'Cache Miss'],
-          datasets: [{ data: [hitPct, 100 - hitPct], backgroundColor: ['#22c55e', '#2a2a2a'], borderWidth: 0 }]
-        },
-        options: { responsive: true, cutout: '70%', plugins: { legend: { labels: { color: '#888' } } } }
-      });
-    }
   } catch(e) {
     console.error('Token load error', e);
   }
@@ -754,65 +987,493 @@ async function loadAgents() {
     const data = await api('/api/agents');
     const section = document.getElementById('agents-section');
     const container = document.getElementById('agents-container');
-    if (!data.agents || data.agents.length <= 1) { section.style.display = 'none'; return; }
+    // Always show agents section so "+ New Agent" button is accessible
     section.style.display = '';
+    if (!data.agents || data.agents.length <= 1) {
+      container.innerHTML = '<div class="text-xs text-gray-600 py-2">No agents yet. Click + New Agent to create one.</div>';
+      return;
+    }
     container.innerHTML = data.agents.map(a => {
       const color = AGENT_COLORS[a.id] || '#6b7280';
       const dot = a.running ? '<span style="color:#6ee7b7">\u25CF</span>' : '<span style="color:#666">\u25CB</span>';
       const statusText = a.running ? 'live' : 'off';
-      const modelShort = (a.model || '').replace('claude-', '').replace(/-\d+.*/, '');
+      const modelOpts = ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-sonnet-4-5', 'claude-haiku-4-5'];
+      const modelShort = function(m) { return {'claude-opus-4-6':'Opus','claude-sonnet-4-6':'Sonnet','claude-sonnet-4-5':'Sonnet 4.5','claude-haiku-4-5':'Haiku'}[m] || m; };
+      const currentModel = a.model || (a.id === 'main' ? 'claude-opus-4-6' : 'claude-sonnet-4-6');
+      const modelLabel = modelShort(currentModel);
+      const modelSelect = '<div class="model-picker" data-agent="' + a.id + '" onclick="event.stopPropagation();toggleModelPicker(this)">' +
+        '<span class="model-current">' + modelLabel + ' <span style="font-size:8px;opacity:0.5">&#9662;</span></span>' +
+        '<div class="model-menu" style="display:none">' +
+          modelOpts.map(m => '<div class="model-opt' + (currentModel === m ? ' model-active' : '') + '" data-model="' + m + '" onclick="pickModel(this)">' + modelShort(m) + '</div>').join('') +
+        '</div>' +
+      '</div>';
       return '<div class="card clickable-card" style="min-width:130px;flex:1;max-width:220px;border-left:3px solid ' + color + '" data-agent="' + a.id + '" onclick="toggleAgentDetail(this.dataset.agent)">' +
         '<div class="font-bold text-white text-sm">' + a.name + '</div>' +
         '<div class="text-xs mt-1">' + dot + ' ' + statusText + '</div>' +
-        '<div class="text-xs text-gray-500">' + modelShort + '</div>' +
-        (a.running ? '<div class="text-xs text-gray-400 mt-1">' + a.todayTurns + ' turns &middot; $' + (a.todayCost||0).toFixed(2) + '</div>' : '') +
-        '<div id="agent-detail-' + a.id + '" style="display:none" class="mt-2 pt-2" style="border-top:1px solid #333"></div>' +
+        modelSelect +
+        (a.running ? '<div class="text-xs text-gray-400 mt-1">' + a.todayTurns + ' turns</div>' : '') +
       '</div>';
     }).join('');
   } catch {}
 }
 
-async function toggleAgentDetail(agentId) {
-  const el = document.getElementById('agent-detail-' + agentId);
-  if (!el) return;
-  if (el.style.display !== 'none') { el.style.display = 'none'; return; }
-  el.style.display = '';
-  el.innerHTML = '<div class="text-xs text-gray-500">Loading...</div>';
+function toggleModelPicker(el) {
+  var menu = el.querySelector('.model-menu');
+  var isOpen = menu.style.display !== 'none';
+  // Close all other menus first
+  document.querySelectorAll('.model-menu').forEach(function(m) { m.style.display = 'none'; });
+  menu.style.display = isOpen ? 'none' : '';
+}
+
+async function pickModel(optEl) {
+  var model = optEl.dataset.model;
+  var picker = optEl.closest('.model-picker');
+  var agentId = picker.dataset.agent;
+  picker.querySelector('.model-menu').style.display = 'none';
   try {
-    const [tasks, hive, convo] = await Promise.all([
+    await fetch(BASE + '/api/agents/' + agentId + '/model?token=' + TOKEN, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: model }),
+    });
+    await loadAgents();
+  } catch(e) { console.error('Model update failed:', e); }
+}
+
+async function pickGlobalModel(optEl) {
+  var model = optEl.dataset.model;
+  optEl.closest('.model-menu').style.display = 'none';
+  try {
+    await fetch(BASE + '/api/agents/model?token=' + TOKEN, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: model }),
+    });
+    await loadAgents();
+  } catch(e) { console.error('Global model update failed:', e); }
+}
+
+// Close model menus when clicking outside
+document.addEventListener('click', function(e) {
+  if (!e.target.closest('.model-picker')) {
+    document.querySelectorAll('.model-menu').forEach(function(m) { m.style.display = 'none'; });
+  }
+});
+
+async function toggleAgentDetail(agentId) {
+  var overlay = document.getElementById('agent-modal-overlay');
+  var modal = document.getElementById('agent-modal');
+  var title = document.getElementById('agent-modal-title');
+  var body = document.getElementById('agent-modal-body');
+
+  // Find agent info
+  var agent = missionAgentsList.find(function(a) { return a.id === agentId; });
+  var color = AGENT_COLORS[agentId] || '#6b7280';
+  title.innerHTML = '<span style="color:' + color + '">' + (agent ? agent.name : agentId) + '</span>';
+  body.innerHTML = '<div class="text-gray-500 text-sm text-center py-8">Loading...</div>';
+
+  overlay.style.opacity = '1';
+  overlay.style.pointerEvents = 'auto';
+  modal.style.opacity = '1';
+  modal.style.pointerEvents = 'auto';
+  modal.style.transform = 'translate(-50%,-50%) scale(1)';
+
+  try {
+    var results = await Promise.all([
       api('/api/agents/' + agentId + '/tasks'),
-      api('/api/hive-mind?agent=' + agentId + '&limit=5'),
-      api('/api/agents/' + agentId + '/conversation?chatId=' + CHAT_ID + '&limit=4'),
+      api('/api/hive-mind?agent=' + agentId + '&limit=8'),
+      api('/api/agents/' + agentId + '/conversation?chatId=' + CHAT_ID + '&limit=6'),
     ]);
-    let html = '';
+    var tasks = results[0], hive = results[1], convo = results[2];
+    var html = '';
+
     // Last conversation
     if (convo.turns && convo.turns.length > 0) {
-      html += '<div class="text-xs text-gray-400 font-semibold mb-1" style="border-top:1px solid #333;padding-top:8px">Last conversation</div>';
-      const sorted = convo.turns.slice().reverse();
-      html += sorted.map(t => {
-        const role = t.role === 'user' ? '<span style="color:#818cf8">You</span>' : '<span style="color:#6ee7b7">Agent</span>';
-        const text = t.content.length > 120 ? t.content.slice(0, 120) + '...' : t.content;
-        return '<div class="text-xs text-gray-400 mt-1">' + role + ': ' + escapeHtml(text) + '</div>';
+      html += '<div class="text-xs text-gray-400 font-semibold mb-2 uppercase">Recent conversation</div>';
+      var sorted = convo.turns.slice().reverse();
+      html += sorted.map(function(t) {
+        var role = t.role === 'user' ? '<span style="color:#818cf8">You</span>' : '<span style="color:#6ee7b7">Agent</span>';
+        var text = t.content.length > 200 ? t.content.slice(0, 200) + '...' : t.content;
+        return '<div style="background:#1a1a1a;border-radius:6px;padding:8px;margin-bottom:4px">' +
+          '<div class="text-xs" style="margin-bottom:2px">' + role + '</div>' +
+          '<div class="text-xs text-gray-400">' + escapeHtml(text) + '</div></div>';
       }).join('');
     }
-    // Hive mind
+
+    // Hive mind activity
     if (hive.entries && hive.entries.length > 0) {
-      html += '<div class="text-xs text-gray-400 font-semibold mt-2 mb-1" style="border-top:1px solid #333;padding-top:8px">Hive mind</div>';
-      html += hive.entries.map(e => {
-        const time = new Date(e.created_at * 1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
-        return '<div class="text-xs text-gray-400">' + time + ' ' + e.action + ' — ' + e.summary + '</div>';
+      html += '<div class="text-xs text-gray-400 font-semibold mt-3 mb-2 uppercase">Hive Mind activity</div>';
+      html += hive.entries.map(function(e) {
+        var time = new Date(e.created_at * 1000).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+        return '<div style="background:#1a1a1a;border-radius:6px;padding:8px;margin-bottom:4px">' +
+          '<span class="text-xs text-gray-500">' + time + '</span> ' +
+          '<span class="text-xs text-gray-400">' + escapeHtml(e.summary) + '</span></div>';
       }).join('');
     }
-    // Tasks
+
+    // Scheduled tasks
     if (tasks.tasks && tasks.tasks.length > 0) {
-      html += '<div class="text-xs text-gray-400 font-semibold mt-2 mb-1" style="border-top:1px solid #333;padding-top:8px">Scheduled (' + tasks.tasks.length + ')</div>';
-      html += tasks.tasks.slice(0, 3).map(t =>
-        '<div class="text-xs text-gray-500">' + t.prompt.slice(0, 60) + (t.prompt.length > 60 ? '...' : '') + '</div>'
-      ).join('');
+      html += '<div class="text-xs text-gray-400 font-semibold mt-3 mb-2 uppercase">Scheduled tasks (' + tasks.tasks.length + ')</div>';
+      html += tasks.tasks.slice(0, 5).map(function(t) {
+        return '<div style="background:#1a1a1a;border-radius:6px;padding:8px;margin-bottom:4px">' +
+          '<div class="text-xs text-gray-300">' + escapeHtml(t.prompt.slice(0, 100)) + '</div>' +
+          '<div class="text-xs text-gray-600 mt-1">' + t.schedule + '</div></div>';
+      }).join('');
     }
-    if (!html) html = '<div class="text-xs text-gray-500">No activity yet</div>';
-    el.innerHTML = html;
-  } catch { el.innerHTML = '<div class="text-xs text-red-400">Failed to load</div>'; }
+
+    // Agent management controls (not for main)
+    if (agentId !== 'main') {
+      html += '<div class="flex gap-2 mt-4 pt-3" style="border-top:1px solid #2a2a2a">';
+      if (agent && agent.running) {
+        html += '<button data-agent="' + agentId + '" data-act="stop" onclick="agentModalAction(this.dataset.agent,this.dataset.act)" style="flex:1;background:#1a1a1a;color:#f87171;border:1px solid #7f1d1d;border-radius:8px;padding:8px;font-size:12px;font-weight:600;cursor:pointer">Stop</button>';
+      } else {
+        html += '<button data-agent="' + agentId + '" data-act="start" onclick="agentModalAction(this.dataset.agent,this.dataset.act)" style="flex:1;background:#064e3b;color:#6ee7b7;border:1px solid #065f46;border-radius:8px;padding:8px;font-size:12px;font-weight:600;cursor:pointer">Start</button>';
+      }
+      html += '<button data-agent="' + agentId + '" data-act="delete" onclick="agentModalAction(this.dataset.agent,this.dataset.act)" style="background:#1a1a1a;color:#6b7280;border:1px solid #2a2a2a;border-radius:8px;padding:8px 14px;font-size:12px;cursor:pointer">Delete</button>';
+      html += '</div>';
+      html += '<div id="agent-action-status" class="text-xs text-center mt-2" style="min-height:16px"></div>';
+    }
+
+    if (!html) html = '<div class="text-gray-500 text-sm text-center py-8">No activity yet for this agent.</div>';
+    body.innerHTML = html;
+  } catch(e) { body.innerHTML = '<div class="text-red-400 text-sm text-center py-8">Failed to load agent details</div>'; }
+}
+
+async function agentModalAction(agentId, action) {
+  var status = document.getElementById('agent-action-status');
+  if (!status) return;
+
+  if (action === 'delete') {
+    if (!confirm('Delete agent "' + agentId + '"? This removes all config, the service, and the bot token from .env.')) return;
+    status.innerHTML = '<span style="color:#fbbf24">Deleting...</span>';
+    try {
+      var res = await fetch(BASE + '/api/agents/' + agentId + '/full?token=' + TOKEN, { method: 'DELETE' });
+      var data = await res.json();
+      if (data.ok) {
+        status.innerHTML = '<span style="color:#6ee7b7">Deleted</span>';
+        setTimeout(function() { closeAgentModal(); loadAgents(); loadMissionControl(); }, 800);
+      } else {
+        status.innerHTML = '<span style="color:#f87171">' + escapeHtml(data.error || 'Delete failed') + '</span>';
+      }
+    } catch(e) { status.innerHTML = '<span style="color:#f87171">Network error</span>'; }
+    return;
+  }
+
+  if (action === 'stop') {
+    status.innerHTML = '<span style="color:#fbbf24">Stopping...</span>';
+    try {
+      await fetch(BASE + '/api/agents/' + agentId + '/deactivate?token=' + TOKEN, { method: 'POST' });
+      status.innerHTML = '<span style="color:#6ee7b7">Stopped</span>';
+      setTimeout(function() { closeAgentModal(); loadAgents(); }, 800);
+    } catch(e) { status.innerHTML = '<span style="color:#f87171">Failed</span>'; }
+    return;
+  }
+
+  if (action === 'start') {
+    status.innerHTML = '<span style="color:#fbbf24">Starting...</span>';
+    try {
+      var res = await fetch(BASE + '/api/agents/' + agentId + '/activate?token=' + TOKEN, { method: 'POST' });
+      var data = await res.json();
+      if (data.ok) {
+        status.innerHTML = '<span style="color:#6ee7b7">Started' + (data.pid ? ' (PID ' + data.pid + ')' : '') + '</span>';
+        setTimeout(function() { closeAgentModal(); loadAgents(); }, 800);
+      } else {
+        status.innerHTML = '<span style="color:#f87171">' + escapeHtml(data.error || 'Start failed') + '</span>';
+      }
+    } catch(e) { status.innerHTML = '<span style="color:#f87171">Network error</span>'; }
+  }
+}
+
+function closeAgentModal() {
+  var overlay = document.getElementById('agent-modal-overlay');
+  var modal = document.getElementById('agent-modal');
+  overlay.style.opacity = '0';
+  overlay.style.pointerEvents = 'none';
+  modal.style.opacity = '0';
+  modal.style.pointerEvents = 'none';
+  modal.style.transform = 'translate(-50%,-50%) scale(0.95)';
+}
+document.getElementById('agent-modal-overlay').addEventListener('click', closeAgentModal);
+
+// ── Create Agent Wizard ──────────────────────────────────────────────
+
+let cawStep = 1;
+let cawIdValid = false;
+let cawTokenValid = false;
+let cawBotInfo = null;
+let cawCreatedId = null;
+let cawIdDebounce = null;
+let cawTokenDebounce = null;
+let cawNameManuallyEdited = false;
+
+function openCreateAgentWizard() {
+  cawStep = 1;
+  cawIdValid = false;
+  cawTokenValid = false;
+  cawBotInfo = null;
+  cawCreatedId = null;
+  cawNameManuallyEdited = false;
+  document.getElementById('caw-id').value = '';
+  document.getElementById('caw-name').value = '';
+  document.getElementById('caw-desc').value = '';
+  document.getElementById('caw-model').value = 'claude-sonnet-4-6';
+  document.getElementById('caw-token').value = '';
+  document.getElementById('caw-id-status').innerHTML = '';
+  document.getElementById('caw-token-status').innerHTML = '';
+  document.getElementById('caw-token-info').innerHTML = '';
+  document.getElementById('caw-step1-error').style.display = 'none';
+  document.getElementById('caw-step2-error').style.display = 'none';
+  cawShowStep(1);
+  loadCawTemplates();
+  var o = document.getElementById('create-agent-overlay');
+  var m = document.getElementById('create-agent-modal');
+  o.style.opacity = '1'; o.style.pointerEvents = 'auto';
+  m.style.opacity = '1'; m.style.pointerEvents = 'auto';
+  m.style.transform = 'translate(-50%,-50%) scale(1)';
+  setTimeout(function() { document.getElementById('caw-id').focus(); }, 200);
+}
+
+function closeCreateAgentWizard() {
+  var o = document.getElementById('create-agent-overlay');
+  var m = document.getElementById('create-agent-modal');
+  o.style.opacity = '0'; o.style.pointerEvents = 'none';
+  m.style.opacity = '0'; m.style.pointerEvents = 'none';
+  m.style.transform = 'translate(-50%,-50%) scale(0.95)';
+}
+document.getElementById('create-agent-overlay').addEventListener('click', closeCreateAgentWizard);
+
+function cawShowStep(n) {
+  cawStep = n;
+  document.getElementById('caw-step-1').style.display = n === 1 ? '' : 'none';
+  document.getElementById('caw-step-2').style.display = n === 2 ? '' : 'none';
+  document.getElementById('caw-step-3').style.display = n === 3 ? '' : 'none';
+  for (var i = 1; i <= 3; i++) {
+    document.getElementById('caw-step-' + i + '-dot').style.background = i <= n ? '#4f46e5' : '#2a2a2a';
+  }
+  var titles = { 1: 'New Agent', 2: 'Connect Telegram', 3: 'Agent Created' };
+  document.getElementById('create-agent-title').textContent = titles[n] || 'New Agent';
+}
+
+async function loadCawTemplates() {
+  try {
+    var data = await api('/api/agents/templates');
+    var sel = document.getElementById('caw-template');
+    sel.innerHTML = '';
+    (data.templates || []).forEach(function(t) {
+      var opt = document.createElement('option');
+      opt.value = t.id;
+      opt.textContent = t.name + (t.id === '_template' ? '' : ' - ' + t.description.slice(0, 40));
+      sel.appendChild(opt);
+    });
+  } catch(e) { console.error('Templates load error:', e); }
+}
+
+function cawIdChanged() {
+  var id = document.getElementById('caw-id').value.trim().toLowerCase();
+  document.getElementById('caw-id').value = id;
+  var status = document.getElementById('caw-id-status');
+  cawIdValid = false;
+
+  if (!id) { status.innerHTML = ''; return; }
+
+  // Auto-fill name from ID unless user has manually typed a name
+  if (!cawNameManuallyEdited) {
+    var nameInput = document.getElementById('caw-name');
+    nameInput.value = id.replace(/[-_]/g, ' ').replace(/\\b\\w/g, function(c) { return c.toUpperCase(); });
+  }
+
+  clearTimeout(cawIdDebounce);
+  status.innerHTML = '<span style="color:#6b7280">Checking...</span>';
+  cawIdDebounce = setTimeout(async function() {
+    try {
+      var data = await api('/api/agents/validate-id?id=' + encodeURIComponent(id));
+      if (data.ok) {
+        cawIdValid = true;
+        status.innerHTML = '<span style="color:#6ee7b7">Available</span>';
+      } else {
+        status.innerHTML = '<span style="color:#f87171">' + escapeHtml(data.error) + '</span>';
+      }
+    } catch(e) {
+      status.innerHTML = '<span style="color:#f87171">Validation error</span>';
+    }
+  }, 400);
+}
+
+function cawGoStep1() { cawShowStep(1); }
+
+function cawGoStep2() {
+  var id = document.getElementById('caw-id').value.trim();
+  var name = document.getElementById('caw-name').value.trim();
+  var desc = document.getElementById('caw-desc').value.trim();
+  var errEl = document.getElementById('caw-step1-error');
+
+  if (!id) { errEl.textContent = 'Agent ID is required'; errEl.style.display = ''; return; }
+  if (!cawIdValid) { errEl.textContent = 'Agent ID is not valid or already taken'; errEl.style.display = ''; return; }
+  if (!name) { errEl.textContent = 'Display name is required'; errEl.style.display = ''; return; }
+  if (!desc) { errEl.textContent = 'Description is required'; errEl.style.display = ''; return; }
+
+  errEl.style.display = 'none';
+
+  // Set suggested bot names
+  var label = id.replace(/[-_]/g, ' ').replace(/\\b\\w/g, function(c) { return c.toUpperCase(); });
+  document.getElementById('caw-suggested-name').textContent = 'ClaudeClaw ' + label;
+  document.getElementById('caw-suggested-username').textContent = 'claudeclaw_' + id.replace(/-/g, '_') + '_bot';
+
+  // Reset token state
+  cawTokenValid = false;
+  cawBotInfo = null;
+  document.getElementById('caw-token').value = '';
+  document.getElementById('caw-token-status').innerHTML = '';
+  document.getElementById('caw-token-info').innerHTML = '';
+  var btn = document.getElementById('caw-create-btn');
+  btn.style.opacity = '0.5';
+  btn.style.pointerEvents = 'none';
+
+  cawShowStep(2);
+  setTimeout(function() { document.getElementById('caw-token').focus(); }, 200);
+}
+
+function cawTokenChanged() {
+  var token = document.getElementById('caw-token').value.trim();
+  var status = document.getElementById('caw-token-status');
+  var info = document.getElementById('caw-token-info');
+  var btn = document.getElementById('caw-create-btn');
+  cawTokenValid = false;
+  cawBotInfo = null;
+  btn.style.opacity = '0.5';
+  btn.style.pointerEvents = 'none';
+
+  if (!token || !token.includes(':')) {
+    status.innerHTML = '';
+    info.innerHTML = '';
+    return;
+  }
+
+  clearTimeout(cawTokenDebounce);
+  status.innerHTML = '<span style="color:#fbbf24">...</span>';
+  info.innerHTML = '';
+
+  cawTokenDebounce = setTimeout(async function() {
+    try {
+      var data = await fetch(BASE + '/api/agents/validate-token?token=' + TOKEN, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: token }),
+      }).then(function(r) { return r.json(); });
+
+      if (data.ok && data.botInfo) {
+        cawTokenValid = true;
+        cawBotInfo = data.botInfo;
+        status.innerHTML = '<span style="color:#6ee7b7">&#10003;</span>';
+        info.innerHTML = '<span style="color:#6ee7b7">Verified: @' + escapeHtml(data.botInfo.username) + '</span>';
+        btn.style.opacity = '1';
+        btn.style.pointerEvents = 'auto';
+      } else {
+        status.innerHTML = '<span style="color:#f87171">&#10007;</span>';
+        info.innerHTML = '<span style="color:#f87171">' + escapeHtml(data.error || 'Invalid token') + '</span>';
+      }
+    } catch(e) {
+      status.innerHTML = '<span style="color:#f87171">!</span>';
+      info.innerHTML = '<span style="color:#f87171">Could not validate</span>';
+    }
+  }, 600);
+}
+
+async function cawCreate() {
+  if (!cawTokenValid) return;
+
+  var btn = document.getElementById('caw-create-btn');
+  var errEl = document.getElementById('caw-step2-error');
+  btn.textContent = 'Creating...';
+  btn.style.pointerEvents = 'none';
+  errEl.style.display = 'none';
+
+  try {
+    var res = await fetch(BASE + '/api/agents/create?token=' + TOKEN, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: document.getElementById('caw-id').value.trim(),
+        name: document.getElementById('caw-name').value.trim(),
+        description: document.getElementById('caw-desc').value.trim(),
+        model: document.getElementById('caw-model').value,
+        template: document.getElementById('caw-template').value,
+        botToken: document.getElementById('caw-token').value.trim(),
+      }),
+    });
+    var data = await res.json();
+    if (!res.ok || data.error) {
+      errEl.textContent = data.error || 'Failed to create agent';
+      errEl.style.display = '';
+      btn.textContent = 'Create Agent';
+      btn.style.pointerEvents = 'auto';
+      return;
+    }
+
+    cawCreatedId = data.agentId;
+
+    // Build summary
+    var summary = '<div style="margin-bottom:6px"><span style="color:#6b7280">Agent ID:</span> <span class="text-white">' + escapeHtml(data.agentId) + '</span></div>' +
+      '<div style="margin-bottom:6px"><span style="color:#6b7280">Bot:</span> <span style="color:#6ee7b7">@' + escapeHtml(data.botInfo.username) + '</span></div>' +
+      '<div style="margin-bottom:6px"><span style="color:#6b7280">Directory:</span> <span style="color:#9ca3af;font-size:11px">' + escapeHtml(data.agentDir) + '</span></div>' +
+      '<div><span style="color:#6b7280">Token stored as:</span> <span style="color:#9ca3af">' + escapeHtml(data.envKey) + '</span></div>';
+    document.getElementById('caw-summary').innerHTML = summary;
+
+    // Reset activate section
+    var actBtn = document.getElementById('caw-activate-btn');
+    actBtn.textContent = 'Activate (install service + start)';
+    actBtn.style.opacity = '1';
+    actBtn.style.pointerEvents = 'auto';
+    actBtn.style.background = '#064e3b';
+    actBtn.style.color = '#6ee7b7';
+    actBtn.style.borderColor = '#065f46';
+    document.getElementById('caw-activate-status').innerHTML = '';
+
+    cawShowStep(3);
+  } catch(e) {
+    errEl.textContent = 'Network error';
+    errEl.style.display = '';
+    btn.textContent = 'Create Agent';
+    btn.style.pointerEvents = 'auto';
+  }
+}
+
+async function cawActivate() {
+  if (!cawCreatedId) return;
+  var btn = document.getElementById('caw-activate-btn');
+  var status = document.getElementById('caw-activate-status');
+  btn.textContent = 'Starting...';
+  btn.style.pointerEvents = 'none';
+  status.innerHTML = '<span style="color:#fbbf24">Installing service and starting agent...</span>';
+
+  try {
+    var res = await fetch(BASE + '/api/agents/' + cawCreatedId + '/activate?token=' + TOKEN, { method: 'POST' });
+    var data = await res.json();
+    if (data.ok) {
+      btn.textContent = 'Running';
+      btn.style.background = '#064e3b';
+      btn.style.color = '#6ee7b7';
+      status.innerHTML = '<span style="color:#6ee7b7">Agent is live' + (data.pid ? ' (PID ' + data.pid + ')' : '') + '. Send it a message in Telegram!</span>';
+    } else {
+      btn.textContent = 'Retry Activation';
+      btn.style.pointerEvents = 'auto';
+      status.innerHTML = '<span style="color:#f87171">' + escapeHtml(data.error || 'Activation failed') + '</span>';
+    }
+  } catch(e) {
+    btn.textContent = 'Retry Activation';
+    btn.style.pointerEvents = 'auto';
+    status.innerHTML = '<span style="color:#f87171">Network error</span>';
+  }
+}
+
+function copyToClipboard(text) {
+  navigator.clipboard.writeText(text).then(function() {
+    // Brief visual feedback
+    var el = event.target;
+    var orig = el.style.color;
+    el.style.color = '#6ee7b7';
+    setTimeout(function() { el.style.color = orig; }, 800);
+  }).catch(function() {});
 }
 
 async function loadHiveMind() {
@@ -893,7 +1554,8 @@ async function loadSummary() {
     document.getElementById('sum-messages').textContent = tokens.stats.todayTurns || '0';
     const activeCount = agents.agents ? agents.agents.filter(a => a.running).length : 0;
     document.getElementById('sum-agents').textContent = activeCount + '/' + (agents.agents ? agents.agents.length : 0);
-    document.getElementById('sum-cost').textContent = '$' + (tokens.stats.todayCost || 0).toFixed(2);
+    var totalTokens = (tokens.stats.todayInput || 0) + (tokens.stats.todayOutput || 0);
+    document.getElementById('sum-cost').textContent = totalTokens > 1000 ? Math.round(totalTokens / 1000) + 'k' : totalTokens.toString();
     document.getElementById('sum-memories').textContent = mems.stats.total || '0';
   } catch {}
 }
@@ -999,10 +1661,366 @@ async function loadOrchestrationIssues() {
   } catch(e) { console.error('issues load failed', e); }
 }
 
+// ── Mission Control ──────────────────────────────────────────────────
+
+let missionAgentsList = [];
+
+async function loadMissionControl() {
+  try {
+    const [taskData, agentData] = await Promise.all([
+      api('/api/mission/tasks'),
+      api('/api/agents'),
+    ]);
+    const tasks = taskData.tasks || [];
+    missionAgentsList = agentData.agents || [];
+
+    // Split: unassigned go to inbox, assigned go to agent columns
+    const unassigned = tasks.filter(t => !t.assigned_agent && t.status === 'queued');
+    // Only show completed tasks for 30 minutes, then they move to history only
+    const now = Math.floor(Date.now() / 1000);
+    const DONE_VISIBLE_SECS = 30 * 60;
+    const assigned = tasks.filter(t => {
+      if (!t.assigned_agent) return false;
+      if (t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled') {
+        return t.completed_at && (now - t.completed_at) < DONE_VISIBLE_SECS;
+      }
+      return true;
+    });
+
+    // Tasks Inbox
+    const inboxSection = document.getElementById('tasks-inbox-section');
+    const inboxEl = document.getElementById('tasks-inbox');
+    const autoAllBtn = document.getElementById('auto-assign-all-btn');
+    inboxSection.style.display = '';
+    autoAllBtn.style.display = unassigned.length > 0 ? '' : 'none';
+    if (unassigned.length > 0) {
+      inboxEl.innerHTML = unassigned.map(renderInboxCard).join('');
+    } else {
+      inboxEl.innerHTML = '<div class="text-xs text-gray-600 py-2">No unassigned tasks. Click + New to create one.</div>';
+    }
+
+    // Mission Control agent columns
+    if (assigned.length === 0 && missionAgentsList.length <= 1) {
+      document.getElementById('mission-section').style.display = 'none';
+    } else {
+      document.getElementById('mission-section').style.display = '';
+      const board = document.getElementById('mission-board');
+      const agentIds = missionAgentsList.map(a => a.id);
+      const cols = {};
+      agentIds.forEach(id => { cols[id] = []; });
+
+      assigned.forEach(t => {
+        if (cols[t.assigned_agent]) cols[t.assigned_agent].push(t);
+      });
+
+      let html = '';
+      agentIds.forEach(id => {
+        const agent = missionAgentsList.find(a => a.id === id);
+        const color = AGENT_COLORS[id] || '#6b7280';
+        const dot = agent && agent.running
+          ? '<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#22c55e;margin-right:4px"></span>'
+          : '<span style="display:inline-block;width:6px;height:6px;border-radius:50%;border:1px solid #555;margin-right:4px"></span>';
+        const agentTasks = cols[id] || [];
+        html += '<div class="flex-shrink-0" style="min-width:220px;scroll-snap-align:start;">' +
+          '<div class="text-xs font-semibold mb-1 uppercase" style="color:' + color + '">' + dot + (agent ? agent.name : id) + '</div>' +
+          '<div data-drop-agent="' + id + '" ondragover="missionDragOver(event)" ondragleave="missionDragLeave(event)" ondrop="missionDrop(event)" style="border:1px solid #2a2a2a;border-radius:10px;padding:8px;min-height:120px;background:#141414;transition:border-color 0.2s,background 0.2s">' +
+          (agentTasks.length ? agentTasks.map(renderMissionCard).join('') : '<div class="text-xs text-gray-600 text-center py-4">No tasks</div>') +
+          '</div></div>';
+      });
+
+      board.innerHTML = html;
+    }
+  } catch(e) {
+    console.error('Mission load error:', e);
+  }
+}
+
+function renderInboxCard(t) {
+  const priorityDot = t.priority >= 8 ? '#ef4444' : t.priority >= 4 ? '#fbbf24' : '#6b7280';
+  const timeAgo = elapsed(t.created_at);
+  return '<div data-mid="' + t.id + '" draggable="true" ondragstart="missionDragStart(event)" ondragend="missionDragEnd(event)" style="background:#1a1a1a;border:1px solid #2a2a2a;border-radius:10px;padding:12px;min-width:200px;max-width:280px;cursor:grab;transition:opacity 0.15s">' +
+    '<div class="flex items-center justify-between mb-2">' +
+      '<span class="text-sm font-semibold text-white" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(t.title) + '</span>' +
+      '<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:' + priorityDot + ';margin-left:6px;flex-shrink:0"></span>' +
+    '</div>' +
+    '<div class="text-xs text-gray-500 mb-2" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(t.prompt.slice(0, 60)) + '</div>' +
+    '<div class="flex items-center justify-between">' +
+      '<button data-mid="' + t.id + '" onclick="autoAssignOne(this.dataset.mid)" style="background:#1e1b4b;color:#a78bfa;border:1px solid #312e81;border-radius:6px;padding:2px 10px;font-size:11px;cursor:pointer">Auto-assign</button>' +
+      '<div class="flex items-center gap-1">' +
+        '<button data-mid="' + t.id + '" data-mact="cancel" onclick="missionAction(this.dataset.mid,this.dataset.mact)" title="Remove" style="background:none;border:none;cursor:pointer;color:#6b7280;font-size:12px">&times;</button>' +
+        '<span class="text-xs text-gray-600">' + timeAgo + '</span>' +
+      '</div>' +
+    '</div>' +
+  '</div>';
+}
+
+function renderMissionCard(t) {
+  const color = AGENT_COLORS[t.assigned_agent] || '#6b7280';
+  const priorityDot = t.priority >= 8 ? '#ef4444' : t.priority >= 4 ? '#fbbf24' : '#6b7280';
+  const statusMap = {
+    queued: '<span class="pill pill-paused">queued</span>',
+    running: '<span class="pill pill-running">running</span>',
+    completed: '<span class="pill pill-active">done</span>',
+    failed: '<span class="pill" style="background:#7f1d1d;color:#f87171">failed</span>',
+    cancelled: '<span class="pill" style="background:#374151;color:#9ca3af">cancelled</span>',
+  };
+  const statusPill = statusMap[t.status] || '<span class="pill">' + t.status + '</span>';
+  const agentBadge = t.status === 'queued' ? '<span class="text-xs" style="color:' + color + '">@' + t.assigned_agent + '</span>' : '';
+  const timeAgo = elapsed(t.created_at);
+  let durationStr = '';
+  if (t.completed_at && t.started_at) {
+    const dur = t.completed_at - t.started_at;
+    durationStr = dur < 60 ? ' in ' + dur + 's' : ' in ' + Math.floor(dur/60) + 'm ' + (dur%60) + 's';
+  }
+
+  let resultHtml = '';
+  if (t.status === 'completed' && t.result) {
+    resultHtml = '<details class="mt-2"><summary class="text-xs text-gray-500 cursor-pointer">View result' + durationStr + '</summary><pre class="text-xs text-gray-400 mt-1 whitespace-pre-wrap break-words" style="max-height:200px;overflow-y:auto">' + escapeHtml(t.result.slice(0, 2000)) + (t.result.length > 2000 ? '...' : '') + '</pre></details>';
+  } else if (t.status === 'failed' && t.error) {
+    resultHtml = '<div class="text-xs text-red-400 mt-1">' + escapeHtml(t.error.slice(0, 200)) + '</div>';
+  }
+
+  const cancelBtn = (t.status === 'queued' || t.status === 'running')
+    ? '<button data-mid="' + t.id + '" data-mact="cancel" onclick="missionAction(this.dataset.mid,this.dataset.mact)" title="Cancel" style="background:none;border:none;cursor:pointer;color:#f87171;font-size:12px;padding:1px 3px">&times;</button>'
+    : '';
+  const deleteBtn = (t.status === 'completed' || t.status === 'cancelled' || t.status === 'failed')
+    ? '<button data-mid="' + t.id + '" data-mact="delete" onclick="missionAction(this.dataset.mid,this.dataset.mact)" title="Remove" style="background:none;border:none;cursor:pointer;color:#6b7280;font-size:12px;padding:1px 3px">&times;</button>'
+    : '';
+
+  const draggable = t.status === 'queued' ? ' draggable="true" ondragstart="missionDragStart(event)" ondragend="missionDragEnd(event)"' : '';
+  const grabStyle = t.status === 'queued' ? 'cursor:grab;' : '';
+  return '<div data-mid="' + t.id + '"' + draggable + ' style="background:#1a1a1a;border:1px solid #2a2a2a;border-radius:8px;padding:10px;margin-bottom:8px;' + grabStyle + 'transition:opacity 0.15s">' +
+    '<div class="flex items-center justify-between mb-1">' +
+      '<span class="text-xs font-semibold text-white" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(t.title) + '</span>' +
+      '<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:' + priorityDot + ';margin-left:6px;flex-shrink:0" title="Priority: ' + t.priority + '"></span>' +
+    '</div>' +
+    '<div class="flex items-center justify-between">' +
+      '<div class="flex items-center gap-2">' + statusPill + agentBadge + '</div>' +
+      '<div class="flex items-center gap-1">' + cancelBtn + deleteBtn + '<span class="text-xs text-gray-600">' + timeAgo + '</span></div>' +
+    '</div>' +
+    resultHtml +
+  '</div>';
+}
+
+async function missionAction(id, action) {
+  try {
+    if (action === 'cancel') {
+      await fetch(BASE + '/api/mission/tasks/' + id + '/cancel?token=' + TOKEN, { method: 'POST' });
+    } else if (action === 'delete') {
+      await fetch(BASE + '/api/mission/tasks/' + id + '?token=' + TOKEN, { method: 'DELETE' });
+    }
+    await loadMissionControl();
+  } catch(e) { console.error('Mission action failed:', e); }
+}
+
+// ── Drag & Drop ──────────────────────────────────────────────────────
+
+var missionDragId = null;
+
+function missionDragStart(e) {
+  missionDragId = e.currentTarget.dataset.mid;
+  e.currentTarget.style.opacity = '0.4';
+  e.dataTransfer.effectAllowed = 'move';
+}
+
+function missionDragEnd(e) {
+  e.currentTarget.style.opacity = '1';
+  missionDragId = null;
+  document.querySelectorAll('[data-drop-agent]').forEach(function(el) {
+    el.style.borderColor = '#2a2a2a';
+    el.style.background = '#141414';
+  });
+}
+
+function missionDragOver(e) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  var col = e.currentTarget.closest('[data-drop-agent]');
+  if (col) {
+    col.style.borderColor = '#4f46e5';
+    col.style.background = 'rgba(79,70,229,0.08)';
+  }
+}
+
+function missionDragLeave(e) {
+  var col = e.currentTarget.closest('[data-drop-agent]');
+  if (col && !col.contains(e.relatedTarget)) {
+    col.style.borderColor = '#2a2a2a';
+    col.style.background = '#141414';
+  }
+}
+
+async function missionDrop(e) {
+  e.preventDefault();
+  var col = e.currentTarget.closest('[data-drop-agent]');
+  if (col) {
+    col.style.borderColor = '#2a2a2a';
+    col.style.background = '#141414';
+  }
+  if (!missionDragId || !col) return;
+  var newAgent = col.dataset.dropAgent;
+  try {
+    await fetch(BASE + '/api/mission/tasks/' + missionDragId + '?token=' + TOKEN, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ assigned_agent: newAgent }),
+    });
+    await loadMissionControl();
+  } catch(err) { console.error('Reassign failed:', err); }
+  missionDragId = null;
+}
+
+async function autoAssignOne(id) {
+  try {
+    const res = await fetch(BASE + '/api/mission/tasks/' + id + '/auto-assign?token=' + TOKEN, { method: 'POST' });
+    const data = await res.json();
+    if (data.ok) {
+      await loadMissionControl();
+    } else {
+      console.error('Auto-assign failed:', data.error);
+    }
+  } catch(e) { console.error('Auto-assign error:', e); }
+}
+
+async function autoAssignAll() {
+  var btn = document.getElementById('auto-assign-all-btn');
+  btn.textContent = 'Assigning...';
+  btn.disabled = true;
+  try {
+    const res = await fetch(BASE + '/api/mission/tasks/auto-assign-all?token=' + TOKEN, { method: 'POST' });
+    const data = await res.json();
+    await loadMissionControl();
+  } catch(e) { console.error('Auto-assign all error:', e); }
+  btn.textContent = 'Auto-assign All';
+  btn.disabled = false;
+}
+
+function openMissionModal() {
+  document.getElementById('mission-error').style.display = 'none';
+  document.getElementById('mission-overlay').style.opacity = '1';
+  document.getElementById('mission-overlay').style.pointerEvents = 'auto';
+  var m = document.getElementById('mission-modal');
+  m.style.opacity = '1';
+  m.style.pointerEvents = 'auto';
+  m.style.transform = 'translate(-50%,-50%) scale(1)';
+  setTimeout(function() { document.getElementById('mission-title').focus(); }, 200);
+}
+
+function closeMissionModal() {
+  document.getElementById('mission-overlay').style.opacity = '0';
+  document.getElementById('mission-overlay').style.pointerEvents = 'none';
+  var m = document.getElementById('mission-modal');
+  m.style.opacity = '0';
+  m.style.pointerEvents = 'none';
+  m.style.transform = 'translate(-50%,-50%) scale(0.95)';
+  document.getElementById('mission-title').value = '';
+  document.getElementById('mission-prompt').value = '';
+  document.getElementById('mission-priority').value = '5';
+  document.getElementById('mission-error').style.display = 'none';
+}
+document.getElementById('mission-overlay').addEventListener('click', closeMissionModal);
+
+async function createMissionTask() {
+  const title = document.getElementById('mission-title').value.trim();
+  const prompt = document.getElementById('mission-prompt').value.trim();
+  const priority = parseInt(document.getElementById('mission-priority').value, 10);
+  const errEl = document.getElementById('mission-error');
+
+  if (!title) { errEl.textContent = 'Title is required'; errEl.style.display = ''; return; }
+  if (!prompt) { errEl.textContent = 'Prompt is required'; errEl.style.display = ''; return; }
+
+  try {
+    const res = await fetch(BASE + '/api/mission/tasks?token=' + TOKEN, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: title, prompt: prompt, priority: priority }),
+    });
+    if (!res.ok) {
+      const data = await res.json();
+      errEl.textContent = data.error || 'Failed to create task';
+      errEl.style.display = '';
+      return;
+    }
+    closeMissionModal();
+    await loadMissionControl();
+  } catch(e) {
+    errEl.textContent = 'Network error';
+    errEl.style.display = '';
+  }
+}
+
+// ── Task History Drawer ──────────────────────────────────────────────
+
+var historyOffset = 0;
+var historyTotal = 0;
+var HISTORY_PAGE = 20;
+
+async function openTaskHistory() {
+  historyOffset = 0;
+  document.getElementById('history-body').innerHTML = '<div class="text-gray-500 text-sm text-center py-8">Loading...</div>';
+  document.getElementById('history-overlay').classList.add('open');
+  document.getElementById('history-drawer').classList.add('open');
+  document.body.style.overflow = 'hidden';
+  await loadHistoryPage();
+}
+
+async function loadHistoryPage() {
+  var data = await api('/api/mission/history?limit=' + HISTORY_PAGE + '&offset=' + historyOffset);
+  historyTotal = data.total;
+  document.getElementById('history-count').textContent = historyTotal + ' completed task' + (historyTotal === 1 ? '' : 's');
+  var body = document.getElementById('history-body');
+  if (historyOffset === 0) body.innerHTML = '';
+  if (data.tasks.length === 0 && historyOffset === 0) {
+    body.innerHTML = '<div class="text-gray-500 text-sm text-center py-8">No task history yet.</div>';
+  } else {
+    body.innerHTML += data.tasks.map(function(t) {
+      var color = AGENT_COLORS[t.assigned_agent] || '#6b7280';
+      var statusCls = t.status === 'completed' ? 'pill-active' : t.status === 'failed' ? '' : '';
+      var statusStyle = t.status === 'failed' ? 'background:#7f1d1d;color:#f87171' : t.status === 'cancelled' ? 'background:#374151;color:#9ca3af' : '';
+      var dur = '';
+      if (t.completed_at && t.started_at) {
+        var d = t.completed_at - t.started_at;
+        dur = d < 60 ? d + 's' : Math.floor(d/60) + 'm ' + (d%60) + 's';
+      }
+      var date = new Date(t.completed_at * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      var time = new Date(t.completed_at * 1000).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+      var resultHtml = t.result ? '<details class="mt-2"><summary class="text-xs text-gray-500 cursor-pointer">View result</summary><pre class="text-xs text-gray-400 mt-1 whitespace-pre-wrap break-words" style="max-height:200px;overflow-y:auto">' + escapeHtml(t.result.slice(0, 2000)) + '</pre></details>' : '';
+      var errorHtml = t.error ? '<div class="text-xs text-red-400 mt-1">' + escapeHtml(t.error.slice(0, 200)) + '</div>' : '';
+      return '<div style="background:#1a1a1a;border:1px solid #2a2a2a;border-radius:8px;padding:12px;margin-bottom:8px">' +
+        '<div class="flex items-center justify-between mb-1">' +
+          '<span class="text-sm font-semibold text-white">' + escapeHtml(t.title) + '</span>' +
+          '<span class="pill ' + statusCls + '" style="' + statusStyle + '">' + t.status + '</span>' +
+        '</div>' +
+        '<div class="flex items-center gap-2 text-xs text-gray-500">' +
+          '<span style="color:' + color + '">@' + (t.assigned_agent || 'unassigned') + '</span>' +
+          '<span>' + date + ' ' + time + '</span>' +
+          (dur ? '<span>' + dur + '</span>' : '') +
+        '</div>' +
+        resultHtml + errorHtml +
+      '</div>';
+    }).join('');
+  }
+  historyOffset += data.tasks.length;
+  var btn = document.getElementById('history-load-more');
+  if (historyOffset < historyTotal) btn.classList.remove('hidden');
+  else btn.classList.add('hidden');
+}
+
+async function loadMoreHistory() { await loadHistoryPage(); }
+
+function closeTaskHistory() {
+  document.getElementById('history-overlay').classList.remove('open');
+  document.getElementById('history-drawer').classList.remove('open');
+  document.body.style.overflow = '';
+}
+
+// Poll mission tasks more frequently (every 15s) for responsiveness
+setInterval(loadMissionControl, 15000);
+
 async function refreshAll() {
   const btn = document.getElementById('refresh-btn').querySelector('svg');
   btn.classList.add('refresh-spin');
-  await Promise.all([loadInfo(), loadTasks(), loadMemories(), loadHealth(), loadTokens(), loadAgents(), loadHiveMind(), loadSummary(), loadProjects(), loadOrchestrationIssues()]);
+  await Promise.all([loadInfo(), loadTasks(), loadMemories(), loadHealth(), loadTokens(), loadAgents(), loadHiveMind(), loadSummary(), loadProjects(), loadOrchestrationIssues(), loadMissionControl()]);
   btn.classList.remove('refresh-spin');
   document.getElementById('last-updated').textContent = new Date().toLocaleTimeString();
 }
@@ -1100,7 +2118,8 @@ async function loadSessionInfo() {
     ]);
     document.getElementById('sess-ctx').textContent = (health.contextPct || 0) + '%';
     document.getElementById('sess-turns').textContent = health.turns || tokens.todayTurns || '0';
-    document.getElementById('sess-cost').textContent = '$' + (tokens.todayCost || 0).toFixed(2);
+    var sessTokens = (tokens.todayInput || 0) + (tokens.todayOutput || 0);
+    document.getElementById('sess-cost').textContent = sessTokens > 1000 ? Math.round(sessTokens / 1000) + 'k' : sessTokens.toString();
     document.getElementById('sess-model').textContent = health.model || agentId;
   } catch(e) { console.error('Session info error', e); }
 }
@@ -1367,7 +2386,7 @@ async function abortProcessing() {
   <div class="chat-session-bar" id="chat-session-bar">
     <span class="session-stat"><span class="session-stat-val" id="sess-ctx">-</span> ctx</span>
     <span class="session-stat"><span class="session-stat-val" id="sess-turns">-</span> turns</span>
-    <span class="session-stat"><span class="session-stat-val" id="sess-cost">-</span> cost</span>
+    <span class="session-stat"><span class="session-stat-val" id="sess-cost">-</span> tokens</span>
     <span class="session-model" id="sess-model">-</span>
   </div>
   <div class="chat-quick-actions">

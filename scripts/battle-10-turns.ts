@@ -53,7 +53,7 @@ const conversations: AgentConvo[] = [
   },
 
   // ════════════════════════════════════════════════════════════════
-  // COMMS — email, WhatsApp, Slack, Skool, YouTube, LinkedIn
+  // COMMS — email, WhatsApp, Slack, community forum, YouTube, LinkedIn
   // ════════════════════════════════════════════════════════════════
   {
     agent: 'COMMS',
@@ -65,7 +65,7 @@ const conversations: AgentConvo[] = [
       { user: 'draft a response to the legal email', assistant: 'Here is a draft response addressing the compliance points...', expectStore: false, label: 'action request' },
       { user: 'looks good send it', assistant: 'Sent.', expectStore: false, label: 'approval' },
       { user: 'For WhatsApp messages, split every sentence into its own message. Never send a wall of text. The only exception is tightly coupled logistics like dates and addresses.', assistant: 'Got it. One sentence per WhatsApp message, except for logistics blocks.', expectStore: true, label: 'messaging style' },
-      { user: 'When replying to Skool posts, never use the word "wild" or any phrase that sounds like AI wrote it. My community can smell AI from a mile away and it kills credibility.', assistant: 'Understood. No AI-sounding language in Skool replies. Authenticity is critical.', expectStore: true, label: 'style correction' },
+      { user: 'When replying to community posts, never use the word "wild" or any phrase that sounds like AI wrote it. My community can smell AI from a mile away and it kills credibility.', assistant: 'Understood. No AI-sounding language in community replies. Authenticity is critical.', expectStore: true, label: 'style correction' },
       { user: 'reply to that youtube comment saying thanks', assistant: 'Replied with a thank you in your style.', expectStore: false, label: 'action' },
       { user: 'Jordan Lee just joined the community. He is a senior engineer at a major AI lab. He could be very valuable for technical discussions. Keep an eye on his posts.', assistant: 'Flagged Jordan Lee as a high-value new member. Will monitor his activity.', expectStore: true, label: 'new contact' },
     ],
@@ -79,11 +79,11 @@ const conversations: AgentConvo[] = [
     turns: [
       { user: 'what meetings do I have tomorrow', assistant: 'You have 2 meetings: 10am call with Eran, 2pm investor update.', expectStore: false, label: 'calendar check' },
       { user: 'push the Eran call to 11am', assistant: 'Moved to 11am. Eran has been notified.', expectStore: false, label: 'calendar action' },
-      { user: 'My Stripe account has two modes: Acme Consulting (consulting invoices, high-ticket) and BuildersHub (community subscriptions, $97/month). Never mix them.', assistant: 'Understood. Two separate Stripe contexts, never cross them.', expectStore: true, label: 'billing structure' },
+      { user: 'My Stripe account has two modes: Acme Consulting (consulting invoices, high-ticket) and CommunityHub (community subscriptions, $97/month). Never mix them.', assistant: 'Understood. Two separate Stripe contexts, never cross them.', expectStore: true, label: 'billing structure' },
       { user: 'ok', assistant: 'Anything else?', expectStore: false, label: 'ack' },
-      { user: 'The BuildersHub Skool community is $97/month. We also have a $497 one-time AI Mastery product on Gumroad. Both feed into the same ecosystem but different payment rails.', assistant: 'Noted. $97/mo Skool subscription + $497 Gumroad one-time, same ecosystem, different payment systems.', expectStore: true, label: 'pricing structure' },
+      { user: 'The online community is $97/month. We also have a $497 one-time AI Mastery product on Gumroad. Both feed into the same ecosystem but different payment rails.', assistant: 'Noted. $97/mo community forum subscription + $497 Gumroad one-time, same ecosystem, different payment systems.', expectStore: true, label: 'pricing structure' },
       { user: 'cancel my 4pm', assistant: 'Cancelled the 4pm meeting.', expectStore: false, label: 'calendar action' },
-      { user: 'For any new Calendly bookings, always check if the person is already a Skool member. If they are, note it in the meeting prep. It changes how I approach the call.', assistant: 'Will cross-reference Calendly bookings with Skool membership for meeting prep.', expectStore: true, label: 'workflow rule' },
+      { user: 'For any new Calendly bookings, always check if the person is already a community forum member. If they are, note it in the meeting prep. It changes how I approach the call.', assistant: 'Will cross-reference Calendly bookings with community membership for meeting prep.', expectStore: true, label: 'workflow rule' },
       { user: 'Apex Holdings is my holding company. All contractor payments and accounting go through it. IRS is the tax authority we file with.', assistant: 'Noted. Apex Holdings is the holding company, IRS for tax filings.', expectStore: true, label: 'business entity' },
       { user: 'how much did we make on Gumroad this month', assistant: 'Gumroad revenue this month: $2,485 across 5 sales of Claude Code Mastery.', expectStore: false, label: 'ephemeral query' },
       { user: 'I want a weekly revenue summary every Sunday at 6pm EST. Pull from Stripe and Gumroad, show breakdown by product and compare to last week.', assistant: 'Setting up weekly revenue summary: Sundays 6pm EST, Stripe + Gumroad, product breakdown with week-over-week comparison.', expectStore: true, label: 'recurring task preference' },

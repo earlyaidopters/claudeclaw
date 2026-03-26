@@ -108,6 +108,7 @@ export async function runAgent(
   onProgress?: (event: AgentProgressEvent) => void,
   model?: string,
   abortController?: AbortController,
+  onStreamText?: (accumulatedText: string) => void,
 ): Promise<AgentResult> {
   // Auth: The SDK reads OAuth credentials from ~/.claude/.credentials.json
   // automatically (Max subscription). Do NOT pass ANTHROPIC_API_KEY here —
@@ -129,6 +130,7 @@ export async function runAgent(
   let preCompactTokens: number | null = null;
   let lastCallCacheRead = 0;
   let lastCallInputTokens = 0;
+  let streamedText = '';
 
   // Refresh typing indicator on an interval while Claude works.
   // Telegram's "typing..." action expires after ~5s.
@@ -160,6 +162,9 @@ export async function runAgent(
         // Pass secrets to the subprocess without polluting our own process.env
         env: sdkEnv,
 
+        // Stream partial text so Telegram can show progressive updates
+        includePartialMessages: !!onStreamText,
+
         // Model override (e.g. 'claude-haiku-4-5', 'claude-sonnet-4-5')
         ...(model ? { model } : {}),
 
@@ -185,7 +190,7 @@ export async function runAgent(
         );
       }
 
-      // Track per-call token usage from assistant message events.
+      // Track per-call token usage and detect tool use from assistant message events.
       // Each assistant message represents one API call; its usage reflects
       // that single call's context size (not cumulative across the turn).
       if (ev['type'] === 'assistant') {
@@ -201,19 +206,22 @@ export async function runAgent(
         }
 
         // SDK 0.2.83+: result.result may be empty; capture text from assistant content blocks
-        const content = msg?.['content'] as Array<{ type: string; text?: string }> | undefined;
+        const content = msg?.['content'] as Array<{ type: string; text?: string; name?: string }> | undefined;
         if (content) {
           const textParts = content.filter((b) => b.type === 'text' && b.text).map((b) => b.text!);
           if (textParts.length > 0) {
             lastAssistantText = textParts.join('');
           }
         }
-      }
 
-      // Tool progress events — surface to dashboard (not Telegram to avoid spam)
-      if (ev['type'] === 'tool_progress' && onProgress) {
-        const name = (ev['tool_name'] as string) ?? 'unknown';
-        onProgress({ type: 'tool_active', description: toolLabel(name) });
+        // Extract tool_use blocks from assistant content for progress reporting
+        if (onProgress && content) {
+          for (const block of content) {
+            if (block.type === 'tool_use' && block.name) {
+              onProgress({ type: 'tool_active', description: toolLabel(block.name) });
+            }
+          }
+        }
       }
 
       // Sub-agent lifecycle events — surface to Telegram for user feedback
@@ -228,6 +236,23 @@ export async function runAgent(
           type: 'task_completed',
           description: status === 'failed' ? `Failed: ${summary}` : summary,
         });
+      }
+
+      // Stream text deltas for progressive Telegram updates.
+      // Only stream the outermost assistant response (parent_tool_use_id === null)
+      // to avoid showing internal tool-use reasoning.
+      if (ev['type'] === 'stream_event' && onStreamText && ev['parent_tool_use_id'] === null) {
+        const streamEvent = ev['event'] as Record<string, unknown> | undefined;
+        if (streamEvent?.['type'] === 'content_block_delta') {
+          const delta = streamEvent['delta'] as Record<string, unknown> | undefined;
+          if (delta?.['type'] === 'text_delta' && typeof delta['text'] === 'string') {
+            streamedText += delta['text'];
+            onStreamText(streamedText);
+          }
+        }
+        if (streamEvent?.['type'] === 'message_start') {
+          streamedText = '';
+        }
       }
 
       if (ev['type'] === 'result') {

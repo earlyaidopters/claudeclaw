@@ -5,9 +5,10 @@ import yaml from 'js-yaml';
 import { loadAgentConfig, resolveAgentDir, resolveAgentClaudeMd } from './agent-config.js';
 import { createBot } from './bot.js';
 import { checkPendingMigrations } from './migrations.js';
-import { ALLOWED_CHAT_ID, activeBotToken, STORE_DIR, PROJECT_ROOT, CLAUDECLAW_CONFIG, GOOGLE_API_KEY, setAgentOverrides } from './config.js';
+import { ALLOWED_CHAT_ID, activeBotToken, STORE_DIR, PROJECT_ROOT, CLAUDECLAW_CONFIG, GOOGLE_API_KEY, setAgentOverrides, SECURITY_PIN_HASH, IDLE_LOCK_MINUTES, EMERGENCY_KILL_PHRASE } from './config.js';
 import { startDashboard } from './dashboard.js';
-import { initDatabase } from './db.js';
+import { initDatabase, cleanupOldMissionTasks, insertAuditLog } from './db.js';
+import { initSecurity, setAuditCallback } from './security.js';
 import { logger } from './logger.js';
 import { cleanupOldUploads } from './media.js';
 import { runPreferenceAnalysis } from './daily-loop.js';
@@ -118,7 +119,7 @@ function acquireLock(): void {
       }
     }
   } catch { /* ignore */ }
-  fs.writeFileSync(PID_FILE, String(process.pid));
+  fs.writeFileSync(PID_FILE, String(process.pid), { mode: 0o600 });
 }
 
 function releaseLock(): void {
@@ -147,25 +148,43 @@ async function main(): Promise<void> {
   initDatabase();
   logger.info('Database ready');
 
+  // Initialize security (PIN lock, kill phrase, destructive confirmation, audit)
+  initSecurity({
+    pinHash: SECURITY_PIN_HASH || undefined,
+    idleLockMinutes: IDLE_LOCK_MINUTES,
+    killPhrase: EMERGENCY_KILL_PHRASE || undefined,
+  });
+  setAuditCallback((entry) => {
+    insertAuditLog(entry.agentId, entry.chatId, entry.action, entry.detail, entry.blocked);
+  });
+
   initMissionControl();
 
-  runDecaySweep();
-  setInterval(() => runDecaySweep(), 24 * 60 * 60 * 1000);
+  // Decay and consolidation run ONLY in the main process to prevent
+  // multi-process over-decay (5x decay on simultaneous restart) and
+  // duplicate consolidation records from overlapping memory batches.
+  if (AGENT_ID === 'main') {
+    runDecaySweep();
+    cleanupOldMissionTasks(7);
+    setInterval(() => { runDecaySweep(); cleanupOldMissionTasks(7); }, 24 * 60 * 60 * 1000);
 
-  // Memory consolidation: find patterns across recent memories every 30 minutes
-  if (ALLOWED_CHAT_ID && GOOGLE_API_KEY) {
-    // Delay first consolidation 2 minutes after startup to let things settle
-    setTimeout(() => {
-      void runConsolidation(ALLOWED_CHAT_ID).catch((err) =>
-        logger.error({ err }, 'Initial consolidation failed'),
-      );
-    }, 2 * 60 * 1000);
-    setInterval(() => {
-      void runConsolidation(ALLOWED_CHAT_ID).catch((err) =>
-        logger.error({ err }, 'Periodic consolidation failed'),
-      );
-    }, 30 * 60 * 1000);
-    logger.info('Memory consolidation enabled (every 30 min)');
+    // Memory consolidation: find patterns across recent memories every 30 minutes
+    if (ALLOWED_CHAT_ID && GOOGLE_API_KEY) {
+      // Delay first consolidation 2 minutes after startup to let things settle
+      setTimeout(() => {
+        void runConsolidation(ALLOWED_CHAT_ID).catch((err) =>
+          logger.error({ err }, 'Initial consolidation failed'),
+        );
+      }, 2 * 60 * 1000);
+      setInterval(() => {
+        void runConsolidation(ALLOWED_CHAT_ID).catch((err) =>
+          logger.error({ err }, 'Periodic consolidation failed'),
+        );
+      }, 30 * 60 * 1000);
+      logger.info('Memory consolidation enabled (every 30 min)');
+    }
+  } else {
+    logger.info({ agentId: AGENT_ID }, 'Skipping decay/consolidation (main process owns these)');
   }
 
   // Preference learning: analyze conversations and update preference profile daily
@@ -196,7 +215,17 @@ async function main(): Promise<void> {
 
   if (ALLOWED_CHAT_ID) {
     initScheduler(
-      (text) => bot.api.sendMessage(ALLOWED_CHAT_ID, text, { parse_mode: 'HTML' }).then(() => {}).catch((err) => logger.error({ err }, 'Scheduler failed to send message')),
+      async (text) => {
+        // Split long messages to respect Telegram's 4096 char limit.
+        // The scheduler's splitMessage handles chunking, but the sender
+        // callback is also called directly for status messages which may exceed the limit.
+        const { splitMessage } = await import('./bot.js');
+        for (const chunk of splitMessage(text)) {
+          await bot.api.sendMessage(ALLOWED_CHAT_ID, chunk, { parse_mode: 'HTML' }).catch((err) =>
+            logger.error({ err }, 'Scheduler failed to send message'),
+          );
+        }
+      },
       AGENT_ID,
     );
   } else {

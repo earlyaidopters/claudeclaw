@@ -8,8 +8,14 @@ vi.mock('./gemini.js', () => ({
 vi.mock('./db.js', () => ({
   getUnconsolidatedMemories: vi.fn(),
   saveConsolidation: vi.fn(() => 1),
+  saveConsolidationEmbedding: vi.fn(),
+  supersedeMemory: vi.fn(),
   markMemoriesConsolidated: vi.fn(),
   updateMemoryConnections: vi.fn(),
+}));
+
+vi.mock('./embeddings.js', () => ({
+  embedText: vi.fn(() => Promise.resolve([])),
 }));
 
 vi.mock('./logger.js', () => ({
@@ -37,6 +43,7 @@ function makeMemory(id: number, summary: string) {
     id,
     chat_id: 'chat1',
     source: 'conversation',
+    agent_id: 'main',
     raw_text: 'raw',
     summary,
     entities: '[]',
@@ -45,6 +52,7 @@ function makeMemory(id: number, summary: string) {
     importance: 0.6,
     salience: 1.0,
     consolidated: 0,
+    pinned: 0,
     embedding: null,
     created_at: Math.floor(Date.now() / 1000) - 3600,
     accessed_at: Math.floor(Date.now() / 1000) - 3600,

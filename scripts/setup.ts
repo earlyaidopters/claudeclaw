@@ -504,15 +504,98 @@ async function main() {
   if (env.ALLOWED_CHAT_ID) {
     ok(`Chat ID: ${env.ALLOWED_CHAT_ID}`);
   } else {
-    info('Your chat ID locks the bot so only you can use it.');
-    info('Start the bot first, send /chatid, paste the number here.');
-    info('Or skip — the bot will tell you your ID on the first message.');
+    info('Your chat ID locks the bot so only YOU can talk to it.');
+    info('To get it, you need to have a quick conversation with your bot:');
+    console.log();
+    bullet('Open Telegram on your phone or desktop');
+    bullet(`Search for your bot: @${botUsername || 'your_bot_username'}`);
+    bullet('Tap Start or send any message to it');
+    bullet('The bot will reply with your chat ID (a number like 123456789)');
+    bullet('Copy that number and paste it below');
+    console.log();
+    info('Don\'t have it yet? Press Enter to skip. The bot will show your');
+    info('chat ID the first time you message it. Add it to .env and restart.');
     console.log();
     const chatId = await ask('Your Telegram chat ID (or Enter to skip)', 'skip');
     if (chatId !== 'skip' && chatId) env.ALLOWED_CHAT_ID = chatId;
   }
 
-  // ── 9. Voice keys ─────────────────────────────────────────────────────────
+  // ── 9. Security ──────────────────────────────────────────────────────────
+  section('Secure your bot');
+
+  info('ClaudeClaw has full access to your machine. If someone gets into');
+  info('your Telegram account, they control the bot. These layers protect you.');
+  console.log();
+
+  // Dashboard token (always generate)
+  if (!env.DASHBOARD_TOKEN) {
+    env.DASHBOARD_TOKEN = crypto.randomBytes(24).toString('hex');
+  }
+  ok('Dashboard token set');
+
+  // PIN lock
+  console.log();
+  info('PIN lock: like a password for the bot. Even if someone opens your');
+  info('Telegram, they can\'t use the bot without the PIN.');
+  console.log();
+
+  if (env.SECURITY_PIN_HASH) {
+    ok('PIN lock already configured');
+  } else {
+    const wantPin = await confirm('Set up a PIN lock?');
+    if (wantPin) {
+      let pinSet = false;
+      while (!pinSet) {
+        const pin = await ask('Choose a PIN (4+ characters)');
+        if (!pin || pin.length < 4) {
+          console.log(`  ${c.red}PIN must be at least 4 characters.${c.reset}`);
+          continue;
+        }
+        const pinConfirm = await ask('Confirm PIN');
+        if (pin !== pinConfirm) {
+          console.log(`  ${c.red}PINs don't match. Try again.${c.reset}`);
+          continue;
+        }
+        // Salted hash: "salt:hash"
+        const salt = crypto.randomBytes(16).toString('hex');
+        const hash = crypto.createHash('sha256').update(salt + pin).digest('hex');
+        env.SECURITY_PIN_HASH = `${salt}:${hash}`;
+        ok('PIN set. Bot will start locked, send the PIN to unlock.');
+        pinSet = true;
+      }
+
+      // Idle timeout (only ask when PIN is set)
+      console.log();
+      info('Auto-lock re-locks the bot after a period of inactivity.');
+      const idleMin = await ask('Lock after how many minutes idle?', '30');
+      const idleVal = parseInt(idleMin) || 0;
+      if (idleVal > 0) {
+        env.IDLE_LOCK_MINUTES = String(idleVal);
+        ok(`Auto-lock after ${idleVal}m of inactivity`);
+      }
+    } else {
+      info('Skipped. Add SECURITY_PIN_HASH to .env later if you change your mind.');
+    }
+  }
+
+  // Emergency kill phrase (auto-generate with option to customize)
+  console.log();
+  if (env.EMERGENCY_KILL_PHRASE) {
+    ok('Emergency kill phrase already configured');
+  } else {
+    info('Kill phrase: a word you send to immediately shut down all agents.');
+    info('Useful if something goes wrong or you suspect unauthorized access.');
+    console.log();
+    const defaultPhrase = 'EMERGENCY_STOP_' + crypto.randomBytes(3).toString('hex').toUpperCase();
+    const killPhrase = await ask('Kill phrase (Enter for auto-generated)', defaultPhrase);
+    if (killPhrase && killPhrase.length >= 4) {
+      env.EMERGENCY_KILL_PHRASE = killPhrase;
+      ok('Kill phrase saved');
+      info(`Remember it: ${killPhrase}`);
+    }
+  }
+
+  // ── 10. Voice keys ────────────────────────────────────────────────────────
   if (wantVoiceIn || wantVoiceOut) {
     section('Voice configuration');
   }
@@ -582,7 +665,7 @@ async function main() {
     if (key) env.ANTHROPIC_API_KEY = key;
   }
 
-  // ── 12. Write .env ────────────────────────────────────────────────────────
+  // ── Write .env ────────────────────────────────────────────────────────
   console.log();
   const sw = spinner('Saving .env...');
   await sleep(300);
@@ -609,13 +692,23 @@ async function main() {
     '# ── Integrations ──────────────────────────────────────────────',
     `GOOGLE_API_KEY=${env.GOOGLE_API_KEY || ''}`,
     '',
+    '# ── Dashboard ─────────────────────────────────────────────────',
+    `DASHBOARD_TOKEN=${env.DASHBOARD_TOKEN || ''}`,
+    `DASHBOARD_PORT=${env.DASHBOARD_PORT || '3141'}`,
+    env.DASHBOARD_URL ? `DASHBOARD_URL=${env.DASHBOARD_URL}` : '# DASHBOARD_URL=',
+    '',
+    '# ── Security ──────────────────────────────────────────────────',
+    env.SECURITY_PIN_HASH ? `SECURITY_PIN_HASH=${env.SECURITY_PIN_HASH}` : '# SECURITY_PIN_HASH=',
+    env.IDLE_LOCK_MINUTES ? `IDLE_LOCK_MINUTES=${env.IDLE_LOCK_MINUTES}` : '# IDLE_LOCK_MINUTES=30',
+    env.EMERGENCY_KILL_PHRASE ? `EMERGENCY_KILL_PHRASE=${env.EMERGENCY_KILL_PHRASE}` : '# EMERGENCY_KILL_PHRASE=',
+    '',
     '# ── Database Encryption ───────────────────────────────────────',
     '# Auto-generated. DO NOT share or commit.',
     `DB_ENCRYPTION_KEY=${env.DB_ENCRYPTION_KEY || crypto.randomBytes(32).toString('hex')}`,
   ];
 
   // Preserve unknown keys
-  const known = new Set(['TELEGRAM_BOT_TOKEN','ALLOWED_CHAT_ID','CLAUDECLAW_CONFIG','ANTHROPIC_API_KEY','GROQ_API_KEY','ELEVENLABS_API_KEY','ELEVENLABS_VOICE_ID','GOOGLE_API_KEY','CLAUDE_CODE_OAUTH_TOKEN','WHATSAPP_ENABLED','DB_ENCRYPTION_KEY']);
+  const known = new Set(['TELEGRAM_BOT_TOKEN','ALLOWED_CHAT_ID','CLAUDECLAW_CONFIG','ANTHROPIC_API_KEY','GROQ_API_KEY','ELEVENLABS_API_KEY','ELEVENLABS_VOICE_ID','GOOGLE_API_KEY','CLAUDE_CODE_OAUTH_TOKEN','WHATSAPP_ENABLED','DB_ENCRYPTION_KEY','DASHBOARD_TOKEN','DASHBOARD_PORT','DASHBOARD_URL','SECURITY_PIN_HASH','IDLE_LOCK_MINUTES','EMERGENCY_KILL_PHRASE','DESTRUCTIVE_CONFIRM']);
   for (const [k, v] of Object.entries(env)) {
     if (!known.has(k) && v) lines.push(`${k}=${v}`);
   }
@@ -682,7 +775,7 @@ async function main() {
   if (wantAgents) {
     console.log();
     info('Available templates:');
-    console.log(`  1. ${c.bold}comms${c.reset}     — email, Slack, WhatsApp, YouTube comments, Skool, LinkedIn`);
+    console.log(`  1. ${c.bold}comms${c.reset}     — email, Slack, WhatsApp, YouTube comments, community forums, LinkedIn`);
     console.log(`  2. ${c.bold}content${c.reset}   — YouTube scripts, LinkedIn posts, trend research`);
     console.log(`  3. ${c.bold}ops${c.reset}       — calendar, billing, Stripe, Gumroad, admin`);
     console.log(`  4. ${c.bold}research${c.reset}  — deep web research, academic, competitive intel`);

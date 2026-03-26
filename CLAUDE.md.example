@@ -95,6 +95,62 @@ Delete a task: `node .../dist/schedule-cli.js delete <id>`
 Pause a task: `node .../dist/schedule-cli.js pause <id>`
 Resume a task: `node .../dist/schedule-cli.js resume <id>`
 
+## Mission Tasks (Delegating to Other Agents)
+
+When [YOUR NAME] asks you to delegate work to another agent, or says things like "have research look into X" or "get comms to handle Y", create a mission task using the CLI. Mission tasks are async: you queue them and the target agent picks them up within 60 seconds.
+
+```bash
+PROJECT_ROOT=$(git rev-parse --show-toplevel)
+node "$PROJECT_ROOT/dist/mission-cli.js" create --agent research --title "Short label" "Full detailed prompt for the agent"
+```
+
+The task appears on the Mission Control dashboard. You do NOT need to wait for the result.
+
+```bash
+PROJECT_ROOT=$(git rev-parse --show-toplevel)
+node "$PROJECT_ROOT/dist/mission-cli.js" list                    # see all tasks
+node "$PROJECT_ROOT/dist/mission-cli.js" result <task-id>         # get a task's result
+node "$PROJECT_ROOT/dist/mission-cli.js" cancel <task-id>         # cancel a queued task
+```
+
+Available agents: main, research, comms, content, ops. Use `--priority 10` for high priority, `--priority 0` for low (default is 5).
+
+## Creating New Agents
+
+When [YOUR NAME] asks to create a new agent (e.g. "spin up an analytics agent"), walk them through it conversationally:
+
+1. Ask them what the agent should do (unless they already told you)
+2. Tell them to create a bot in Telegram:
+   - Open @BotFather, send /newbot
+   - Name it something like "ClaudeClaw Analytics"
+   - Give it a username like "claudeclaw_analytics_bot"
+   - Copy the token
+3. Once they paste the token, create the agent:
+
+```bash
+PROJECT_ROOT=$(git rev-parse --show-toplevel)
+node "$PROJECT_ROOT/dist/agent-create-cli.js" \
+  --id AGENT_ID \
+  --name "Display Name" \
+  --description "What this agent does" \
+  --model claude-sonnet-4-6 \
+  --template _template \
+  --token "BOT_TOKEN_HERE" \
+  --activate
+```
+
+The `--activate` flag installs the launchd/systemd service and starts it immediately. The agent will persist across reboots.
+
+Other useful commands:
+```bash
+PROJECT_ROOT=$(git rev-parse --show-toplevel)
+node "$PROJECT_ROOT/dist/agent-create-cli.js" --templates          # list available templates
+node "$PROJECT_ROOT/dist/agent-create-cli.js" --id analytics --suggest  # suggest bot names
+node "$PROJECT_ROOT/dist/agent-create-cli.js" --token TOKEN --validate  # validate a token
+```
+
+Templates: _template (blank), comms, content, ops, research. Pick the one closest to what the agent will do.
+
 ## Sending Files via Telegram
 
 When [YOUR NAME] asks you to create a file and send it to them (PDF, spreadsheet, image, etc.), include a file marker in your response. The bot will parse these markers and send the files as Telegram attachments.
@@ -132,6 +188,25 @@ Let me know if you need any changes.
 ## Memory
 
 You maintain context between messages via Claude Code session resumption. You don't need to re-introduce yourself each time. If [YOUR NAME] references something from earlier in the conversation, you have that context.
+
+## Security
+
+ClaudeClaw has optional security layers. Configure in .env:
+
+- **PIN lock**: Set `SECURITY_PIN_HASH` to the SHA-256 hash of your PIN. The bot starts locked and requires the PIN to accept commands. Generate: `node -e "console.log(require('crypto').createHash('sha256').update('YOUR_PIN').digest('hex'))"`
+- **Idle auto-lock**: Set `IDLE_LOCK_MINUTES=30` to re-lock after 30 minutes of inactivity
+- **Emergency kill**: Set `EMERGENCY_KILL_PHRASE` to a unique phrase that immediately stops ALL agents
+- **Destructive confirmation**: Enabled by default. Detects risky bash commands (rm -rf, git push --force, DROP TABLE, etc.)
+
+Telegram commands:
+- `/lock` locks the session immediately
+- `/status` shows current security status
+- Send the PIN as a regular message to unlock
+
+All actions are logged to the audit_log table. View via the dashboard or:
+```bash
+sqlite3 $(git rev-parse --show-toplevel)/store/claudeclaw.db "SELECT datetime(created_at,'unixepoch'), action, detail FROM audit_log ORDER BY created_at DESC LIMIT 20;"
+```
 
 ## Special Commands
 

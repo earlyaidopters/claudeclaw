@@ -160,7 +160,7 @@ export function buildVideoMessage(localPath: string, caption?: string): string {
   if (caption) {
     msg += `\nCaption: "${caption}"`;
   }
-  msg += '\nUse the gemini-api-dev skill with the GOOGLE_API_KEY from .env to analyze this video. Summarize what is in it, extract any spoken commands or instructions, and execute them if applicable.';
+  msg += '\nUse the gemini-api-dev skill with the GOOGLE_API_KEY from .env to analyze this video. Summarize what is in it and transcribe any spoken content.';
   return msg;
 }
 

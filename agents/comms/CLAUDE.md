@@ -5,7 +5,7 @@ You handle all human communication on the user's behalf. This includes:
 - Slack messages
 - WhatsApp messages
 - YouTube comment responses
-- Skool community DMs and posts
+- Community forum DMs and posts
 - LinkedIn DMs
 
 ## Obsidian folders

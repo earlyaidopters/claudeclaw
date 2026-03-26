@@ -14,7 +14,7 @@ const queries = [
   "Who is Sarah?",
   "What tools does the user use to edit videos?",
   "How should I write LinkedIn posts?",
-  "Tell me about the Skool community pricing",
+  "Tell me about the community forum pricing",
   "What are the user's coding conventions?",
 ];
 

@@ -8,10 +8,12 @@ vi.mock('./gemini.js', () => ({
 vi.mock('./db.js', () => ({
   saveStructuredMemory: vi.fn(() => 1),
   saveMemoryEmbedding: vi.fn(),
+  getMemoriesWithEmbeddings: vi.fn(() => []),
 }));
 
 vi.mock('./embeddings.js', () => ({
   embedText: vi.fn(() => Promise.resolve([0.1, 0.2, 0.3])),
+  cosineSimilarity: vi.fn(() => 0),
 }));
 
 vi.mock('./logger.js', () => ({
@@ -106,6 +108,7 @@ describe('ingestConversationTurn', () => {
       ['preferences', 'UI'],
       0.8,
       'conversation',
+      'main',
     );
   });
 
@@ -143,7 +146,7 @@ describe('ingestConversationTurn', () => {
     expect(mockSave).not.toHaveBeenCalled();
   });
 
-  it('saves extraction with importance exactly 0.3', async () => {
+  it('skips extraction with importance exactly 0.3 (below 0.5 floor)', async () => {
     const extraction = {
       skip: false,
       summary: 'Borderline fact',
@@ -155,6 +158,22 @@ describe('ingestConversationTurn', () => {
     mockParseJson.mockReturnValue(extraction);
 
     const result = await ingestConversationTurn('chat1', 'some borderline message longer than fifteen', 'ok');
+    expect(result).toBe(false);
+    expect(mockSave).not.toHaveBeenCalled();
+  });
+
+  it('saves extraction with importance exactly 0.5', async () => {
+    const extraction = {
+      skip: false,
+      summary: 'Useful fact',
+      entities: [],
+      topics: [],
+      importance: 0.5,
+    };
+    mockGenerateContent.mockResolvedValue(JSON.stringify(extraction));
+    mockParseJson.mockReturnValue(extraction);
+
+    const result = await ingestConversationTurn('chat1', 'some useful message longer than fifteen', 'ok');
     expect(result).toBe(true);
     expect(mockSave).toHaveBeenCalled();
   });
@@ -181,6 +200,7 @@ describe('ingestConversationTurn', () => {
       [],
       1.0,  // clamped
       'conversation',
+      'main',
     );
   });
 
@@ -255,6 +275,7 @@ describe('ingestConversationTurn', () => {
       [],  // defaults to empty
       0.5,
       'conversation',
+      'main',
     );
   });
 
