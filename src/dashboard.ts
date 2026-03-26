@@ -1,11 +1,12 @@
 import { Api, RawApi } from 'grammy';
 import { Hono } from 'hono';
+import { getCookie, setCookie } from 'hono/cookie';
 import { streamSSE } from 'hono/streaming';
 import { serve } from '@hono/node-server';
 
 import fs from 'fs';
 import path from 'path';
-import { AGENT_ID, ALLOWED_CHAT_ID, DASHBOARD_PORT, DASHBOARD_TOKEN, PROJECT_ROOT, STORE_DIR, WHATSAPP_ENABLED, SLACK_USER_TOKEN, CONTEXT_LIMIT, agentDefaultModel } from './config.js';
+import { AGENT_ID, ALLOWED_CHAT_ID, DASHBOARD_PORT, DASHBOARD_TOKEN, DASHBOARD_USER, DASHBOARD_PASSWORD, PROJECT_ROOT, STORE_DIR, WHATSAPP_ENABLED, SLACK_USER_TOKEN, CONTEXT_LIMIT, agentDefaultModel } from './config.js';
 import crypto from 'crypto';
 import {
   getAllScheduledTasks,
@@ -92,6 +93,32 @@ Reply with JSON: {"agent": "agent_id"}`;
   }
 }
 
+// ── Cookie-based session auth ────────────────────────────────────────────────
+
+const sessionSecret = crypto.randomBytes(32);
+
+function makeSessionToken(user: string): string {
+  const payload = `${user}:${Date.now()}`;
+  const hmac = crypto.createHmac('sha256', sessionSecret).update(payload).digest('hex');
+  return `${Buffer.from(payload).toString('base64')}.${hmac}`;
+}
+
+function verifySessionToken(token: string): boolean {
+  const dotIdx = token.indexOf('.');
+  if (dotIdx < 0) return false;
+  const payloadB64 = token.slice(0, dotIdx);
+  const sig = token.slice(dotIdx + 1);
+  try {
+    const payload = Buffer.from(payloadB64, 'base64').toString('utf-8');
+    const expected = crypto.createHmac('sha256', sessionSecret).update(payload).digest('hex');
+    return crypto.timingSafeEqual(Buffer.from(sig, 'hex'), Buffer.from(expected, 'hex'));
+  } catch {
+    return false;
+  }
+}
+
+const LOGIN_ENABLED = !!(DASHBOARD_USER && DASHBOARD_PASSWORD);
+
 export function startDashboard(botApi?: Api<RawApi>): void {
   if (!DASHBOARD_TOKEN) {
     logger.info('DASHBOARD_TOKEN not set, dashboard disabled');
@@ -115,13 +142,97 @@ export function startDashboard(botApi?: Api<RawApi>): void {
     return c.json({ error: 'Internal server error' }, 500);
   });
 
-  // Token auth middleware
+  // ── Login routes (before auth middleware) ──────────────────────────
+  if (LOGIN_ENABLED) {
+    app.get('/login', (c) => {
+      return c.html(`<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ClaudeClaw Login</title>
+<style>
+  body{font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
+  .card{background:#1e293b;padding:2rem;border-radius:12px;width:320px;box-shadow:0 4px 24px rgba(0,0,0,.4)}
+  h1{margin:0 0 1.5rem;font-size:1.4rem;text-align:center}
+  label{display:block;margin-bottom:.5rem;font-size:.9rem;color:#94a3b8}
+  input{width:100%;padding:.6rem;margin-bottom:1rem;border:1px solid #334155;border-radius:6px;background:#0f172a;color:#e2e8f0;font-size:1rem;box-sizing:border-box}
+  button{width:100%;padding:.7rem;border:none;border-radius:6px;background:#3b82f6;color:#fff;font-size:1rem;cursor:pointer}
+  button:hover{background:#2563eb}
+  .err{color:#f87171;font-size:.85rem;margin-bottom:.5rem;display:none}
+</style></head><body>
+<div class="card">
+  <h1>ClaudeClaw</h1>
+  <form method="POST" action="/login">
+    <div class="err" id="err"></div>
+    <label for="user">Username</label>
+    <input type="text" id="user" name="user" required autofocus>
+    <label for="pass">Password</label>
+    <input type="password" id="pass" name="pass" required>
+    <button type="submit">Sign in</button>
+  </form>
+</div></body></html>`);
+    });
+
+    app.post('/login', async (c) => {
+      const body = await c.req.parseBody();
+      const user = typeof body.user === 'string' ? body.user : '';
+      const pass = typeof body.pass === 'string' ? body.pass : '';
+
+      if (user === DASHBOARD_USER && pass === DASHBOARD_PASSWORD) {
+        const token = makeSessionToken(user);
+        setCookie(c, 'claw_session', token, {
+          path: '/',
+          httpOnly: true,
+          sameSite: 'Lax',
+          maxAge: 7 * 24 * 60 * 60, // 7 days
+        });
+        return c.redirect(`/?token=${encodeURIComponent(DASHBOARD_TOKEN)}`);
+      }
+
+      return c.html(`<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ClaudeClaw Login</title>
+<style>
+  body{font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0}
+  .card{background:#1e293b;padding:2rem;border-radius:12px;width:320px;box-shadow:0 4px 24px rgba(0,0,0,.4)}
+  h1{margin:0 0 1.5rem;font-size:1.4rem;text-align:center}
+  label{display:block;margin-bottom:.5rem;font-size:.9rem;color:#94a3b8}
+  input{width:100%;padding:.6rem;margin-bottom:1rem;border:1px solid #334155;border-radius:6px;background:#0f172a;color:#e2e8f0;font-size:1rem;box-sizing:border-box}
+  button{width:100%;padding:.7rem;border:none;border-radius:6px;background:#3b82f6;color:#fff;font-size:1rem;cursor:pointer}
+  button:hover{background:#2563eb}
+  .err{color:#f87171;font-size:.85rem;margin-bottom:.5rem}
+</style></head><body>
+<div class="card">
+  <h1>ClaudeClaw</h1>
+  <form method="POST" action="/login">
+    <div class="err">Invalid username or password</div>
+    <label for="user">Username</label>
+    <input type="text" id="user" name="user" required autofocus>
+    <label for="pass">Password</label>
+    <input type="password" id="pass" name="pass" required>
+    <button type="submit">Sign in</button>
+  </form>
+</div></body></html>`, 401);
+    });
+  }
+
+  // Token + session cookie auth middleware
   app.use('*', async (c, next) => {
+    // Allow token-based auth (existing behavior)
     const token = c.req.query('token');
-    if (!DASHBOARD_TOKEN || !token || token !== DASHBOARD_TOKEN) {
-      return c.json({ error: 'Unauthorized' }, 401);
+    if (DASHBOARD_TOKEN && token && token === DASHBOARD_TOKEN) {
+      await next();
+      return;
     }
-    await next();
+
+    // Allow session cookie auth (when login is enabled)
+    if (LOGIN_ENABLED) {
+      const sessionCookie = getCookie(c, 'claw_session');
+      if (sessionCookie && verifySessionToken(sessionCookie)) {
+        await next();
+        return;
+      }
+    }
+
+    return c.json({ error: 'Unauthorized' }, 401);
   });
 
   // Serve dashboard HTML

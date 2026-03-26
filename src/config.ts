@@ -15,6 +15,8 @@ const envConfig = readEnvFile([
   'CONTEXT_LIMIT',
   'DASHBOARD_PORT',
   'DASHBOARD_TOKEN',
+  'DASHBOARD_USER',
+  'DASHBOARD_PASSWORD',
   'DASHBOARD_URL',
   'CLAUDECLAW_CONFIG',
   'DB_ENCRYPTION_KEY',
@@ -131,6 +133,10 @@ export const DASHBOARD_PORT = parseInt(
 );
 export const DASHBOARD_TOKEN =
   process.env.DASHBOARD_TOKEN || envConfig.DASHBOARD_TOKEN || '';
+export const DASHBOARD_USER =
+  process.env.DASHBOARD_USER || envConfig.DASHBOARD_USER || '';
+export const DASHBOARD_PASSWORD =
+  process.env.DASHBOARD_PASSWORD || envConfig.DASHBOARD_PASSWORD || '';
 export const DASHBOARD_URL =
   process.env.DASHBOARD_URL || envConfig.DASHBOARD_URL || '';
 
