@@ -126,7 +126,7 @@ export function startDashboard(botApi?: Api<RawApi>): void {
 
   // Serve dashboard HTML
   app.get('/', (c) => {
-    const chatId = c.req.query('chatId') || '';
+    const chatId = c.req.query('chatId') || ALLOWED_CHAT_ID;
     return c.html(getDashboardHtml(DASHBOARD_TOKEN, chatId));
   });
 
@@ -264,7 +264,7 @@ export function startDashboard(botApi?: Api<RawApi>): void {
 
   // Memory stats
   app.get('/api/memories', (c) => {
-    const chatId = c.req.query('chatId') || '';
+    const chatId = c.req.query('chatId') || ALLOWED_CHAT_ID;
     const stats = getDashboardMemoryStats(chatId);
     const fading = getDashboardLowSalienceMemories(chatId, 10);
     const topAccessed = getDashboardTopAccessedMemories(chatId, 5);
@@ -275,13 +275,13 @@ export function startDashboard(botApi?: Api<RawApi>): void {
 
   // Memory list (for drill-down drawer)
   app.get('/api/memories/pinned', (c) => {
-    const chatId = c.req.query('chatId') || '';
+    const chatId = c.req.query('chatId') || ALLOWED_CHAT_ID;
     const memories = getDashboardPinnedMemories(chatId);
     return c.json({ memories });
   });
 
   app.get('/api/memories/list', (c) => {
-    const chatId = c.req.query('chatId') || '';
+    const chatId = c.req.query('chatId') || ALLOWED_CHAT_ID;
     const limit = parseInt(c.req.query('limit') || '50', 10);
     const offset = parseInt(c.req.query('offset') || '0', 10);
     const sortBy = (c.req.query('sort') || 'importance') as 'importance' | 'salience' | 'recent';
@@ -291,7 +291,7 @@ export function startDashboard(botApi?: Api<RawApi>): void {
 
   // System health
   app.get('/api/health', (c) => {
-    const chatId = c.req.query('chatId') || '';
+    const chatId = c.req.query('chatId') || ALLOWED_CHAT_ID;
     const sessionId = getSession(chatId);
     let contextPct = 0;
     let turns = 0;
@@ -326,7 +326,7 @@ export function startDashboard(botApi?: Api<RawApi>): void {
 
   // Token / cost stats
   app.get('/api/tokens', (c) => {
-    const chatId = c.req.query('chatId') || '';
+    const chatId = c.req.query('chatId') || ALLOWED_CHAT_ID;
     const stats = getDashboardTokenStats(chatId);
     const costTimeline = getDashboardCostTimeline(chatId, 30);
     const recentUsage = getDashboardRecentTokenUsage(chatId, 20);
@@ -335,7 +335,7 @@ export function startDashboard(botApi?: Api<RawApi>): void {
 
   // Bot info (name, PID, chatId) — reads dynamically from state
   app.get('/api/info', (c) => {
-    const chatId = c.req.query('chatId') || '';
+    const chatId = c.req.query('chatId') || ALLOWED_CHAT_ID;
     const info = getBotInfo();
     return c.json({
       botName: info.name || 'ClaudeClaw',
@@ -634,7 +634,7 @@ export function startDashboard(botApi?: Api<RawApi>): void {
 
   // Chat history (paginated)
   app.get('/api/chat/history', (c) => {
-    const chatId = c.req.query('chatId') || '';
+    const chatId = c.req.query('chatId') || ALLOWED_CHAT_ID;
     if (!chatId) return c.json({ error: 'chatId required' }, 400);
     const limit = parseInt(c.req.query('limit') || '40', 10);
     const beforeId = c.req.query('beforeId');

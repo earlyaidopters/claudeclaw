@@ -1,0 +1,16 @@
+{
+  "output": {
+    "directory": "output/{brand}",
+    "naming": "{name}-{date}",
+    "keep_parts": false
+  },
+  "generation": {
+    "slides_per_batch": 5,
+    "auto_combine": true,
+    "open_after_generate": false
+  },
+  "defaults": {
+    "slide_width_inches": 13.333,
+    "slide_height_inches": 7.5
+  }
+}

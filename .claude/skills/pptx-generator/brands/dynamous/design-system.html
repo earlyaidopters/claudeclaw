@@ -1,0 +1,1623 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dynamous Design System</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Montserrat:wght@700;800;900&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    /* ========================================
+       CSS VARIABLES
+       ======================================== */
+    :root {
+      /* Colors - Primary */
+      --dynamous-blue: #3B82F6;
+      --dynamous-dark: #2563EB;
+      --dynamous-light: #60A5FA;
+      --dynamous-pale: #DBEAFE;
+
+      /* Colors - Semantic */
+      --success: #047857;
+      --success-bg: #A7F3D0;
+      --warning: #B45309;
+      --warning-bg: #FEF3C7;
+      --error: #B91C1C;
+      --error-bg: #FECACA;
+      --ai-purple: #6D28D9;
+      --ai-purple-bg: #DDD6FE;
+      --trigger-orange: #C2410C;
+      --trigger-bg: #FED7AA;
+
+      /* Colors - Theme (Dark) */
+      --background: #07090F;
+      --background-alt: #080A13;
+      --surface: rgba(0, 0, 0, 0.4);
+      --border: rgba(255, 255, 255, 0.1);
+      --text-primary: rgba(255, 255, 255, 0.98);
+      --text-secondary: rgba(255, 255, 255, 0.8);
+      --text-muted: rgba(255, 255, 255, 0.7);
+
+      /* Colors - Diagram */
+      --diagram-stroke: #1E3A5F;
+      --diagram-fill: #3B82F6;
+      --diagram-secondary: #60A5FA;
+
+      /* Spacing */
+      --space-xs: 4px;
+      --space-sm: 8px;
+      --space-md: 12px;
+      --space-base: 16px;
+      --space-lg: 24px;
+      --space-xl: 32px;
+      --space-2xl: 48px;
+      --space-3xl: 64px;
+
+      /* Typography */
+      --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
+      --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+      --font-display: 'Montserrat', var(--font-sans);
+
+      /* Motion */
+      --duration-micro: 150ms;
+      --duration-fast: 200ms;
+      --duration-normal: 300ms;
+      --duration-slow: 600ms;
+      --ease-out: cubic-bezier(0, 0, 0.2, 1);
+      --ease-in: cubic-bezier(0.4, 0, 1, 1);
+
+      /* Radii */
+      --radius-sm: 4px;
+      --radius-md: 8px;
+      --radius-lg: 12px;
+      --radius-xl: 16px;
+      --radius-full: 9999px;
+    }
+
+    /* ========================================
+       BASE STYLES
+       ======================================== */
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      font-family: var(--font-sans);
+      background: #07090F;
+      color: var(--text-primary);
+      line-height: 1.6;
+      min-height: 100vh;
+    }
+
+    /* ========================================
+       LAYOUT
+       ======================================== */
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: var(--space-xl);
+    }
+
+    .header {
+      text-align: center;
+      padding: var(--space-3xl) var(--space-xl);
+      border-bottom: 1px solid var(--border);
+      margin-bottom: var(--space-3xl);
+    }
+
+    .header h1 {
+      font-size: 3rem;
+      font-weight: 700;
+      margin-bottom: var(--space-base);
+    }
+
+    .header .subtitle {
+      color: var(--text-secondary);
+      font-size: 1.125rem;
+    }
+
+    .logo-display {
+      width: 80px;
+      height: 80px;
+      margin: 0 auto var(--space-lg);
+    }
+
+    .logo-display img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+    }
+
+    /* Navigation */
+    .nav {
+      position: sticky;
+      top: 0;
+      background: rgba(7, 9, 15, 0.9);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+      z-index: 100;
+      padding: var(--space-base) var(--space-xl);
+    }
+
+    .nav-inner {
+      max-width: 1200px;
+      margin: 0 auto;
+      display: flex;
+      gap: var(--space-lg);
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    .nav a {
+      color: var(--text-secondary);
+      text-decoration: none;
+      font-size: 0.875rem;
+      font-weight: 500;
+      transition: color var(--duration-fast) var(--ease-out);
+    }
+
+    .nav a:hover {
+      color: var(--dynamous-blue);
+    }
+
+    /* Sections */
+    .section {
+      margin-bottom: var(--space-3xl);
+      padding-bottom: var(--space-3xl);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .section:last-child {
+      border-bottom: none;
+    }
+
+    .section-title {
+      font-size: 1.875rem;
+      font-weight: 700;
+      margin-bottom: var(--space-lg);
+      display: flex;
+      align-items: center;
+      gap: var(--space-sm);
+    }
+
+    .section-title::before {
+      content: '';
+      width: 4px;
+      height: 1.5em;
+      background: var(--dynamous-blue);
+      border-radius: 2px;
+    }
+
+    .subsection {
+      margin-bottom: var(--space-2xl);
+    }
+
+    .subsection-title {
+      font-size: 1.25rem;
+      font-weight: 600;
+      margin-bottom: var(--space-base);
+      color: var(--text-secondary);
+    }
+
+    .description {
+      color: var(--text-muted);
+      font-size: 0.875rem;
+      margin-bottom: var(--space-base);
+    }
+
+    /* ========================================
+       COLOR SWATCHES
+       ======================================== */
+    .color-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: var(--space-base);
+    }
+
+    .color-swatch {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+      cursor: pointer;
+      transition: transform var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out);
+    }
+
+    .color-swatch:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+    }
+
+    .color-preview {
+      height: 100px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .color-info {
+      padding: var(--space-base);
+      background: rgba(0, 0, 0, 0.3);
+    }
+
+    .color-name {
+      font-weight: 600;
+      margin-bottom: var(--space-xs);
+    }
+
+    .color-hex {
+      font-family: var(--font-mono);
+      font-size: 0.875rem;
+      color: var(--text-muted);
+    }
+
+    .color-var {
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      margin-top: var(--space-xs);
+    }
+
+    /* Semantic colors with stroke */
+    .color-preview.color-semantic {
+      display: flex;
+      gap: 2px;
+      align-items: stretch;
+      justify-content: stretch;
+      padding: 0;
+    }
+
+    .color-semantic .fill {
+      flex: 2;
+    }
+
+    .color-semantic .stroke {
+      flex: 1;
+    }
+
+    /* ========================================
+       TYPOGRAPHY
+       ======================================== */
+    .type-scale {
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-lg);
+    }
+
+    .type-sample {
+      display: flex;
+      align-items: baseline;
+      gap: var(--space-xl);
+      padding: var(--space-base);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+    }
+
+    .type-label {
+      flex-shrink: 0;
+      width: 80px;
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      color: var(--dynamous-blue);
+    }
+
+    .type-size {
+      flex-shrink: 0;
+      width: 80px;
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    .type-text {
+      flex: 1;
+    }
+
+    .type-xs { font-size: 0.75rem; }
+    .type-sm { font-size: 0.875rem; }
+    .type-base { font-size: 1rem; }
+    .type-lg { font-size: 1.125rem; }
+    .type-xl { font-size: 1.25rem; }
+    .type-2xl { font-size: 1.5rem; }
+    .type-3xl { font-size: 1.875rem; }
+    .type-4xl { font-size: 2.25rem; }
+    .type-5xl { font-size: 3rem; }
+    .type-6xl { font-size: 3.75rem; }
+
+    .font-inter { font-family: var(--font-sans); }
+    .font-montserrat { font-family: var(--font-display); }
+    .font-mono { font-family: var(--font-mono); }
+
+    .weight-400 { font-weight: 400; }
+    .weight-500 { font-weight: 500; }
+    .weight-600 { font-weight: 600; }
+    .weight-700 { font-weight: 700; }
+    .weight-800 { font-weight: 800; }
+
+    /* Text colors */
+    .text-colors {
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-sm);
+      padding: var(--space-lg);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+    }
+
+    .text-primary-demo { color: var(--text-primary); }
+    .text-secondary-demo { color: var(--text-secondary); }
+    .text-muted-demo { color: var(--text-muted); }
+    .text-link-demo { color: var(--dynamous-blue); }
+
+    /* ========================================
+       BUTTONS
+       ======================================== */
+    .button-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--space-base);
+      align-items: center;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: var(--space-sm);
+      font-family: var(--font-sans);
+      font-weight: 500;
+      border-radius: var(--radius-md);
+      border: none;
+      cursor: pointer;
+      transition: all var(--duration-fast) var(--ease-out);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .btn::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(90deg, transparent, rgba(255,255,255,0.1), transparent);
+      transform: translateX(-100%);
+      transition: transform 0.5s ease;
+    }
+
+    .btn:hover::before {
+      transform: translateX(100%);
+    }
+
+    /* Button Sizes */
+    .btn-sm {
+      font-size: 0.75rem;
+      padding: 6px 12px;
+    }
+
+    .btn-md {
+      font-size: 0.875rem;
+      padding: 8px 16px;
+    }
+
+    .btn-lg {
+      font-size: 1rem;
+      padding: 12px 24px;
+    }
+
+    /* Button Variants */
+    .btn-primary {
+      background: var(--dynamous-blue);
+      color: white;
+      box-shadow: 0 4px 14px -4px rgba(59, 130, 246, 0.4);
+    }
+
+    .btn-primary:hover {
+      background: var(--dynamous-dark);
+      box-shadow: 0 6px 20px -4px rgba(59, 130, 246, 0.5);
+      transform: translateY(-1px);
+    }
+
+    .btn-secondary {
+      background: rgba(255, 255, 255, 0.1);
+      color: white;
+    }
+
+    .btn-secondary:hover {
+      background: rgba(255, 255, 255, 0.15);
+    }
+
+    .btn-outline {
+      background: transparent;
+      color: white;
+      border: 1px solid rgba(59, 130, 246, 0.5);
+    }
+
+    .btn-outline:hover {
+      background: rgba(59, 130, 246, 0.1);
+      border-color: var(--dynamous-blue);
+    }
+
+    .btn-ghost {
+      background: transparent;
+      color: white;
+    }
+
+    .btn-ghost:hover {
+      background: rgba(255, 255, 255, 0.05);
+    }
+
+    /* ========================================
+       SPACING
+       ======================================== */
+    .spacing-grid {
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-base);
+    }
+
+    .spacing-item {
+      display: flex;
+      align-items: center;
+      gap: var(--space-lg);
+    }
+
+    .spacing-label {
+      width: 60px;
+      font-family: var(--font-mono);
+      font-size: 0.875rem;
+      color: var(--dynamous-blue);
+    }
+
+    .spacing-value {
+      width: 50px;
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    .spacing-bar {
+      height: 24px;
+      background: var(--dynamous-blue);
+      border-radius: var(--radius-sm);
+      opacity: 0.7;
+    }
+
+    /* ========================================
+       BORDER RADIUS
+       ======================================== */
+    .radius-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--space-lg);
+    }
+
+    .radius-item {
+      text-align: center;
+    }
+
+    .radius-preview {
+      width: 80px;
+      height: 80px;
+      background: var(--dynamous-blue);
+      margin-bottom: var(--space-sm);
+    }
+
+    .radius-label {
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    /* ========================================
+       GLASS CARDS
+       ======================================== */
+    .glass-demo-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: var(--space-lg);
+    }
+
+    .glass-card {
+      background: rgba(0, 0, 0, 0.4);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: var(--radius-lg);
+      padding: var(--space-xl);
+    }
+
+    .glass-card-title {
+      font-size: 1.25rem;
+      font-weight: 600;
+      margin-bottom: var(--space-sm);
+    }
+
+    .glass-card-text {
+      color: var(--text-secondary);
+      font-size: 0.875rem;
+    }
+
+    /* ========================================
+       GLOW EFFECTS
+       ======================================== */
+    .glow-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+      gap: var(--space-xl);
+    }
+
+    .glow-demo {
+      padding: var(--space-xl);
+      border-radius: var(--radius-lg);
+      text-align: center;
+    }
+
+    .blue-glow {
+      box-shadow: 0 0 15px rgba(59, 130, 246, 0.5), 0 0 30px rgba(59, 130, 246, 0.3);
+      background: var(--surface);
+      border: 1px solid var(--border);
+    }
+
+    .text-glow {
+      text-shadow: 0 0 10px rgba(59, 130, 246, 0.5), 0 0 20px rgba(59, 130, 246, 0.3);
+    }
+
+    .glow-demo-title {
+      font-size: 1.5rem;
+      font-weight: 700;
+      margin-bottom: var(--space-sm);
+    }
+
+    .glow-demo-label {
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    /* ========================================
+       ANIMATIONS
+       ======================================== */
+    .animation-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: var(--space-lg);
+    }
+
+    .animation-demo {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: var(--space-xl);
+      text-align: center;
+    }
+
+    .animation-box {
+      width: 60px;
+      height: 60px;
+      background: var(--dynamous-blue);
+      border-radius: var(--radius-md);
+      margin: 0 auto var(--space-base);
+    }
+
+    .animation-label {
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    /* Float animation */
+    @keyframes float {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(-10px); }
+    }
+
+    .animate-float {
+      animation: float 6s ease-in-out infinite;
+    }
+
+    /* Fade in */
+    @keyframes fade-in {
+      0% { opacity: 0; transform: translateY(10px); }
+      100% { opacity: 1; transform: translateY(0); }
+    }
+
+    .animate-fade-in {
+      animation: fade-in 0.6s ease-out forwards;
+    }
+
+    /* Glow pulse */
+    @keyframes glow-pulse {
+      0%, 100% { box-shadow: 0 0 5px rgba(59, 130, 246, 0.5); }
+      50% { box-shadow: 0 0 20px rgba(59, 130, 246, 0.8); }
+    }
+
+    .animate-glow {
+      animation: glow-pulse 2s ease-in-out infinite;
+    }
+
+    /* Shimmer */
+    @keyframes shimmer {
+      0% { background-position: -200% 0; }
+      100% { background-position: 200% 0; }
+    }
+
+    .animate-shimmer {
+      background: linear-gradient(90deg, var(--dynamous-blue) 0%, var(--dynamous-light) 50%, var(--dynamous-blue) 100%);
+      background-size: 200% 100%;
+      animation: shimmer 2s linear infinite;
+    }
+
+    /* ========================================
+       DIAGRAM COLORS
+       ======================================== */
+    .diagram-color-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+      gap: var(--space-base);
+    }
+
+    .diagram-swatch {
+      border-radius: var(--radius-md);
+      overflow: hidden;
+      border: 2px solid;
+    }
+
+    .diagram-fill {
+      height: 60px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 600;
+      font-size: 0.875rem;
+    }
+
+    .diagram-info {
+      padding: var(--space-sm);
+      background: rgba(0, 0, 0, 0.5);
+    }
+
+    .diagram-label {
+      font-size: 0.75rem;
+      font-weight: 600;
+      margin-bottom: var(--space-xs);
+    }
+
+    .diagram-codes {
+      font-family: var(--font-mono);
+      font-size: 0.625rem;
+      color: var(--text-muted);
+    }
+
+    /* ========================================
+       FORM INPUTS
+       ======================================== */
+    .input-grid {
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-base);
+      max-width: 400px;
+    }
+
+    .input {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: var(--space-md) var(--space-base);
+      color: var(--text-primary);
+      font-family: var(--font-sans);
+      font-size: 1rem;
+      transition: border-color var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out);
+    }
+
+    .input:focus {
+      outline: none;
+      border-color: var(--dynamous-blue);
+      box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
+    }
+
+    .input::placeholder {
+      color: var(--text-muted);
+    }
+
+    .input-label {
+      font-size: 0.875rem;
+      font-weight: 500;
+      margin-bottom: var(--space-xs);
+    }
+
+    /* ========================================
+       THUMBNAIL PREVIEW
+       ======================================== */
+    .thumbnail-preview {
+      aspect-ratio: 16/9;
+      max-width: 640px;
+      background: linear-gradient(135deg, var(--background) 0%, rgba(30, 58, 138, 0.3) 100%);
+      border-radius: var(--radius-lg);
+      border: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .thumbnail-text {
+      font-family: var(--font-display);
+      font-weight: 800;
+      font-size: 3rem;
+      color: white;
+      text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5), 0 0 20px rgba(59, 130, 246, 0.5);
+      text-align: center;
+      padding: var(--space-xl);
+    }
+
+    .thumbnail-glow {
+      position: absolute;
+      width: 200px;
+      height: 200px;
+      background: var(--dynamous-blue);
+      filter: blur(80px);
+      opacity: 0.3;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+    }
+
+    /* ========================================
+       CODE BLOCKS
+       ======================================== */
+    .code-block {
+      background: rgba(0, 0, 0, 0.5);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: var(--space-base);
+      font-family: var(--font-mono);
+      font-size: 0.8125rem;
+      overflow-x: auto;
+      position: relative;
+    }
+
+    .code-block code {
+      color: var(--text-secondary);
+    }
+
+    .code-block .keyword { color: var(--dynamous-light); }
+    .code-block .property { color: #A7F3D0; }
+    .code-block .value { color: #FED7AA; }
+    .code-block .comment { color: var(--text-muted); }
+
+    .copy-btn {
+      position: absolute;
+      top: var(--space-sm);
+      right: var(--space-sm);
+      background: rgba(255, 255, 255, 0.1);
+      border: none;
+      border-radius: var(--radius-sm);
+      padding: var(--space-xs) var(--space-sm);
+      color: var(--text-muted);
+      font-size: 0.75rem;
+      cursor: pointer;
+      transition: all var(--duration-fast) var(--ease-out);
+    }
+
+    .copy-btn:hover {
+      background: rgba(255, 255, 255, 0.2);
+      color: var(--text-primary);
+    }
+
+    /* ========================================
+       UTILITIES
+       ======================================== */
+    .flex { display: flex; }
+    .flex-wrap { flex-wrap: wrap; }
+    .gap-sm { gap: var(--space-sm); }
+    .gap-base { gap: var(--space-base); }
+    .gap-lg { gap: var(--space-lg); }
+    .items-center { align-items: center; }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: var(--space-lg);
+    }
+
+    @media (max-width: 768px) {
+      .grid-2 {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    /* Toast notification */
+    .toast {
+      position: fixed;
+      bottom: var(--space-xl);
+      right: var(--space-xl);
+      background: var(--dynamous-blue);
+      color: white;
+      padding: var(--space-md) var(--space-lg);
+      border-radius: var(--radius-md);
+      font-size: 0.875rem;
+      font-weight: 500;
+      transform: translateY(100px);
+      opacity: 0;
+      transition: all var(--duration-normal) var(--ease-out);
+      z-index: 1000;
+    }
+
+    .toast.show {
+      transform: translateY(0);
+      opacity: 1;
+    }
+
+    /* ========================================
+       SCROLLBAR
+       ======================================== */
+    ::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: var(--background);
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.2);
+      border-radius: 4px;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+      background: rgba(255, 255, 255, 0.3);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Navigation -->
+  <nav class="nav">
+    <div class="nav-inner">
+      <a href="#colors">Colors</a>
+      <a href="#typography">Typography</a>
+      <a href="#buttons">Buttons</a>
+      <a href="#spacing">Spacing</a>
+      <a href="#radius">Border Radius</a>
+      <a href="#glass">Glass Cards</a>
+      <a href="#glows">Glow Effects</a>
+      <a href="#animations">Animations</a>
+      <a href="#inputs">Inputs</a>
+      <a href="#diagrams">Diagram Colors</a>
+      <a href="#thumbnails">Thumbnails</a>
+      <a href="#css">CSS Variables</a>
+    </div>
+  </nav>
+
+  <div class="container">
+    <!-- Header -->
+    <header class="header">
+      <div class="logo-display">
+        <img src="DynamousLogo.png" alt="Dynamous Logo">
+      </div>
+      <h1>Dynamous <span class="text-glow" style="color: var(--dynamous-blue);">Design System</span></h1>
+      <p class="subtitle">A complete visual reference for AI education content, community, and products.</p>
+    </header>
+
+    <!-- Colors Section -->
+    <section class="section" id="colors">
+      <h2 class="section-title">Colors</h2>
+
+      <div class="subsection">
+        <h3 class="subsection-title">Primary — Dynamous Blue</h3>
+        <p class="description">The signature brand color. Click any swatch to copy the hex code.</p>
+        <div class="color-grid">
+          <div class="color-swatch" onclick="copyToClipboard('#3B82F6', this)">
+            <div class="color-preview" style="background: #3B82F6;"></div>
+            <div class="color-info">
+              <div class="color-name">Dynamous Blue</div>
+              <div class="color-hex">#3B82F6</div>
+              <div class="color-var">--dynamous-blue</div>
+            </div>
+          </div>
+          <div class="color-swatch" onclick="copyToClipboard('#2563EB', this)">
+            <div class="color-preview" style="background: #2563EB;"></div>
+            <div class="color-info">
+              <div class="color-name">Dynamous Dark</div>
+              <div class="color-hex">#2563EB</div>
+              <div class="color-var">--dynamous-dark</div>
+            </div>
+          </div>
+          <div class="color-swatch" onclick="copyToClipboard('#60A5FA', this)">
+            <div class="color-preview" style="background: #60A5FA;"></div>
+            <div class="color-info">
+              <div class="color-name">Dynamous Light</div>
+              <div class="color-hex">#60A5FA</div>
+              <div class="color-var">--dynamous-light</div>
+            </div>
+          </div>
+          <div class="color-swatch" onclick="copyToClipboard('#DBEAFE', this)">
+            <div class="color-preview" style="background: #DBEAFE;"></div>
+            <div class="color-info">
+              <div class="color-name">Dynamous Pale</div>
+              <div class="color-hex">#DBEAFE</div>
+              <div class="color-var">--dynamous-pale</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="subsection">
+        <h3 class="subsection-title">Semantic Colors</h3>
+        <p class="description">Used for specific purposes: success, warning, error, AI elements.</p>
+        <div class="color-grid">
+          <div class="color-swatch" onclick="copyToClipboard('#A7F3D0', this)">
+            <div class="color-preview color-semantic">
+              <div class="fill" style="background: #A7F3D0;"></div>
+              <div class="stroke" style="background: #047857;"></div>
+            </div>
+            <div class="color-info">
+              <div class="color-name">Success</div>
+              <div class="color-hex">Fill: #A7F3D0 | Stroke: #047857</div>
+            </div>
+          </div>
+          <div class="color-swatch" onclick="copyToClipboard('#FEF3C7', this)">
+            <div class="color-preview color-semantic">
+              <div class="fill" style="background: #FEF3C7;"></div>
+              <div class="stroke" style="background: #B45309;"></div>
+            </div>
+            <div class="color-info">
+              <div class="color-name">Warning</div>
+              <div class="color-hex">Fill: #FEF3C7 | Stroke: #B45309</div>
+            </div>
+          </div>
+          <div class="color-swatch" onclick="copyToClipboard('#FECACA', this)">
+            <div class="color-preview color-semantic">
+              <div class="fill" style="background: #FECACA;"></div>
+              <div class="stroke" style="background: #B91C1C;"></div>
+            </div>
+            <div class="color-info">
+              <div class="color-name">Error</div>
+              <div class="color-hex">Fill: #FECACA | Stroke: #B91C1C</div>
+            </div>
+          </div>
+          <div class="color-swatch" onclick="copyToClipboard('#DDD6FE', this)">
+            <div class="color-preview color-semantic">
+              <div class="fill" style="background: #DDD6FE;"></div>
+              <div class="stroke" style="background: #6D28D9;"></div>
+            </div>
+            <div class="color-info">
+              <div class="color-name">AI / LLM</div>
+              <div class="color-hex">Fill: #DDD6FE | Stroke: #6D28D9</div>
+            </div>
+          </div>
+          <div class="color-swatch" onclick="copyToClipboard('#FED7AA', this)">
+            <div class="color-preview color-semantic">
+              <div class="fill" style="background: #FED7AA;"></div>
+              <div class="stroke" style="background: #C2410C;"></div>
+            </div>
+            <div class="color-info">
+              <div class="color-name">Trigger / Input</div>
+              <div class="color-hex">Fill: #FED7AA | Stroke: #C2410C</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="subsection">
+        <h3 class="subsection-title">Dark Theme</h3>
+        <p class="description">Background, surface, and text colors for the dark theme.</p>
+        <div class="color-grid">
+          <div class="color-swatch" onclick="copyToClipboard('#07090F', this)">
+            <div class="color-preview" style="background: #07090F; border: 1px solid rgba(255,255,255,0.1);"></div>
+            <div class="color-info">
+              <div class="color-name">Background</div>
+              <div class="color-hex">#07090F</div>
+              <div class="color-var">--background</div>
+            </div>
+          </div>
+          <div class="color-swatch" onclick="copyToClipboard('#080A13', this)">
+            <div class="color-preview" style="background: #080A13; border: 1px solid rgba(255,255,255,0.1);"></div>
+            <div class="color-info">
+              <div class="color-name">Background Alt</div>
+              <div class="color-hex">#080A13</div>
+              <div class="color-var">--background-alt</div>
+            </div>
+          </div>
+          <div class="color-swatch" onclick="copyToClipboard('rgba(0, 0, 0, 0.4)', this)">
+            <div class="color-preview" style="background: rgba(0, 0, 0, 0.4); border: 1px solid rgba(255,255,255,0.1);"></div>
+            <div class="color-info">
+              <div class="color-name">Surface</div>
+              <div class="color-hex">rgba(0, 0, 0, 0.4)</div>
+              <div class="color-var">--surface</div>
+            </div>
+          </div>
+          <div class="color-swatch" onclick="copyToClipboard('rgba(255, 255, 255, 0.1)', this)">
+            <div class="color-preview" style="background: linear-gradient(to right, #07090F 49%, rgba(255,255,255,0.3) 50%);"></div>
+            <div class="color-info">
+              <div class="color-name">Border</div>
+              <div class="color-hex">rgba(255, 255, 255, 0.1)</div>
+              <div class="color-var">--border</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="subsection">
+        <h3 class="subsection-title">Text Colors</h3>
+        <div class="text-colors">
+          <p class="text-primary-demo"><strong>Primary (98%)</strong> — Main headings and emphasis</p>
+          <p class="text-secondary-demo"><strong>Secondary (80%)</strong> — Body text and descriptions</p>
+          <p class="text-muted-demo"><strong>Muted (70%)</strong> — Meta info, timestamps, labels</p>
+          <p class="text-link-demo"><strong>Link (Dynamous Blue)</strong> — Interactive text elements</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Typography Section -->
+    <section class="section" id="typography">
+      <h2 class="section-title">Typography</h2>
+
+      <div class="subsection">
+        <h3 class="subsection-title">Font Families</h3>
+        <div class="type-scale">
+          <div class="type-sample">
+            <span class="type-label">Inter</span>
+            <span class="type-size">Primary</span>
+            <span class="type-text font-inter type-xl">The quick brown fox jumps over the lazy dog.</span>
+          </div>
+          <div class="type-sample">
+            <span class="type-label">Montserrat</span>
+            <span class="type-size">Display</span>
+            <span class="type-text font-montserrat weight-800 type-xl">THE QUICK BROWN FOX JUMPS</span>
+          </div>
+          <div class="type-sample">
+            <span class="type-label">JetBrains</span>
+            <span class="type-size">Mono</span>
+            <span class="type-text font-mono type-base">const agent = new AIAgent({ model: 'claude-sonnet' });</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="subsection">
+        <h3 class="subsection-title">Type Scale</h3>
+        <div class="type-scale">
+          <div class="type-sample">
+            <span class="type-label">6xl</span>
+            <span class="type-size">3.75rem</span>
+            <span class="type-text type-6xl weight-700">Hero Display</span>
+          </div>
+          <div class="type-sample">
+            <span class="type-label">5xl</span>
+            <span class="type-size">3rem</span>
+            <span class="type-text type-5xl weight-700">Hero Mobile</span>
+          </div>
+          <div class="type-sample">
+            <span class="type-label">4xl</span>
+            <span class="type-size">2.25rem</span>
+            <span class="type-text type-4xl weight-700">Hero Subheading</span>
+          </div>
+          <div class="type-sample">
+            <span class="type-label">3xl</span>
+            <span class="type-size">1.875rem</span>
+            <span class="type-text type-3xl weight-700">Page Headers</span>
+          </div>
+          <div class="type-sample">
+            <span class="type-label">2xl</span>
+            <span class="type-size">1.5rem</span>
+            <span class="type-text type-2xl weight-600">Card Titles</span>
+          </div>
+          <div class="type-sample">
+            <span class="type-label">xl</span>
+            <span class="type-size">1.25rem</span>
+            <span class="type-text type-xl weight-600">Section Headers</span>
+          </div>
+          <div class="type-sample">
+            <span class="type-label">lg</span>
+            <span class="type-size">1.125rem</span>
+            <span class="type-text type-lg">Lead paragraphs and emphasis</span>
+          </div>
+          <div class="type-sample">
+            <span class="type-label">base</span>
+            <span class="type-size">1rem</span>
+            <span class="type-text type-base">Body text for paragraphs and content.</span>
+          </div>
+          <div class="type-sample">
+            <span class="type-label">sm</span>
+            <span class="type-size">0.875rem</span>
+            <span class="type-text type-sm" style="color: var(--text-secondary);">Secondary text and descriptions</span>
+          </div>
+          <div class="type-sample">
+            <span class="type-label">xs</span>
+            <span class="type-size">0.75rem</span>
+            <span class="type-text type-xs" style="color: var(--text-muted);">Labels, badges, and meta information</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="subsection">
+        <h3 class="subsection-title">Font Weights</h3>
+        <div class="type-scale">
+          <div class="type-sample">
+            <span class="type-label">400</span>
+            <span class="type-size">Regular</span>
+            <span class="type-text type-lg weight-400">Body text and paragraphs</span>
+          </div>
+          <div class="type-sample">
+            <span class="type-label">500</span>
+            <span class="type-size">Medium</span>
+            <span class="type-text type-lg weight-500">Buttons and labels</span>
+          </div>
+          <div class="type-sample">
+            <span class="type-label">600</span>
+            <span class="type-size">Semibold</span>
+            <span class="type-text type-lg weight-600">Subheadings and emphasis</span>
+          </div>
+          <div class="type-sample">
+            <span class="type-label">700</span>
+            <span class="type-size">Bold</span>
+            <span class="type-text type-lg weight-700">Headings and titles</span>
+          </div>
+          <div class="type-sample">
+            <span class="type-label">800</span>
+            <span class="type-size">Extra Bold</span>
+            <span class="type-text type-lg weight-800 font-montserrat">Thumbnails and display</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Buttons Section -->
+    <section class="section" id="buttons">
+      <h2 class="section-title">Buttons</h2>
+
+      <div class="subsection">
+        <h3 class="subsection-title">Button Variants</h3>
+        <div class="button-grid">
+          <button class="btn btn-primary btn-md">Primary</button>
+          <button class="btn btn-secondary btn-md">Secondary</button>
+          <button class="btn btn-outline btn-md">Outline</button>
+          <button class="btn btn-ghost btn-md">Ghost</button>
+        </div>
+      </div>
+
+      <div class="subsection">
+        <h3 class="subsection-title">Button Sizes</h3>
+        <div class="button-grid">
+          <button class="btn btn-primary btn-sm">Small</button>
+          <button class="btn btn-primary btn-md">Medium</button>
+          <button class="btn btn-primary btn-lg">Large</button>
+        </div>
+      </div>
+
+      <div class="subsection">
+        <h3 class="subsection-title">With Icons</h3>
+        <div class="button-grid">
+          <button class="btn btn-primary btn-md">
+            Get Started
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline></svg>
+          </button>
+          <button class="btn btn-outline btn-md">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+            Watch Demo
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Spacing Section -->
+    <section class="section" id="spacing">
+      <h2 class="section-title">Spacing</h2>
+      <p class="description">Base unit: 4px. All spacing is a multiple of the base.</p>
+
+      <div class="spacing-grid">
+        <div class="spacing-item">
+          <span class="spacing-label">xs</span>
+          <span class="spacing-value">4px</span>
+          <div class="spacing-bar" style="width: 4px;"></div>
+        </div>
+        <div class="spacing-item">
+          <span class="spacing-label">sm</span>
+          <span class="spacing-value">8px</span>
+          <div class="spacing-bar" style="width: 8px;"></div>
+        </div>
+        <div class="spacing-item">
+          <span class="spacing-label">md</span>
+          <span class="spacing-value">12px</span>
+          <div class="spacing-bar" style="width: 12px;"></div>
+        </div>
+        <div class="spacing-item">
+          <span class="spacing-label">base</span>
+          <span class="spacing-value">16px</span>
+          <div class="spacing-bar" style="width: 16px;"></div>
+        </div>
+        <div class="spacing-item">
+          <span class="spacing-label">lg</span>
+          <span class="spacing-value">24px</span>
+          <div class="spacing-bar" style="width: 24px;"></div>
+        </div>
+        <div class="spacing-item">
+          <span class="spacing-label">xl</span>
+          <span class="spacing-value">32px</span>
+          <div class="spacing-bar" style="width: 32px;"></div>
+        </div>
+        <div class="spacing-item">
+          <span class="spacing-label">2xl</span>
+          <span class="spacing-value">48px</span>
+          <div class="spacing-bar" style="width: 48px;"></div>
+        </div>
+        <div class="spacing-item">
+          <span class="spacing-label">3xl</span>
+          <span class="spacing-value">64px</span>
+          <div class="spacing-bar" style="width: 64px;"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Border Radius Section -->
+    <section class="section" id="radius">
+      <h2 class="section-title">Border Radius</h2>
+
+      <div class="radius-grid">
+        <div class="radius-item">
+          <div class="radius-preview" style="border-radius: 4px;"></div>
+          <div class="radius-label">sm (4px)</div>
+        </div>
+        <div class="radius-item">
+          <div class="radius-preview" style="border-radius: 8px;"></div>
+          <div class="radius-label">md (8px)</div>
+        </div>
+        <div class="radius-item">
+          <div class="radius-preview" style="border-radius: 12px;"></div>
+          <div class="radius-label">lg (12px)</div>
+        </div>
+        <div class="radius-item">
+          <div class="radius-preview" style="border-radius: 16px;"></div>
+          <div class="radius-label">xl (16px)</div>
+        </div>
+        <div class="radius-item">
+          <div class="radius-preview" style="border-radius: 9999px;"></div>
+          <div class="radius-label">full (pill)</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Glass Cards Section -->
+    <section class="section" id="glass">
+      <h2 class="section-title">Glass Cards</h2>
+      <p class="description">The signature UI pattern for Dynamous. Frosted glass effect over dark backgrounds.</p>
+
+      <div class="glass-demo-grid">
+        <div class="glass-card">
+          <h3 class="glass-card-title">Default Glass Card</h3>
+          <p class="glass-card-text">Background: rgba(0, 0, 0, 0.4)<br>Backdrop blur: 16px<br>Border: rgba(255, 255, 255, 0.1)<br>Border radius: 12px</p>
+        </div>
+        <div class="glass-card" style="border-color: var(--dynamous-blue); box-shadow: 0 0 20px rgba(59, 130, 246, 0.2);">
+          <h3 class="glass-card-title">Highlighted Card</h3>
+          <p class="glass-card-text">Same base with blue border and subtle glow for emphasis.</p>
+        </div>
+        <div class="glass-card" style="border-color: rgba(74, 222, 128, 0.3);">
+          <h3 class="glass-card-title" style="color: #4ADE80;">Announcement Card</h3>
+          <p class="glass-card-text">Green border variant for announcements and success states.</p>
+        </div>
+      </div>
+
+      <div class="subsection" style="margin-top: var(--space-xl);">
+        <h3 class="subsection-title">CSS Implementation</h3>
+        <div class="code-block">
+          <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+          <code><span class="keyword">.glass-card</span> {
+  <span class="property">background</span>: <span class="value">rgba(0, 0, 0, 0.4)</span>;
+  <span class="property">backdrop-filter</span>: <span class="value">blur(16px)</span>;
+  <span class="property">-webkit-backdrop-filter</span>: <span class="value">blur(16px)</span>;
+  <span class="property">border</span>: <span class="value">1px solid rgba(255, 255, 255, 0.1)</span>;
+  <span class="property">border-radius</span>: <span class="value">12px</span>;
+}</code>
+        </div>
+      </div>
+    </section>
+
+    <!-- Glow Effects Section -->
+    <section class="section" id="glows">
+      <h2 class="section-title">Glow Effects</h2>
+      <p class="description">Signature emphasis effects. Use sparingly — if everything glows, nothing does.</p>
+
+      <div class="glow-grid">
+        <div class="glow-demo blue-glow">
+          <div class="glow-demo-title">Box Glow</div>
+          <div class="glow-demo-label">box-shadow: 0 0 15px rgba(59, 130, 246, 0.5)</div>
+        </div>
+        <div class="glow-demo" style="background: var(--surface); border: 1px solid var(--border);">
+          <div class="glow-demo-title text-glow" style="color: var(--dynamous-blue);">Text Glow</div>
+          <div class="glow-demo-label">text-shadow: 0 0 10px rgba(59, 130, 246, 0.5)</div>
+        </div>
+        <div class="glow-demo" style="background: var(--surface); border: 1px solid var(--border);">
+          <div class="glow-demo-title" style="color: var(--dynamous-blue);">Combined</div>
+          <div class="glow-demo-label">
+            <span class="text-glow" style="color: var(--dynamous-blue);">Text</span> +
+            <span style="display: inline-block; padding: 2px 8px; border-radius: 4px;" class="blue-glow">Box</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="subsection" style="margin-top: var(--space-xl);">
+        <h3 class="subsection-title">CSS Implementation</h3>
+        <div class="code-block">
+          <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+          <code><span class="keyword">.blue-glow</span> {
+  <span class="property">box-shadow</span>: <span class="value">0 0 15px rgba(59, 130, 246, 0.5),
+              0 0 30px rgba(59, 130, 246, 0.3)</span>;
+}
+
+<span class="keyword">.text-glow</span> {
+  <span class="property">text-shadow</span>: <span class="value">0 0 10px rgba(59, 130, 246, 0.5),
+               0 0 20px rgba(59, 130, 246, 0.3)</span>;
+}</code>
+        </div>
+      </div>
+    </section>
+
+    <!-- Animations Section -->
+    <section class="section" id="animations">
+      <h2 class="section-title">Animations</h2>
+      <p class="description">Hover over each to see the animation. Nothing should take longer than 600ms.</p>
+
+      <div class="animation-grid">
+        <div class="animation-demo">
+          <div class="animation-box animate-float"></div>
+          <div class="animation-label">Float (6s infinite)</div>
+        </div>
+        <div class="animation-demo">
+          <div class="animation-box animate-glow"></div>
+          <div class="animation-label">Glow Pulse (2s infinite)</div>
+        </div>
+        <div class="animation-demo">
+          <div class="animation-box animate-shimmer"></div>
+          <div class="animation-label">Shimmer (2s infinite)</div>
+        </div>
+        <div class="animation-demo" id="fade-demo">
+          <div class="animation-box" id="fade-box"></div>
+          <div class="animation-label">Fade In (0.6s) — <a href="javascript:void(0)" onclick="replayFadeIn()" style="color: var(--dynamous-blue);">Replay</a></div>
+        </div>
+      </div>
+
+      <div class="subsection" style="margin-top: var(--space-xl);">
+        <h3 class="subsection-title">Timing</h3>
+        <div class="grid-2">
+          <div class="code-block">
+            <code><span class="comment">/* Timing */</span>
+<span class="property">--duration-micro</span>: <span class="value">150ms</span>;  <span class="comment">/* Button states */</span>
+<span class="property">--duration-fast</span>: <span class="value">200ms</span>;   <span class="comment">/* Dropdowns */</span>
+<span class="property">--duration-normal</span>: <span class="value">300ms</span>; <span class="comment">/* Cards, modals */</span>
+<span class="property">--duration-slow</span>: <span class="value">600ms</span>;   <span class="comment">/* Page transitions */</span></code>
+          </div>
+          <div class="code-block">
+            <code><span class="comment">/* Easing */</span>
+<span class="property">--ease-out</span>: <span class="value">cubic-bezier(0, 0, 0.2, 1)</span>;
+<span class="property">--ease-in</span>: <span class="value">cubic-bezier(0.4, 0, 1, 1)</span>;
+
+<span class="comment">/* Never use linear for UI */</span></code>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Form Inputs Section -->
+    <section class="section" id="inputs">
+      <h2 class="section-title">Form Inputs</h2>
+
+      <div class="input-grid">
+        <div>
+          <label class="input-label">Default Input</label>
+          <input type="text" class="input" placeholder="Enter your email...">
+        </div>
+        <div>
+          <label class="input-label">Focused Input</label>
+          <input type="text" class="input" placeholder="Click to see focus state" style="border-color: var(--dynamous-blue); box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);">
+        </div>
+        <div>
+          <label class="input-label">With Value</label>
+          <input type="text" class="input" value="hello@dynamous.ai">
+        </div>
+      </div>
+    </section>
+
+    <!-- Diagram Colors Section -->
+    <section class="section" id="diagrams">
+      <h2 class="section-title">Diagram Colors (Excalidraw)</h2>
+      <p class="description">Color palette for diagrams. Always pair darker stroke with lighter fill.</p>
+
+      <div class="diagram-color-grid">
+        <div class="diagram-swatch" style="border-color: #1E3A5F;">
+          <div class="diagram-fill" style="background: #3B82F6; color: white;">Primary</div>
+          <div class="diagram-info">
+            <div class="diagram-label">Primary / Neutral</div>
+            <div class="diagram-codes">Fill: #3B82F6 | Stroke: #1E3A5F</div>
+          </div>
+        </div>
+        <div class="diagram-swatch" style="border-color: #1E3A5F;">
+          <div class="diagram-fill" style="background: #60A5FA; color: #1E3A5F;">Secondary</div>
+          <div class="diagram-info">
+            <div class="diagram-label">Secondary</div>
+            <div class="diagram-codes">Fill: #60A5FA | Stroke: #1E3A5F</div>
+          </div>
+        </div>
+        <div class="diagram-swatch" style="border-color: #C2410C;">
+          <div class="diagram-fill" style="background: #FED7AA; color: #C2410C;">Start</div>
+          <div class="diagram-info">
+            <div class="diagram-label">Start / Trigger</div>
+            <div class="diagram-codes">Fill: #FED7AA | Stroke: #C2410C</div>
+          </div>
+        </div>
+        <div class="diagram-swatch" style="border-color: #047857;">
+          <div class="diagram-fill" style="background: #A7F3D0; color: #047857;">End</div>
+          <div class="diagram-info">
+            <div class="diagram-label">End / Success</div>
+            <div class="diagram-codes">Fill: #A7F3D0 | Stroke: #047857</div>
+          </div>
+        </div>
+        <div class="diagram-swatch" style="border-color: #B45309;">
+          <div class="diagram-fill" style="background: #FEF3C7; color: #B45309;">Decision</div>
+          <div class="diagram-info">
+            <div class="diagram-label">Decision / Warning</div>
+            <div class="diagram-codes">Fill: #FEF3C7 | Stroke: #B45309</div>
+          </div>
+        </div>
+        <div class="diagram-swatch" style="border-color: #6D28D9;">
+          <div class="diagram-fill" style="background: #DDD6FE; color: #6D28D9;">AI/LLM</div>
+          <div class="diagram-info">
+            <div class="diagram-label">AI / LLM</div>
+            <div class="diagram-codes">Fill: #DDD6FE | Stroke: #6D28D9</div>
+          </div>
+        </div>
+        <div class="diagram-swatch" style="border-color: #B91C1C;">
+          <div class="diagram-fill" style="background: #FECACA; color: #B91C1C;">Error</div>
+          <div class="diagram-info">
+            <div class="diagram-label">Error / Stop</div>
+            <div class="diagram-codes">Fill: #FECACA | Stroke: #B91C1C</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Thumbnail Section -->
+    <section class="section" id="thumbnails">
+      <h2 class="section-title">YouTube Thumbnails</h2>
+      <p class="description">1280×720px. Montserrat Extra Bold. 2-5 words max. High contrast.</p>
+
+      <div class="thumbnail-preview">
+        <div class="thumbnail-glow"></div>
+        <div class="thumbnail-text">AI AGENTS<br>MADE SIMPLE</div>
+      </div>
+
+      <div class="subsection" style="margin-top: var(--space-xl);">
+        <h3 class="subsection-title">Thumbnail Text Styles</h3>
+        <div class="type-scale">
+          <div class="type-sample" style="background: linear-gradient(135deg, #07090F, #1E3A8A);">
+            <span class="type-label">Display</span>
+            <span class="type-size">Bold</span>
+            <span class="type-text font-montserrat weight-800 type-4xl" style="text-shadow: 0 2px 4px rgba(0,0,0,0.5), 0 0 20px rgba(59,130,246,0.5);">THE COMPLETE GUIDE</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- CSS Variables Section -->
+    <section class="section" id="css">
+      <h2 class="section-title">CSS Variables Reference</h2>
+      <p class="description">Copy this entire block into your project's CSS root.</p>
+
+      <div class="code-block" style="max-height: 600px; overflow-y: auto;">
+        <button class="copy-btn" onclick="copyCode(this)">Copy All</button>
+        <code><span class="keyword">:root</span> {
+  <span class="comment">/* Colors - Primary */</span>
+  <span class="property">--dynamous-blue</span>: <span class="value">#3B82F6</span>;
+  <span class="property">--dynamous-dark</span>: <span class="value">#2563EB</span>;
+  <span class="property">--dynamous-light</span>: <span class="value">#60A5FA</span>;
+  <span class="property">--dynamous-pale</span>: <span class="value">#DBEAFE</span>;
+
+  <span class="comment">/* Colors - Semantic */</span>
+  <span class="property">--success</span>: <span class="value">#047857</span>;
+  <span class="property">--success-bg</span>: <span class="value">#A7F3D0</span>;
+  <span class="property">--warning</span>: <span class="value">#B45309</span>;
+  <span class="property">--warning-bg</span>: <span class="value">#FEF3C7</span>;
+  <span class="property">--error</span>: <span class="value">#B91C1C</span>;
+  <span class="property">--error-bg</span>: <span class="value">#FECACA</span>;
+  <span class="property">--ai-purple</span>: <span class="value">#6D28D9</span>;
+  <span class="property">--ai-purple-bg</span>: <span class="value">#DDD6FE</span>;
+
+  <span class="comment">/* Colors - Theme (Dark) */</span>
+  <span class="property">--background</span>: <span class="value">#07090F</span>;
+  <span class="property">--background-alt</span>: <span class="value">#080A13</span>;
+  <span class="property">--surface</span>: <span class="value">rgba(0, 0, 0, 0.4)</span>;
+  <span class="property">--border</span>: <span class="value">rgba(255, 255, 255, 0.1)</span>;
+  <span class="property">--text-primary</span>: <span class="value">rgba(255, 255, 255, 0.98)</span>;
+  <span class="property">--text-secondary</span>: <span class="value">rgba(255, 255, 255, 0.8)</span>;
+  <span class="property">--text-muted</span>: <span class="value">rgba(255, 255, 255, 0.7)</span>;
+
+  <span class="comment">/* Spacing */</span>
+  <span class="property">--space-xs</span>: <span class="value">4px</span>;
+  <span class="property">--space-sm</span>: <span class="value">8px</span>;
+  <span class="property">--space-md</span>: <span class="value">12px</span>;
+  <span class="property">--space-base</span>: <span class="value">16px</span>;
+  <span class="property">--space-lg</span>: <span class="value">24px</span>;
+  <span class="property">--space-xl</span>: <span class="value">32px</span>;
+  <span class="property">--space-2xl</span>: <span class="value">48px</span>;
+  <span class="property">--space-3xl</span>: <span class="value">64px</span>;
+
+  <span class="comment">/* Typography */</span>
+  <span class="property">--font-sans</span>: <span class="value">'Inter', ui-sans-serif, system-ui, sans-serif</span>;
+  <span class="property">--font-mono</span>: <span class="value">'JetBrains Mono', ui-monospace, monospace</span>;
+  <span class="property">--font-display</span>: <span class="value">'Montserrat', var(--font-sans)</span>;
+
+  <span class="comment">/* Motion */</span>
+  <span class="property">--duration-micro</span>: <span class="value">150ms</span>;
+  <span class="property">--duration-fast</span>: <span class="value">200ms</span>;
+  <span class="property">--duration-normal</span>: <span class="value">300ms</span>;
+  <span class="property">--duration-slow</span>: <span class="value">600ms</span>;
+  <span class="property">--ease-out</span>: <span class="value">cubic-bezier(0, 0, 0.2, 1)</span>;
+  <span class="property">--ease-in</span>: <span class="value">cubic-bezier(0.4, 0, 1, 1)</span>;
+
+  <span class="comment">/* Radii */</span>
+  <span class="property">--radius-sm</span>: <span class="value">4px</span>;
+  <span class="property">--radius-md</span>: <span class="value">8px</span>;
+  <span class="property">--radius-lg</span>: <span class="value">12px</span>;
+  <span class="property">--radius-xl</span>: <span class="value">16px</span>;
+  <span class="property">--radius-full</span>: <span class="value">9999px</span>;
+}</code>
+      </div>
+    </section>
+
+  </div>
+
+  <!-- Toast notification -->
+  <div class="toast" id="toast">Copied to clipboard!</div>
+
+  <script>
+    // Copy hex code to clipboard
+    function copyToClipboard(text, element) {
+      navigator.clipboard.writeText(text).then(() => {
+        showToast('Copied: ' + text);
+      });
+    }
+
+    // Copy code block
+    function copyCode(button) {
+      const codeBlock = button.parentElement;
+      const code = codeBlock.querySelector('code').innerText;
+      navigator.clipboard.writeText(code).then(() => {
+        showToast('Code copied!');
+      });
+    }
+
+    // Show toast notification
+    function showToast(message) {
+      const toast = document.getElementById('toast');
+      toast.textContent = message;
+      toast.classList.add('show');
+      setTimeout(() => {
+        toast.classList.remove('show');
+      }, 2000);
+    }
+
+    // Replay fade-in animation
+    function replayFadeIn() {
+      const box = document.getElementById('fade-box');
+      box.style.animation = 'none';
+      box.offsetHeight; // Trigger reflow
+      box.style.animation = 'fade-in 0.6s ease-out forwards';
+    }
+
+    // Initialize fade-in demo
+    document.addEventListener('DOMContentLoaded', () => {
+      replayFadeIn();
+    });
+  </script>
+
+</body>
+</html>

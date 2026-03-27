@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "zapier": {
+      "url": "https://mcp.zapier.com/api/v1/connect",
+      "api_key": "YOUR_MCP_API_KEY",
+      "_comment": "Get your API key from https://mcp.zapier.com/"
+    },
+    "sequential-thinking": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"]
+    }
+  }
+}

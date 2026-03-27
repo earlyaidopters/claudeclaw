@@ -1,0 +1,39 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash('/c/Program Files \\(x86\\)/Microsoft Visual Studio/Installer/vs_installer.exe' --help)",
+      "Read(//c/Program Files \\(x86\\)/Microsoft Visual Studio/Installer//**)",
+      "Bash(npx tsc:*)",
+      "Bash(npm run:*)",
+      "Bash(claude mcp:*)",
+      "Bash(curl -s -H \"Authorization: Bearer rnd_oIe071bbXBeBw1JvDKWpaGPdNujv\" \"https://api.render.com/v1/services?limit=20\")",
+      "Bash(python3 -c \"import sys,json; data=json.load\\(sys.stdin\\); [print\\(f\"\"{s[''''service''''][''''id'''']} | {s[''''service''''][''''name'''']} | {s[''''service''''][''''type'''']} | {s[''''service''''].get\\(''''serviceDetails'''',{}\\).get\\(''''plan'''',''''?''''\\)}\"\"\\) for s in data]\")",
+      "Bash(node -e \"const d=[];process.stdin.on\\(''''data'''',c=>d.push\\(c\\)\\);process.stdin.on\\(''''end'''',\\(\\)=>{const data=JSON.parse\\(Buffer.concat\\(d\\)\\);data.forEach\\(s=>console.log\\(s.service.id,''''|'''',s.service.name,''''|'''',s.service.type,''''|'''',s.service.serviceDetails?.plan||''''?''''\\)\\)}\\)\")",
+      "Bash(curl -s -H \"Authorization: Bearer rnd_oIe071bbXBeBw1JvDKWpaGPdNujv\" \"https://api.render.com/v1/services/srv-cu42jfrqf0us73b2e9eg\")",
+      "Bash(node -e \"const d=[];process.stdin.on\\(''''data'''',c=>d.push\\(c\\)\\);process.stdin.on\\(''''end'''',\\(\\)=>{const s=JSON.parse\\(Buffer.concat\\(d\\)\\);console.log\\(JSON.stringify\\(s,null,2\\)\\)}\\)\")",
+      "Bash(curl -s -H \"Authorization: Bearer rnd_oIe071bbXBeBw1JvDKWpaGPdNujv\" \"https://api.render.com/v1/services/srv-cu42jfrqf0us73b2e9eg/env-vars\")",
+      "Bash(node -e \"const d=[];process.stdin.on\\(''''data'''',c=>d.push\\(c\\)\\);process.stdin.on\\(''''end'''',\\(\\)=>{const vars=JSON.parse\\(Buffer.concat\\(d\\)\\);vars.forEach\\(v=>console.log\\(v.envVar.key,''''='''',v.envVar.value||''''[secret]''''\\)\\)}\\)\")",
+      "Bash(curl -s -X POST -H \"Authorization: Bearer rnd_oIe071bbXBeBw1JvDKWpaGPdNujv\" \"https://api.render.com/v1/services/srv-cu42jfrqf0us73b2e9eg/deploys\" -H \"Content-Type: application/json\" -d '{\"\"\"\"clearCache\"\"\"\":\"\"\"\"do_not_clear\"\"\"\"}')",
+      "Bash(node -e \"const d=[];process.stdin.on\\(''''data'''',c=>d.push\\(c\\)\\);process.stdin.on\\(''''end'''',\\(\\)=>{const r=JSON.parse\\(Buffer.concat\\(d\\)\\);console.log\\(''''Deploy ID:'''',r.id\\);console.log\\(''''Status:'''',r.status\\);console.log\\(''''Created:'''',r.createdAt\\)}\\)\")",
+      "Bash(node -e \"const d=[];process.stdin.on\\(''''data'''',c=>d.push\\(c\\)\\);process.stdin.on\\(''''end'''',\\(\\)=>{const r=JSON.parse\\(Buffer.concat\\(d\\)\\);console.log\\(''''Updated'''',r.length,''''env vars''''\\)}\\)\")",
+      "Bash(curl -s -X PATCH -H \"Authorization: Bearer rnd_oIe071bbXBeBw1JvDKWpaGPdNujv\" -H \"Content-Type: application/json\" \"https://api.render.com/v1/services/srv-cu42jfrqf0us73b2e9eg\" -d '{\"\"\"\"serviceDetails\"\"\"\":{\"\"\"\"buildPlan\"\"\"\":\"\"\"\"standard\"\"\"\"}}')",
+      "Bash(node -e \"const d=[];process.stdin.on\\(''''data'''',c=>d.push\\(c\\)\\);process.stdin.on\\(''''end'''',\\(\\)=>{const r=JSON.parse\\(Buffer.concat\\(d\\)\\);console.log\\(''''Build plan:'''',r.serviceDetails?.buildPlan\\);console.log\\(''''Plan:'''',r.serviceDetails?.plan\\)}\\)\")",
+      "Bash(npm prefix:*)",
+      "Bash(gh auth:*)",
+      "Bash(gws docs:*)",
+      "Bash(gws schema:*)",
+      "Bash(ls /tmp/claimwarrior*)",
+      "Bash(mkdir -p /tmp/cw-feedback)",
+      "Bash(curl -sL -o img01-deactivate-task.jpg \"https://lh7-rt.googleusercontent.com/docsz/AD_4nXelfHvwMeRjVR-5XTGEVL2t8cStUpi3M9XIFU3ZZS2U_5p1YnlPpTptlTnw3s34oVC595eHGhlwgSnvifQSiHAGoI7S4KX6Oel-Kf3WJGPe1IsE1CAS8Mb92YhFah2I6Hvaq9KIkZRuR-tMh19sbgD1UcKzSNNcRQjunPWfAMndcywiMw?key=sp3zwYE-_hvxVR0OKGtxMA\")",
+      "Bash(curl -sL -o img02-error.jpg \"https://lh7-rt.googleusercontent.com/docsz/AD_4nXe5vZuHXGRfcwJaT08Rlrk-MrpOV21iIY2hpq6qVSNGsBNrFmb-XQYF0ty-0HCl9FsQ2QHDgJQhpGWL-XlDVd7IGIurRy9Cxf6PQCvPpEohvd0XilcX_4-RbztyfuDTpkbMeso2uO9F_nt0_SIVnIujWYgl9z5vprKTsCZivH7aNORQFQ?key=sp3zwYE-_hvxVR0OKGtxMA\")",
+      "Bash(curl -sL -o img03-rule-dropdown.jpg \"https://lh7-rt.googleusercontent.com/docsz/AD_4nXenbj8jm6_7ppHWZxnYh_T9xKijDAsyxN6wE9Brp9chT4KYTDuPFPsJ1dUqc-LPHE6nZZZUTWu1BoQnA0CsaHHTCA3_tEweMwqlOBJLDIk_a42KrTxO2HvA7-vs_2ezvW1y0KLkXCKmOs-Jt4ytijtXkA6borqsSspPwHJPnzU__wM?key=sp3zwYE-_hvxVR0OKGtxMA\")",
+      "Bash(curl -sL -o img04-cant-deactivate2.jpg \"https://lh7-rt.googleusercontent.com/docsz/AD_4nXdIaLzQgue6brxMurbRNTlVMSysJg61ey3Ac0ot6T7Xl2TVHT8bE34vD1evuwC_MC7XIichdcXMfjOGiuYGd9SBrUPav_bfzwj2bUAc4TQ1q8l6M7clCqTKOk-oLiAj3eBKwzRh9kzmA4t78DZzPr3-7Gfjv4jyPsFEybLfOKzA36CDbw?key=sp3zwYE-_hvxVR0OKGtxMA\")",
+      "Bash(curl -sL -o img10-insurance-name.jpg \"https://lh7-rt.googleusercontent.com/docsz/AD_4nXc293kostC3yg1N_sYZ0WKqiqHU9eXlg6Cu58G1U3hoV1SmnwcDkBAyZj6dOIfGGvmezfj2V-A3K37pTPqhKlSxs7-AlRJlinab3846ohuvt_ppvCjf2IGYTbxvJWJ9IGyAHCQqIpem2WZbwFa28_uPkSlZFWk8-2mSIQt4lzzwqEgI2g?key=sp3zwYE-_hvxVR0OKGtxMA\")",
+      "Bash(curl -sL -o img11-airtable-compare.jpg \"https://lh7-rt.googleusercontent.com/docsz/AD_4nXd7qzOFYAvehViNIrgloOzBoy-8UDzooF2LQAb3EPCTIp3xe47yHBFNGU9chv94t7wMIfUmIBuAecRPOxFm1vZiPDrHrj-CILjKbCERLC932N3xhfhph1z38Lnj2wB9Le7dg1OsDUi3g_2MKFmZ3Cx70RFNrSpxu9IWJOBxcNuYy7g?key=sp3zwYE-_hvxVR0OKGtxMA\")",
+      "Bash(curl -sL -o img12-invite-error.jpg \"https://lh7-rt.googleusercontent.com/docsz/AD_4nXcb6JuYqPly4Kh7TrGkKnzOLCywKJr6lwROw9ylG-ncvTVbMwEd3x-hXMlTHFrj1_U42QOSvIoPY8cB0wUuj73jRQCcg3naxmfxSXmRGRHkYh1bMn2vNyP18Im5QBgAFAv0V33bTv-UTRFX4camSM3zrYj45kyRx-Y5FlBKDXNa9wU?key=sp3zwYE-_hvxVR0OKGtxMA\")",
+      "Bash(curl -sL -o img13-address-duplicate.jpg \"https://lh7-rt.googleusercontent.com/docsz/AD_4nXckLJnw-XhhtOkLfaN1ZWUZOnceIA6-X-NwlaKpoN8XevXDedSM5x6MiUdAzEgSqbs8mUe5h7vblxTtB4PCVksnmVosR-ZKbcE2MC7V-sU04Ojg-r3iKzAUlOtW4ZLNe6W7_SZBbM1PlqiTKiwN5R_RElpWC_SMqwvQVZKRT15aiNMYyQ?key=sp3zwYE-_hvxVR0OKGtxMA\")",
+      "Bash(curl -sL -o img14-upload-error.jpg \"https://lh7-rt.googleusercontent.com/docsz/AD_4nXegLAkXV_6e_fCX3mqfZ49GzEIF6bv5ya6tF6zLRvCGy6g_APWn4ctgLS54-5jaqaX07n3Wi3GSyTGhrhX4ARY420s5c8_TttIL0QcOUIetUzR-njnG_y1uwRDoLKOT0yHWxSzLHso0FcPLbRyoz2YLdghXPdjM-0otVElcuOiHHLWQew?key=sp3zwYE-_hvxVR0OKGtxMA\")",
+      "Bash(cygpath:*)"
+    ]
+  }
+}

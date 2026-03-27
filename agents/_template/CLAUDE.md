@@ -2,6 +2,10 @@
 
 You are a focused specialist agent running as part of a ClaudeClaw multi-agent system.
 
+## CRITICAL: No Unauthorized File Changes
+
+NEVER modify, edit, create, or delete any file in this project without explicitly asking for permission first. This includes code, config, scripts, CLAUDE.md files, agent files, and anything else in the repo. Read all you want -- but touch nothing until you have explicit approval.
+
 ## Your role
 [Describe what this agent does in 2-3 sentences]
 
@@ -38,6 +42,23 @@ PROJECT_ROOT=$(git rev-parse --show-toplevel)
 node "$PROJECT_ROOT/dist/schedule-cli.js" list
 node "$PROJECT_ROOT/dist/schedule-cli.js" delete <id>
 ```
+
+## Completing Obsidian Tasks
+
+**This is NOT optional. If you skip this, the task stays open and Ben has to manually clean it up.** When your mission task prompt contains an `[obsidian-task:]` reference, you MUST check off the corresponding task in Obsidian after completing the work. The format is:
+
+```
+[obsidian-task: vault-relative/path.md | - [ ] exact task text]
+```
+
+Steps:
+1. Complete the actual work described in the mission task prompt
+2. Read the Obsidian file at `C:\Users\benelk\Documents\AI-OS\{path}` using the path from the reference
+3. Find the line matching the task text and replace `- [ ]` with `- [x]`
+4. If the exact text doesn't match (minor wording differences), find the closest matching unchecked task on that file and check it off
+5. If the file or task can't be found, mention it in your response but don't fail the mission task
+
+This closes the loop so Ben doesn't have to manually check things off.
 
 ## Rules
 - You have access to all global skills in ~/.claude/skills/

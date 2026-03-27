@@ -1,0 +1,29 @@
+{
+  "name": "Dynamous",
+  "description": "AI education content, community, and products with a modern dark aesthetic",
+
+  "colors": {
+    "background": "07090F",
+    "background_alt": "080A13",
+    "text": "FAFAFA",
+    "text_secondary": "CCCCCC",
+    "accent": "3B82F6",
+    "accent_secondary": "60A5FA",
+    "accent_tertiary": "0EA5E9",
+    "code_bg": "0A0C12",
+    "card_bg": "0D1117",
+    "card_bg_alt": "161B22"
+  },
+
+  "fonts": {
+    "heading": "Inter",
+    "body": "Inter",
+    "code": "JetBrains Mono"
+  },
+
+  "assets": {
+    "logo": "DynamousLogo.png",
+    "logo_dark": null,
+    "icon": null
+  }
+}

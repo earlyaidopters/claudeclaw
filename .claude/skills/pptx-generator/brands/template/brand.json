@@ -1,0 +1,29 @@
+{
+  "name": "REPLACE",
+  "description": "REPLACE with a one-line description of the brand",
+
+  "colors": {
+    "background": "REPLACE",
+    "background_alt": "REPLACE",
+    "text": "REPLACE",
+    "text_secondary": "REPLACE",
+    "accent": "REPLACE",
+    "accent_secondary": "REPLACE",
+    "accent_tertiary": "REPLACE",
+    "code_bg": "REPLACE",
+    "card_bg": "REPLACE",
+    "card_bg_alt": "REPLACE"
+  },
+
+  "fonts": {
+    "heading": "REPLACE",
+    "body": "REPLACE",
+    "code": "REPLACE"
+  },
+
+  "assets": {
+    "logo": null,
+    "logo_dark": null,
+    "icon": null
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "enabledPlugins": {
+    "obsidian@obsidian-skills": true,
+    "skill-creator@claude-plugins-official": true
+  }
+}
