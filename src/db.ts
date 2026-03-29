@@ -807,6 +807,8 @@ export function decayMemories(): void {
     END
     WHERE created_at < ? AND pinned = 0
   `).run(oneDayAgo);
+  // Clear superseded_by references before deleting, to avoid FK constraint failures
+  db.prepare('UPDATE memories SET superseded_by = NULL WHERE superseded_by IN (SELECT id FROM memories WHERE salience < 0.05 AND pinned = 0)').run();
   db.prepare('DELETE FROM memories WHERE salience < 0.05 AND pinned = 0').run();
 }
 

@@ -1369,7 +1369,7 @@ export function createBot(): Bot {
       const localPath = await downloadTelegramFile(activeBotToken, fileId, UPLOADS_DIR);
       const transcribed = await transcribeAudio(localPath);
       // Only reply with voice if explicitly requested — otherwise execute and respond in text
-      const wantsVoiceBack = /\b(respond (with|via|in) voice|send (me )?(a )?voice( note| back)?|voice reply|reply (with|via) voice)\b/i.test(transcribed);
+      const wantsVoiceBack = /\b(respond (with|via|in) voice|send (me )?(a )?voice( note| back)?|voice reply|reply (with|via) voice|réponds? (en|par) (vocal|voix|message vocal)|envoie?(-moi)? (un )?vocal|réponse (en )?vocale?|message vocal)\b/i.test(transcribed);
       const chatIdStr = ctx.chat!.id.toString();
       messageQueue.enqueue(chatIdStr, () => handleMessage(ctx, `[Voice transcribed]: ${transcribed}`, wantsVoiceBack));
     } catch (err) {
