@@ -20,6 +20,7 @@ const envConfig = readEnvFile([
   'DB_ENCRYPTION_KEY',
   'GOOGLE_API_KEY',
   'AGENT_TIMEOUT_MS',
+  'AGENT_MAX_TURNS',
   'SECURITY_PIN_HASH',
   'IDLE_LOCK_MINUTES',
   'EMERGENCY_KILL_PHRASE',
@@ -117,6 +118,15 @@ export const TYPING_REFRESH_MS = 4000;
 // (posting YouTube comments, sending multiple messages) leading to duplicate posts.
 export const AGENT_TIMEOUT_MS = parseInt(
   process.env.AGENT_TIMEOUT_MS || envConfig.AGENT_TIMEOUT_MS || '900000',
+  10,
+);
+
+// Maximum number of agentic turns (tool-use rounds) per query.
+// Prevents runaway loops when external services fail (e.g. stale cookies causing
+// 40+ sequential Bash retries). 0 = unlimited (SDK default).
+// Default: 30 turns, which is generous for complex skills but stops spirals.
+export const AGENT_MAX_TURNS = parseInt(
+  process.env.AGENT_MAX_TURNS || envConfig.AGENT_MAX_TURNS || '30',
   10,
 );
 

@@ -3,7 +3,7 @@ import path from 'path';
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
-import { PROJECT_ROOT, agentCwd } from './config.js';
+import { AGENT_MAX_TURNS, PROJECT_ROOT, agentCwd } from './config.js';
 import { readEnvFile } from './env.js';
 import { logger } from './logger.js';
 
@@ -223,6 +223,10 @@ export async function runAgent(
         // Skip all permission prompts — this is a trusted personal bot on your own machine
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,
+
+        // Cap agentic turns to prevent runaway tool-use loops (e.g. retrying
+        // stale cookies 40+ times). Configurable via AGENT_MAX_TURNS in .env.
+        ...(AGENT_MAX_TURNS > 0 ? { maxTurns: AGENT_MAX_TURNS } : {}),
 
         // Pass secrets to the subprocess without polluting our own process.env
         env: sdkEnv,
