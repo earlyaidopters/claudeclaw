@@ -1,5 +1,6 @@
 import fs, { mkdirSync } from 'fs';
 import https from 'https';
+import http from 'http';
 import path from 'path';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
@@ -274,6 +275,134 @@ export async function transcribeAudio(filePath: string): Promise<string> {
   return await transcribeAudioLocal(filePath);
 }
 
+// ── Audio conversion helper ─────────────────────────────────────────────────
+
+/**
+ * Convert any audio buffer to OGG Opus format using ffmpeg.
+ * Telegram requires OGG Opus for voice messages.
+ * Skips conversion if the buffer already starts with OGG magic bytes.
+ */
+async function toOggOpus(audioBuffer: Buffer): Promise<Buffer> {
+  // OGG files start with "OggS" magic bytes - skip conversion if already OGG
+  if (audioBuffer.length >= 4 && audioBuffer.toString('ascii', 0, 4) === 'OggS') {
+    return audioBuffer;
+  }
+
+  if (!(await hasFfmpeg())) {
+    logger.warn('ffmpeg not available, returning raw audio (may not play in Telegram)');
+    return audioBuffer;
+  }
+
+  const id = `${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+  const tmpDir = path.join(UPLOADS_DIR, '..', 'tmp');
+  mkdirSync(tmpDir, { recursive: true });
+  const inputPath = path.join(tmpDir, `tts_in_${id}.audio`);
+  const outputPath = path.join(tmpDir, `tts_out_${id}.ogg`);
+
+  try {
+    fs.writeFileSync(inputPath, audioBuffer);
+    await execFileAsync('ffmpeg', [
+      '-i', inputPath,
+      '-c:a', 'libopus',
+      '-b:a', '48k',
+      '-y',
+      outputPath,
+    ]);
+    return fs.readFileSync(outputPath);
+  } finally {
+    try { fs.unlinkSync(inputPath); } catch { /* ignore */ }
+    try { fs.unlinkSync(outputPath); } catch { /* ignore */ }
+  }
+}
+
+// ── TTS: Voxtral (Mistral AI, OpenAI-compatible) ────────────────────────────
+
+/**
+ * Convert text to speech using Voxtral TTS (Mistral AI).
+ * Supports two modes:
+ *   - Local: mlx-audio server via VOXTRAL_LOCAL_URL (zero cost, Apple Silicon)
+ *   - Cloud: Mistral API via MISTRAL_API_KEY ($16/M chars)
+ * API is OpenAI-compatible (/v1/audio/speech). Returns OGG Opus audio.
+ */
+async function synthesizeSpeechVoxtral(text: string): Promise<Buffer> {
+  const env = readEnvFile(['VOXTRAL_LOCAL_URL', 'VOXTRAL_LOCAL_MODEL', 'MISTRAL_API_KEY', 'VOXTRAL_VOICE']);
+  const localUrl = env.VOXTRAL_LOCAL_URL;
+  const apiKey = env.MISTRAL_API_KEY;
+  const voice = env.VOXTRAL_VOICE || 'fr_male';
+
+  // Prefer local server if configured (mlx-audio uses full HuggingFace model ID)
+  if (localUrl) {
+    const localModel = env.VOXTRAL_LOCAL_MODEL || 'mlx-community/Voxtral-4B-TTS-2603-mlx-4bit';
+    const payload = JSON.stringify({
+      model: localModel,
+      input: text,
+      voice: voice,
+      response_format: 'opus',
+    });
+
+    const url = new URL('/v1/audio/speech', localUrl);
+    return new Promise((resolve, reject) => {
+      const protocol = url.protocol === 'https:' ? https : http;
+      const req = protocol.request(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(payload).toString(),
+        },
+      }, (res: import('http').IncomingMessage) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (chunk: Buffer) => chunks.push(chunk));
+        res.on('end', () => {
+          const buf = Buffer.concat(chunks);
+          if (res.statusCode && res.statusCode >= 400) {
+            reject(new Error(`Voxtral local HTTP ${res.statusCode}: ${buf.toString('utf-8').slice(0, 300)}`));
+            return;
+          }
+          resolve(buf);
+        });
+        res.on('error', reject);
+      });
+      req.on('error', reject);
+      req.write(payload);
+      req.end();
+    });
+  }
+
+  // Cloud API fallback
+  if (!apiKey) throw new Error('MISTRAL_API_KEY not set and VOXTRAL_LOCAL_URL not set');
+
+  const payload = JSON.stringify({
+    model: 'voxtral-mini-tts-2603',
+    input: text,
+    voice_id: voice,
+    response_format: 'opus',
+  });
+
+  const responseBuffer = await httpsRequest(
+    'https://api.mistral.ai/v1/audio/speech',
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload).toString(),
+      },
+    },
+    payload,
+  );
+
+  // Mistral API returns JSON with base64 audio_data
+  try {
+    const json = JSON.parse(responseBuffer.toString('utf-8')) as { audio_data?: string };
+    if (json.audio_data) {
+      return Buffer.from(json.audio_data, 'base64');
+    }
+  } catch {
+    // If not JSON, assume raw audio binary response
+  }
+  return responseBuffer;
+}
+
 // ── TTS: ElevenLabs (primary) ────────────────────────────────────────────────
 
 /**
@@ -385,37 +514,68 @@ export async function synthesizeSpeechLocal(text: string): Promise<Buffer> {
   }
 }
 
-// ── TTS: Cascade (ElevenLabs → Gradium → macOS say) ─────────────────────────
+// ── TTS: Cascade ───────────────────────────────────────────────────────────
+//
+// Priority order:
+//   1. Voxtral local (VOXTRAL_LOCAL_URL) - zero cost, high quality, Apple Silicon
+//   2. Voxtral API (MISTRAL_API_KEY) - high quality cloud
+//   3. ElevenLabs - established cloud provider
+//   4. Gradium - cloud provider, free tier
+//   5. macOS say - ultimate fallback
 
-/**
- * Convert text to speech using the first available provider.
- * Priority: ElevenLabs → Gradium AI → macOS say + ffmpeg.
- */
 export async function synthesizeSpeech(text: string): Promise<Buffer> {
   const env = readEnvFile([
+    'VOXTRAL_LOCAL_URL', 'MISTRAL_API_KEY',
     'ELEVENLABS_API_KEY', 'ELEVENLABS_VOICE_ID',
     'GRADIUM_API_KEY', 'GRADIUM_VOICE_ID',
   ]);
 
+  const hasVoxtralLocal = !!env.VOXTRAL_LOCAL_URL;
+  const hasVoxtralApi = !!env.MISTRAL_API_KEY;
   const hasElevenLabs = !!(env.ELEVENLABS_API_KEY && env.ELEVENLABS_VOICE_ID);
   const hasGradium = !!(env.GRADIUM_API_KEY && env.GRADIUM_VOICE_ID);
 
+  // 1. Voxtral local (best quality, zero cost)
+  if (hasVoxtralLocal) {
+    try {
+      const audio = await synthesizeSpeechVoxtral(text);
+      return await toOggOpus(audio);
+    } catch (err) {
+      logger.warn({ err }, 'Voxtral local TTS failed, trying next provider');
+    }
+  }
+
+  // 2. Voxtral API (cloud)
+  if (hasVoxtralApi && !hasVoxtralLocal) {
+    try {
+      const audio = await synthesizeSpeechVoxtral(text);
+      return await toOggOpus(audio);
+    } catch (err) {
+      logger.warn({ err }, 'Voxtral API TTS failed, trying next provider');
+    }
+  }
+
+  // 3. ElevenLabs (cloud)
   if (hasElevenLabs) {
     try {
-      return await synthesizeSpeechElevenLabs(text);
+      const mp3 = await synthesizeSpeechElevenLabs(text);
+      return await toOggOpus(mp3);
     } catch (err) {
       logger.warn({ err }, 'ElevenLabs TTS failed, trying next provider');
     }
   }
 
+  // 4. Gradium (cloud)
   if (hasGradium) {
     try {
-      return await synthesizeSpeechGradium(text);
+      const rawOpus = await synthesizeSpeechGradium(text);
+      return await toOggOpus(rawOpus);
     } catch (err) {
       logger.warn({ err }, 'Gradium TTS failed, trying local fallback');
     }
   }
 
+  // 5. macOS say (ultimate fallback)
   return await synthesizeSpeechLocal(text);
 }
 
@@ -429,13 +589,16 @@ export function voiceCapabilities(): { stt: boolean; tts: boolean } {
   const env = readEnvFile([
     'GROQ_API_KEY',
     'WHISPER_MODEL_PATH',
+    'VOXTRAL_LOCAL_URL', 'MISTRAL_API_KEY',
     'ELEVENLABS_API_KEY', 'ELEVENLABS_VOICE_ID',
     'GRADIUM_API_KEY', 'GRADIUM_VOICE_ID',
   ]);
 
   return {
     stt: !!env.GROQ_API_KEY || !!env.WHISPER_MODEL_PATH,
-    tts: !!(env.ELEVENLABS_API_KEY && env.ELEVENLABS_VOICE_ID)
+    tts: !!env.VOXTRAL_LOCAL_URL
+      || !!env.MISTRAL_API_KEY
+      || !!(env.ELEVENLABS_API_KEY && env.ELEVENLABS_VOICE_ID)
       || !!(env.GRADIUM_API_KEY && env.GRADIUM_VOICE_ID)
       || process.platform === 'darwin',
   };
