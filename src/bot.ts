@@ -19,7 +19,7 @@ import {
   AGENT_TIMEOUT_MS,
   STREAM_STRATEGY,
 } from './config.js';
-import { clearSession, getRecentConversation, getRecentMemories, getRecentTaskOutputs, getSession, getSessionConversation, logToHiveMind, pinMemory, unpinMemory, setSession, lookupWaChatId, saveWaMessageMap, saveTokenUsage } from './db.js';
+import { clearSession, getRecentConversation, getRecentMemories, getRecentTaskOutputs, getSession, getSessionConversation, logToHiveMind, pinMemory, unpinMemory, setSession, lookupWaChatId, saveWaMessageMap, saveTokenUsage, getChatPref, setChatPref, deleteChatPref, getChatsWithPref } from './db.js';
 import { logger } from './logger.js';
 import { downloadMedia, buildPhotoMessage, buildDocumentMessage, buildVideoMessage } from './media.js';
 import { buildMemoryContext, evaluateMemoryRelevance, saveConversationTurn } from './memory.js';
@@ -100,8 +100,13 @@ import {
 import { getSlackConversations, getSlackMessages, sendSlackMessage, SlackConversation } from './slack.js';
 import { getWaChats, getWaChatMessages, sendWhatsAppMessage, WaChat } from './whatsapp.js';
 
-// Per-chat voice mode toggle (in-memory, resets on restart)
+// Per-chat voice mode toggle — loaded from SQLite on start, persists across restarts
 const voiceEnabledChats = new Set<string>();
+
+function loadVoicePrefs(): void {
+  const chats = getChatsWithPref('voice_mode', '1');
+  for (const chatId of chats) voiceEnabledChats.add(chatId);
+}
 
 // Per-chat model override (in-memory, resets on restart)
 // When not set, uses CLI default (Opus via Max/OAuth)
@@ -609,19 +614,17 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
 
     // Send text response (if there's any left after stripping markers)
     if (responseText) {
+      // Always send text first
+      for (const part of splitMessage(formatForTelegram(responseText))) {
+        await ctx.reply(part, { parse_mode: 'HTML' });
+      }
+      // Then send voice if requested
       if (shouldSpeakBack) {
         try {
           const audioBuffer = await synthesizeSpeech(responseText);
           await ctx.replyWithVoice(new InputFile(audioBuffer, 'response.ogg'));
         } catch (ttsErr) {
-          logger.error({ err: ttsErr }, 'TTS failed, falling back to text');
-          for (const part of splitMessage(formatForTelegram(responseText))) {
-            await ctx.reply(part, { parse_mode: 'HTML' });
-          }
-        }
-      } else {
-        for (const part of splitMessage(formatForTelegram(responseText))) {
-          await ctx.reply(part, { parse_mode: 'HTML' });
+          logger.error({ err: ttsErr }, 'TTS failed');
         }
       }
     }
@@ -735,6 +738,9 @@ export function createBot(): Bot {
   if (!token) {
     throw new Error('Bot token is not set. Check .env or agent config.');
   }
+
+  // Restore persistent voice mode preferences from SQLite
+  loadVoicePrefs();
 
   const bot = new Bot(token);
 
@@ -886,8 +892,8 @@ export function createBot(): Bot {
     if (await replyIfLocked(ctx)) return;
     const chatIdStr = ctx.chat!.id.toString();
 
-    // Pull the last 20 turns (10 back-and-forth exchanges) from conversation_log
-    const turns = getRecentConversation(chatIdStr, 20);
+    // Pull the last 20 turns (10 back-and-forth exchanges) from this agent's conversation_log
+    const turns = getRecentConversation(chatIdStr, 20, AGENT_ID);
     if (turns.length === 0) {
       await ctx.reply('No conversation history to respin from.');
       return;
@@ -919,10 +925,12 @@ export function createBot(): Bot {
     const chatIdStr = ctx.chat!.id.toString();
     if (voiceEnabledChats.has(chatIdStr)) {
       voiceEnabledChats.delete(chatIdStr);
+      deleteChatPref(chatIdStr, 'voice_mode');
       await ctx.reply('Voice mode OFF');
     } else {
       voiceEnabledChats.add(chatIdStr);
-      await ctx.reply('Voice mode ON');
+      setChatPref(chatIdStr, 'voice_mode', '1');
+      await ctx.reply('Voice mode ON — réponses texte + vocal systématiques');
     }
   });
 
@@ -1344,8 +1352,12 @@ export function createBot(): Bot {
     // Clear WA/Slack state and pass through to Claude
     if (state) waState.delete(chatIdStr);
     if (slkState) slackState.delete(chatIdStr);
+
+    // Detect French/English voice reply requests in text messages
+    const wantsVoice = /r[ée]ponds?\s+en\s+vocal|message\s+vocal|voice\s+reply|send.*voice|parle[- ]moi|dis[- ]moi\s+en\s+vocal/i.test(text);
+
     // Fire-and-forget so grammY can process /stop while agent runs
-    messageQueue.enqueue(chatIdStr, () => handleMessage(ctx, text));
+    messageQueue.enqueue(chatIdStr, () => handleMessage(ctx, text, wantsVoice));
   });
 
   // Voice messages — real transcription via Groq Whisper
@@ -1368,10 +1380,9 @@ export function createBot(): Bot {
       const fileId = ctx.message.voice.file_id;
       const localPath = await downloadTelegramFile(activeBotToken, fileId, UPLOADS_DIR);
       const transcribed = await transcribeAudio(localPath);
-      // Only reply with voice if explicitly requested — otherwise execute and respond in text
-      const wantsVoiceBack = /\b(respond (with|via|in) voice|send (me )?(a )?voice( note| back)?|voice reply|reply (with|via) voice|réponds? (en|par) (vocal|voix|message vocal)|envoie?(-moi)? (un )?vocal|réponse (en )?vocale?|message vocal)\b/i.test(transcribed);
+      // Voice notes always get voice+text back (mirror behavior)
       const chatIdStr = ctx.chat!.id.toString();
-      messageQueue.enqueue(chatIdStr, () => handleMessage(ctx, `[Voice transcribed]: ${transcribed}`, wantsVoiceBack));
+      messageQueue.enqueue(chatIdStr, () => handleMessage(ctx, `[Voice transcribed]: ${transcribed}`, true));
     } catch (err) {
       logger.error({ err }, 'Voice transcription failed');
       await ctx.reply('Could not transcribe voice message. Try again.');

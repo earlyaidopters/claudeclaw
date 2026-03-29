@@ -131,16 +131,17 @@ export async function buildMemoryContext(
     parts.push(blocks.join('\n'));
   }
 
-  // Layer 4: Cross-agent activity awareness
-  const teamActivity = getOtherAgentActivity(agentId, 24, 10);
+  // Layer 4: Cross-agent activity awareness (action summaries only, no conversation details)
+  const teamActivity = getOtherAgentActivity(agentId, 24, 5);
   if (teamActivity.length > 0) {
     const activityLines = teamActivity.map((entry) => {
-      // Note: created_at is unix seconds, Date.now() is ms, so divide by 1000
       const ago = Math.round((Date.now() / 1000 - entry.created_at) / 60);
       const timeStr = ago < 60 ? `${ago}m ago` : `${Math.round(ago / 60)}h ago`;
-      return `- [${entry.agent_id}] ${timeStr}: ${entry.summary}`;
+      // Truncate to action-level summary only — avoid leaking conversation topics
+      const shortSummary = entry.summary.length > 80 ? entry.summary.slice(0, 80) + '...' : entry.summary;
+      return `- [${entry.agent_id}] ${timeStr}: ${shortSummary}`;
     });
-    parts.push(`[Team activity — what other agents have done recently]\n${activityLines.join('\n')}\n[End team activity]`);
+    parts.push(`[Team activity — other agents' recent actions (do NOT reference their conversations as your own)]\n${activityLines.join('\n')}\n[End team activity]`);
   }
 
   // Layer 5: Conversation history recall

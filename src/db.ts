@@ -246,6 +246,13 @@ function createSchema(database: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_audit_time ON audit_log(created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_audit_agent ON audit_log(agent_id, created_at DESC);
 
+    CREATE TABLE IF NOT EXISTS chat_prefs (
+      chat_id TEXT NOT NULL,
+      key     TEXT NOT NULL,
+      value   TEXT NOT NULL,
+      PRIMARY KEY (chat_id, key)
+    );
+
     CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
       summary,
       raw_text,
@@ -1151,7 +1158,16 @@ export function logConversationTurn(
 export function getRecentConversation(
   chatId: string,
   limit = 20,
+  agentId?: string,
 ): ConversationTurn[] {
+  if (agentId) {
+    return db
+      .prepare(
+        `SELECT * FROM conversation_log WHERE chat_id = ? AND agent_id = ?
+         ORDER BY created_at DESC LIMIT ?`,
+      )
+      .all(chatId, agentId, limit) as ConversationTurn[];
+  }
   return db
     .prepare(
       `SELECT * FROM conversation_log WHERE chat_id = ?
@@ -1951,4 +1967,29 @@ export function getRecentBlockedActions(limit = 10): AuditLogEntry[] {
   return db.prepare(
     `SELECT * FROM audit_log WHERE blocked = 1 ORDER BY created_at DESC LIMIT ?`,
   ).all(limit) as AuditLogEntry[];
+}
+
+// ─── Chat preferences (persistent, survives restarts) ────────────────────────
+
+export function getChatPref(chatId: string, key: string): string | null {
+  const row = db.prepare(
+    'SELECT value FROM chat_prefs WHERE chat_id = ? AND key = ?'
+  ).get(chatId, key) as { value: string } | undefined;
+  return row?.value ?? null;
+}
+
+export function setChatPref(chatId: string, key: string, value: string): void {
+  db.prepare(
+    'INSERT OR REPLACE INTO chat_prefs (chat_id, key, value) VALUES (?, ?, ?)'
+  ).run(chatId, key, value);
+}
+
+export function deleteChatPref(chatId: string, key: string): void {
+  db.prepare('DELETE FROM chat_prefs WHERE chat_id = ? AND key = ?').run(chatId, key);
+}
+
+export function getChatsWithPref(key: string, value: string): string[] {
+  return (db.prepare(
+    'SELECT chat_id FROM chat_prefs WHERE key = ? AND value = ?'
+  ).all(key, value) as { chat_id: string }[]).map(r => r.chat_id);
 }

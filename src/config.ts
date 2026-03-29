@@ -25,6 +25,7 @@ const envConfig = readEnvFile([
   'SECURITY_PIN_HASH',
   'IDLE_LOCK_MINUTES',
   'EMERGENCY_KILL_PHRASE',
+  'STREAM_STRATEGY',
 ]);
 
 // ── Multi-agent support ──────────────────────────────────────────────
@@ -155,7 +156,7 @@ export const GOOGLE_API_KEY =
 // 'off': no streaming, wait for full response.
 export type StreamStrategy = 'global-throttle' | 'single-agent-only' | 'off';
 export const STREAM_STRATEGY: StreamStrategy =
-  (process.env.STREAM_STRATEGY || 'off') as StreamStrategy;
+  (process.env.STREAM_STRATEGY || envConfig.STREAM_STRATEGY || 'off') as StreamStrategy;
 
 // ── Security ─────────────────────────────────────────────────────────
 // PIN lock: SHA-256 hash of your PIN. Generate: node -e "console.log(require('crypto').createHash('sha256').update('YOUR_PIN').digest('hex'))"
