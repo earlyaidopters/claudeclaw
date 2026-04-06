@@ -3,7 +3,7 @@ description: Calendar, scheduling, billing, Stripe, Gumroad, admin, task managem
 
 telegram_bot_token_env: OPS_BOT_TOKEN
 
-model: claude-sonnet-4-6
+model: claude-haiku-4-5
 
 obsidian:
   vault: /Users/macminirolland/Library/CloudStorage/GoogleDrive-rm@360sc.io/Mon Drive/OBSIDIAN/CHATTERS

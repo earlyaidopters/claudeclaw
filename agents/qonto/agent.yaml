@@ -1,0 +1,6 @@
+name: Qonto
+description: Agent financier RorWorld — soldes, transactions, labels, rapprochement comptable
+
+telegram_bot_token_env: QONTO_BOT_TOKEN
+
+model: claude-haiku-4-5
