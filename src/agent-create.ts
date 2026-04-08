@@ -300,6 +300,15 @@ function generateLaunchdPlist(agentId: string): string {
   const label = `com.claudeclaw.${agentId}`;
   const plistPath = path.join(plistDir, `${label}.plist`);
 
+  // Use the same Node binary that's running this process (works with nvm, homebrew, or system node)
+  const nodePath = process.execPath;
+  const nodeBinDir = path.dirname(nodePath);
+
+  // Build PATH: node's bin dir first, then standard system paths
+  const systemPaths = ['/opt/homebrew/bin', '/opt/homebrew/sbin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'];
+  const allPaths = [nodeBinDir, ...systemPaths.filter(p => p !== nodeBinDir)];
+  const envPath = allPaths.join(':');
+
   const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -308,7 +317,7 @@ function generateLaunchdPlist(agentId: string): string {
   <string>${label}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/opt/homebrew/bin/node</string>
+    <string>${nodePath}</string>
     <string>dist/index.js</string>
     <string>--agent</string>
     <string>${agentId}</string>
@@ -317,8 +326,10 @@ function generateLaunchdPlist(agentId: string): string {
   <string>__PROJECT_DIR__</string>
   <key>EnvironmentVariables</key>
   <dict>
+    <key>NODE_ENV</key>
+    <string>production</string>
     <key>PATH</key>
-    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <string>${envPath}</string>
     <key>HOME</key>
     <string>__HOME__</string>
   </dict>
@@ -347,14 +358,17 @@ function generateSystemdUnit(agentId: string): string {
   const serviceName = `com.claudeclaw.agent-${agentId}`;
   const unitPath = path.join(unitDir, `${serviceName}.service`);
 
+  const nodePath = process.execPath;
+
   const unit = `[Unit]
 Description=ClaudeClaw Agent: ${agentId}
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/node ${PROJECT_ROOT}/dist/index.js --agent ${agentId}
+ExecStart=${nodePath} ${PROJECT_ROOT}/dist/index.js --agent ${agentId}
 WorkingDirectory=${PROJECT_ROOT}
+Environment=NODE_ENV=production
 Restart=always
 RestartSec=10
 
