@@ -5,12 +5,34 @@ import yaml from 'js-yaml';
 import { CLAUDECLAW_CONFIG, PROJECT_ROOT } from './config.js';
 import { readEnvFile } from './env.js';
 
+export interface VoiceAgentConfig {
+  enabled: boolean;
+  phone_number: string;
+  elevenlabs_voice_id: string;
+  elevenlabs_model?: string;
+  personality?: string;
+  speech_tags?: string;
+  sip: {
+    termination_url: string;
+    username: string;
+    password_env: string;
+  };
+  twilio: {
+    account_sid_env: string;
+    auth_token_env: string;
+  };
+}
+
 export interface AgentConfig {
   name: string;
   description: string;
   botTokenEnv: string;
   botToken: string;
   model?: string;
+  elevenlabsVoiceId?: string;
+  elevenlabsModelId?: string;
+  elevenlabsSpeechTags?: string[];
+  'voice-agent'?: VoiceAgentConfig;
   obsidian?: {
     vault: string;
     folders: string[];
@@ -60,6 +82,14 @@ export function loadAgentConfig(agentId: string): AgentConfig {
   const description = (raw['description'] as string) ?? '';
   const botTokenEnv = raw['telegram_bot_token_env'] as string;
   const model = raw['model'] as string | undefined;
+  const elevenlabsVoiceId = raw['elevenlabs_voice_id'] as string | undefined;
+  const elevenlabsModelId = raw['elevenlabs_model_id'] as string | undefined;
+  const rawSpeechTags = raw['elevenlabs_speech_tags'] as string | string[] | undefined;
+  const elevenlabsSpeechTags = rawSpeechTags
+    ? (Array.isArray(rawSpeechTags)
+        ? rawSpeechTags
+        : rawSpeechTags.split(',').map((t: string) => t.trim()).filter(Boolean))
+    : undefined;
 
   if (!name || !botTokenEnv) {
     throw new Error(`Agent config ${configPath} must have 'name' and 'telegram_bot_token_env'`);
@@ -69,6 +99,33 @@ export function loadAgentConfig(agentId: string): AgentConfig {
   const botToken = process.env[botTokenEnv] || env[botTokenEnv] || '';
   if (!botToken) {
     throw new Error(`Bot token not found: set ${botTokenEnv} in .env`);
+  }
+
+  // Parse voice-agent config from yaml
+  let voiceAgent: VoiceAgentConfig | undefined;
+  const vaRaw = raw['voice-agent'] as Record<string, unknown> | undefined;
+  if (vaRaw && vaRaw['enabled']) {
+    const sipRaw = vaRaw['sip'] as Record<string, string> | undefined;
+    const twilioRaw = vaRaw['twilio'] as Record<string, string> | undefined;
+    if (sipRaw && twilioRaw) {
+      voiceAgent = {
+        enabled: true,
+        phone_number: vaRaw['phone_number'] as string,
+        elevenlabs_voice_id: vaRaw['elevenlabs_voice_id'] as string,
+        elevenlabs_model: vaRaw['elevenlabs_model'] as string | undefined,
+        personality: vaRaw['personality'] as string | undefined,
+        speech_tags: vaRaw['speech_tags'] as string | undefined,
+        sip: {
+          termination_url: sipRaw['termination_url'],
+          username: sipRaw['username'],
+          password_env: sipRaw['password_env'],
+        },
+        twilio: {
+          account_sid_env: twilioRaw['account_sid_env'],
+          auth_token_env: twilioRaw['auth_token_env'],
+        },
+      };
+    }
   }
 
   let obsidian: AgentConfig['obsidian'];
@@ -87,7 +144,43 @@ export function loadAgentConfig(agentId: string): AgentConfig {
     };
   }
 
-  return { name, description, botTokenEnv, botToken, model, obsidian };
+  return { name, description, botTokenEnv, botToken, model, elevenlabsVoiceId, elevenlabsModelId, elevenlabsSpeechTags, 'voice-agent': voiceAgent, obsidian };
+}
+
+/**
+ * Build VoiceAgentConfig from VOICE_AGENT_* env vars (main agent fallback).
+ * Returns undefined if VOICE_AGENT_ENABLED is not 'true'.
+ */
+export function buildVoiceAgentConfigFromEnv(): VoiceAgentConfig | undefined {
+  const env = readEnvFile([
+    'VOICE_AGENT_ENABLED', 'VOICE_AGENT_PHONE_NUMBER', 'VOICE_AGENT_ELEVENLABS_VOICE_ID',
+    'VOICE_AGENT_ELEVENLABS_MODEL', 'VOICE_AGENT_PERSONALITY', 'VOICE_AGENT_SPEECH_TAGS',
+  ]);
+
+  const enabled = (process.env.VOICE_AGENT_ENABLED || env.VOICE_AGENT_ENABLED || '').toLowerCase() === 'true';
+  if (!enabled) return undefined;
+
+  const phoneNumber = process.env.VOICE_AGENT_PHONE_NUMBER || env.VOICE_AGENT_PHONE_NUMBER || '';
+  const voiceId = process.env.VOICE_AGENT_ELEVENLABS_VOICE_ID || env.VOICE_AGENT_ELEVENLABS_VOICE_ID || '';
+  if (!phoneNumber || !voiceId) return undefined;
+
+  return {
+    enabled: true,
+    phone_number: phoneNumber,
+    elevenlabs_voice_id: voiceId,
+    elevenlabs_model: process.env.VOICE_AGENT_ELEVENLABS_MODEL || env.VOICE_AGENT_ELEVENLABS_MODEL,
+    personality: process.env.VOICE_AGENT_PERSONALITY || env.VOICE_AGENT_PERSONALITY,
+    speech_tags: process.env.VOICE_AGENT_SPEECH_TAGS || env.VOICE_AGENT_SPEECH_TAGS,
+    sip: {
+      termination_url: process.env.SIP_TERMINATION_URL || '',
+      username: process.env.SIP_USERNAME || '',
+      password_env: 'SIP_PASSWORD',
+    },
+    twilio: {
+      account_sid_env: 'TWILIO_ACCOUNT_SID',
+      auth_token_env: 'TWILIO_AUTH_TOKEN',
+    },
+  };
 }
 
 /** Update the model field in an agent's agent.yaml file. */

@@ -10,6 +10,8 @@ const envConfig = readEnvFile([
   'GROQ_API_KEY',
   'ELEVENLABS_API_KEY',
   'ELEVENLABS_VOICE_ID',
+  'ELEVENLABS_MODEL_ID',
+  'ELEVENLABS_SPEECH_TAGS',
   'WHATSAPP_ENABLED',
   'SLACK_USER_TOKEN',
   'CONTEXT_LIMIT',
@@ -23,6 +25,13 @@ const envConfig = readEnvFile([
   'SECURITY_PIN_HASH',
   'IDLE_LOCK_MINUTES',
   'EMERGENCY_KILL_PHRASE',
+  'VOICE_API_PORT',
+  'VOICE_PORT',
+  'VOICE_TUNNEL_NAME',
+  'VOICE_TUNNEL_HOSTNAME',
+  'VOICE_TUNNEL_CREDENTIALS',
+  'VOICE_TWILIO_PHONE_SID',
+  'VOICE_OUTBOUND_NUMBER',
 ]);
 
 // ── Multi-agent support ──────────────────────────────────────────────
@@ -34,12 +43,18 @@ export let agentCwd: string | undefined; // undefined = use PROJECT_ROOT
 export let agentDefaultModel: string | undefined; // from agent.yaml
 export let agentObsidianConfig: { vault: string; folders: string[]; readOnly?: string[] } | undefined;
 export let agentSystemPrompt: string | undefined; // loaded from agents/{id}/CLAUDE.md
+export let agentElevenlabsVoiceId: string | undefined; // per-agent ElevenLabs voice
+export let agentElevenlabsModelId: string | undefined; // per-agent ElevenLabs model
+export let agentElevenlabsSpeechTags: string[] | undefined; // per-agent allowed speech tags
 
 export function setAgentOverrides(opts: {
   agentId: string;
   botToken: string;
   cwd: string;
   model?: string;
+  elevenlabsVoiceId?: string;
+  elevenlabsModelId?: string;
+  elevenlabsSpeechTags?: string[];
   obsidian?: { vault: string; folders: string[]; readOnly?: string[] };
   systemPrompt?: string;
 }): void {
@@ -47,6 +62,9 @@ export function setAgentOverrides(opts: {
   activeBotToken = opts.botToken;
   agentCwd = opts.cwd;
   agentDefaultModel = opts.model;
+  agentElevenlabsVoiceId = opts.elevenlabsVoiceId;
+  agentElevenlabsModelId = opts.elevenlabsModelId;
+  agentElevenlabsSpeechTags = opts.elevenlabsSpeechTags;
   agentObsidianConfig = opts.obsidian;
   agentSystemPrompt = opts.systemPrompt;
 }
@@ -68,6 +86,10 @@ export const SLACK_USER_TOKEN =
 export const GROQ_API_KEY = envConfig.GROQ_API_KEY ?? '';
 export const ELEVENLABS_API_KEY = envConfig.ELEVENLABS_API_KEY ?? '';
 export const ELEVENLABS_VOICE_ID = envConfig.ELEVENLABS_VOICE_ID ?? '';
+export const ELEVENLABS_MODEL_ID = envConfig.ELEVENLABS_MODEL_ID ?? '';
+export const ELEVENLABS_SPEECH_TAGS = envConfig.ELEVENLABS_SPEECH_TAGS
+  ? envConfig.ELEVENLABS_SPEECH_TAGS.split(',').map((t) => t.trim()).filter(Boolean)
+  : [];
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -99,6 +121,33 @@ const rawConfigDir =
  * Defaults to ~/.claudeclaw. Set CLAUDECLAW_CONFIG in .env or environment to override.
  */
 export const CLAUDECLAW_CONFIG = expandHome(rawConfigDir);
+
+// Voice agent internal API
+export const VOICE_API_PORT = parseInt(
+  process.env.VOICE_API_PORT || envConfig.VOICE_API_PORT || '3142',
+  10,
+);
+export const VOICE_PORT = parseInt(
+  process.env.VOICE_PORT || envConfig.VOICE_PORT || '8765',
+  10,
+);
+
+// Cloudflared tunnel for voice agent (named tunnel with stable hostname)
+export const VOICE_TUNNEL_NAME =
+  process.env.VOICE_TUNNEL_NAME || envConfig.VOICE_TUNNEL_NAME || '';
+export const VOICE_TUNNEL_HOSTNAME =
+  process.env.VOICE_TUNNEL_HOSTNAME || envConfig.VOICE_TUNNEL_HOSTNAME || '';
+export const VOICE_TUNNEL_CREDENTIALS = expandHome(
+  process.env.VOICE_TUNNEL_CREDENTIALS || envConfig.VOICE_TUNNEL_CREDENTIALS || '',
+);
+
+// Twilio phone number SID (for auto-configuring webhook on startup)
+export const VOICE_TWILIO_PHONE_SID =
+  process.env.VOICE_TWILIO_PHONE_SID || envConfig.VOICE_TWILIO_PHONE_SID || '';
+
+// Ben's phone number for outbound calls (E.164 format, e.g. +1XXXXXXXXXX)
+export const VOICE_OUTBOUND_NUMBER =
+  process.env.VOICE_OUTBOUND_NUMBER || envConfig.VOICE_OUTBOUND_NUMBER || '';
 
 // Telegram limits
 export const MAX_MESSAGE_LENGTH = 4096;

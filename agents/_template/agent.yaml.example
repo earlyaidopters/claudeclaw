@@ -27,3 +27,22 @@ model: claude-sonnet-4-6
 #     - FolderB/
 #   read_only:
 #     - Daily Notes/
+
+# Voice agent / phone call capabilities (optional -- uncomment to enable)
+# Note: "voice-agent" not "voice" -- voice.ts handles Telegram voice note transcription
+# voice-agent:
+#   enabled: true
+#   phone_number: "+1XXXXXXXXXX"
+#   elevenlabs_voice_id: "your-voice-id"
+#   elevenlabs_model: "eleven_multilingual_v2"  # or "eleven_v3" for speech tags
+#   personality: |
+#     Voice-agent-specific personality adjustments here.
+#   speech_tags: |                               # Only works with eleven_v3
+#     <prosody rate="medium">{text}</prosody>
+#   sip:
+#     termination_url: "sip:user@provider.com"
+#     username: "sip-username"
+#     password_env: "SIP_PASSWORD"
+#   twilio:
+#     account_sid_env: "TWILIO_ACCOUNT_SID"
+#     auth_token_env: "TWILIO_AUTH_TOKEN"

@@ -6,6 +6,7 @@ dist/
 
 # Environment — never commit API keys
 .env
+.mcp.json
 
 # Runtime data — NEVER commit. Contains WhatsApp/Slack messages,
 # session tokens, conversation logs, and database files.
@@ -40,3 +41,11 @@ scripts/waste-reminder.sh
 CLAUDE.md
 agents/*/agent.yaml
 agents/*/CLAUDE.md
+.claude/*
+.github/*
+.obsidian/*
+scripts/*.bat
+
+# Voice agent Python venv
+voice-agent/venv/
+voice-agent/__pycache__/

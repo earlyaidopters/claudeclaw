@@ -11,6 +11,7 @@ import {
   claimNextMissionTask,
   completeMissionTask,
   resetStuckMissionTasks,
+  deleteScheduledTask,
 } from './db.js';
 import { logger } from './logger.js';
 import { messageQueue } from './message-queue.js';
@@ -89,22 +90,34 @@ async function runDueTasks(): Promise<void> {
       const timeout = setTimeout(() => abortController.abort(), TASK_TIMEOUT_MS);
 
       try {
-        await sender(`Scheduled task running: "${task.prompt.slice(0, 80)}${task.prompt.length > 80 ? '...' : ''}"`);
+        const isSilent = !!task.silent;
+
+        if (!isSilent) {
+          await sender(`Scheduled task running: "${task.prompt.slice(0, 80)}${task.prompt.length > 80 ? '...' : ''}"`);
+        }
 
         // Run as a fresh agent call (no session — scheduled tasks are autonomous)
         const result = await runAgent(task.prompt, undefined, () => {}, undefined, undefined, abortController);
         clearTimeout(timeout);
 
         if (result.aborted) {
-          updateTaskAfterRun(task.id, nextRun, 'Timed out after 10 minutes', 'timeout');
-          await sender(`⏱ Task timed out after 10m: "${task.prompt.slice(0, 60)}..." — killed.`);
-          logger.warn({ taskId: task.id }, 'Task timed out');
+          if (task.one_shot) {
+            deleteScheduledTask(task.id);
+          } else {
+            updateTaskAfterRun(task.id, nextRun, 'Timed out after 10 minutes', 'timeout');
+          }
+          if (!isSilent) {
+            await sender(`⏱ Task timed out after 10m: "${task.prompt.slice(0, 60)}..." — killed.`);
+          }
+          logger.warn({ taskId: task.id, oneShot: !!task.one_shot }, 'Task timed out');
           return;
         }
 
         const text = result.text?.trim() || 'Task completed with no output.';
-        for (const chunk of splitMessage(formatForTelegram(text))) {
-          await sender(chunk);
+        if (!isSilent) {
+          for (const chunk of splitMessage(formatForTelegram(text))) {
+            await sender(chunk);
+          }
         }
 
         // Inject task output into the active chat session so user replies have context
@@ -114,17 +127,27 @@ async function runDueTasks(): Promise<void> {
           logConversationTurn(ALLOWED_CHAT_ID, 'assistant', text, activeSession ?? undefined, schedulerAgentId);
         }
 
-        updateTaskAfterRun(task.id, nextRun, text, 'success');
-
-        logger.info({ taskId: task.id, nextRun }, 'Task complete, next run scheduled');
+        if (task.one_shot) {
+          deleteScheduledTask(task.id);
+          logger.info({ taskId: task.id, silent: isSilent }, 'One-shot task complete, deleted');
+        } else {
+          updateTaskAfterRun(task.id, nextRun, text, 'success');
+          logger.info({ taskId: task.id, nextRun, silent: isSilent }, 'Task complete, next run scheduled');
+        }
       } catch (err) {
         clearTimeout(timeout);
         const errMsg = err instanceof Error ? err.message : String(err);
-        updateTaskAfterRun(task.id, nextRun, errMsg.slice(0, 500), 'failed');
+        if (task.one_shot) {
+          deleteScheduledTask(task.id);
+        } else {
+          updateTaskAfterRun(task.id, nextRun, errMsg.slice(0, 500), 'failed');
+        }
 
         logger.error({ err, taskId: task.id }, 'Scheduled task failed');
         try {
-          await sender(`❌ Task failed: "${task.prompt.slice(0, 60)}..." — ${errMsg.slice(0, 200)}`);
+          if (!task.silent) {
+            await sender(`❌ Task failed: "${task.prompt.slice(0, 60)}..." — ${errMsg.slice(0, 200)}`);
+          }
         } catch {
           // ignore send failure
         }

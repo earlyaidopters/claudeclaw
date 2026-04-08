@@ -743,7 +743,59 @@ async function taskAction(id, action) {
   } catch(e) { console.error('Task action failed:', e); }
 }
 
+async function toggleSilent(id) {
+  try {
+    await fetch(BASE + '/api/tasks/' + id + '/silent?token=' + TOKEN, { method: 'POST' });
+    await loadTasks();
+  } catch(e) { console.error('Toggle silent failed:', e); }
+}
+
+function toggleTaskExpand(btn) {
+  const container = btn.previousElementSibling;
+  const isCollapsed = container.style.maxHeight === '150px';
+  container.style.maxHeight = isCollapsed ? 'none' : '150px';
+  btn.textContent = isCollapsed ? 'Show less' : 'Show more';
+}
+
+async function editTaskPrompt(id) {
+  const el = document.querySelector('[data-prompt-id="' + id + '"]');
+  const current = el.dataset.rawPrompt;
+  const textarea = document.createElement('textarea');
+  textarea.value = current;
+  textarea.style.cssText = 'width:100%;min-height:200px;background:#1e293b;color:#e2e8f0;border:1px solid #475569;border-radius:6px;padding:8px;font-size:13px;font-family:monospace;resize:vertical;';
+  const btnRow = document.createElement('div');
+  btnRow.style.cssText = 'display:flex;gap:8px;margin-top:6px;';
+  const saveBtn = document.createElement('button');
+  saveBtn.textContent = 'Save';
+  saveBtn.style.cssText = 'background:#3b82f6;color:white;border:none;border-radius:4px;padding:4px 12px;cursor:pointer;font-size:12px;';
+  const cancelBtn = document.createElement('button');
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.style.cssText = 'background:#475569;color:white;border:none;border-radius:4px;padding:4px 12px;cursor:pointer;font-size:12px;';
+  btnRow.appendChild(saveBtn);
+  btnRow.appendChild(cancelBtn);
+  const wrapper = el.parentElement;
+  const originalHTML = wrapper.innerHTML;
+  wrapper.innerHTML = '';
+  wrapper.appendChild(textarea);
+  wrapper.appendChild(btnRow);
+  textarea.focus();
+  taskEditingId = id;
+  cancelBtn.onclick = function() { taskEditingId = null; wrapper.innerHTML = originalHTML; };
+  saveBtn.onclick = async function() {
+    try {
+      await fetch(BASE + '/api/tasks/' + id + '/prompt?token=' + TOKEN, {
+        method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({prompt: textarea.value})
+      });
+      taskEditingId = null;
+      await loadTasks();
+    } catch(e) { console.error('Edit prompt failed:', e); taskEditingId = null; }
+  };
+}
+
+let taskEditingId = null;
+
 async function loadTasks() {
+  if (taskEditingId) return;
   try {
     const data = await api('/api/tasks');
     const c = document.getElementById('tasks-container');
@@ -757,6 +809,12 @@ async function loadTasks() {
       const lastStatusIcon = t.last_status === 'success' ? '<span class="last-success" title="Last run succeeded">&#10003;</span> ' : t.last_status === 'failed' ? '<span class="last-failed" title="Last run failed">&#10007;</span> ' : t.last_status === 'timeout' ? '<span class="last-timeout" title="Last run timed out">&#9200;</span> ' : '';
       const lastResult = t.last_result ? '<details class="mt-2"><summary class="text-xs text-gray-500">' + lastStatusIcon + 'Last result</summary><pre class="text-xs text-gray-400 mt-1 whitespace-pre-wrap break-words">' + escapeHtml(t.last_result) + '</pre></details>' : '';
       const runningInfo = t.status === 'running' && t.started_at ? '<span class="text-xs text-blue-400 ml-2">running for ' + elapsed(t.started_at) + '</span>' : '';
+      const isSilent = !!t.silent;
+      const silentIcon = isSilent
+        ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/><line x1="1" y1="1" x2="23" y2="23" stroke="#ef4444" stroke-width="2.5"/></svg>'
+        : '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#60a5fa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>';
+      const silentBtn = '<button data-task="' + t.id + '" onclick="toggleSilent(this.dataset.task)" title="' + (isSilent ? 'Unmute notifications' : 'Mute notifications') + '" style="background:none;border:none;cursor:pointer;padding:2px 4px;display:flex;align-items:center">' + silentIcon + '</button>';
+      const editBtn = '<button data-task="' + t.id + '" onclick="editTaskPrompt(this.dataset.task)" title="Edit prompt" style="background:none;border:none;cursor:pointer;color:#a78bfa;font-size:14px;padding:2px 4px">&#9998;</button>';
       const pauseBtn = t.status === 'active'
         ? '<button data-task="' + t.id + '" data-action="pause" onclick="taskAction(this.dataset.task,this.dataset.action)" title="Pause" style="background:none;border:none;cursor:pointer;color:#fbbf24;font-size:14px;padding:2px 4px">&#9208;</button>'
         : t.status === 'paused' ? '<button data-task="' + t.id + '" data-action="resume" onclick="taskAction(this.dataset.task,this.dataset.action)" title="Resume" style="background:none;border:none;cursor:pointer;color:#6ee7b7;font-size:14px;padding:2px 4px">&#9654;</button>' : '';
@@ -765,7 +823,10 @@ async function loadTasks() {
       const tasksAllRevealed = localStorage.getItem('privacyBlur_tasks_all') === 'revealed';
       const taskBlurred = tasksAllRevealed ? false : (taskBlurState[t.id] !== false);
       const taskBlurClass = taskBlurred ? 'privacy-blur' : '';
-      return '<div class="card"><div class="flex justify-between items-start"><div class="flex-1 mr-2"><div class="text-sm text-white task-prompt ' + taskBlurClass + '" data-section="tasks" data-idx="' + t.id + '" onclick="toggleItemBlur(this)">' + escapeHtml(t.prompt) + '</div>' + agentBadge + '<div class="text-xs text-gray-500 mt-1">' + cronToHuman(t.schedule) + ' &middot; next in <span class="countdown" data-ts="' + t.next_run + '">' + countdown(t.next_run) + '</span>' + runningInfo + '</div></div><div class="flex items-center gap-1">' + pauseBtn + deleteBtn + '<span class="pill ' + statusCls + '">' + t.status + '</span></div></div>' + lastResult + '</div>';
+      const promptText = escapeHtml(t.prompt);
+      const needsExpand = t.prompt.length > 300;
+      const promptContainer = '<div data-prompt-wrapper="' + t.id + '"><div class="text-sm text-white task-prompt ' + taskBlurClass + '" data-section="tasks" data-idx="' + t.id + '" data-prompt-id="' + t.id + '" data-raw-prompt="' + promptText.replace(/"/g, '&quot;') + '" onclick="toggleItemBlur(this)" style="max-height:' + (needsExpand ? '150px' : 'none') + ';overflow:hidden;white-space:pre-wrap;word-break:break-word">' + promptText + '</div>' + (needsExpand ? '<button onclick="toggleTaskExpand(this)" style="background:none;border:none;color:#60a5fa;cursor:pointer;font-size:12px;padding:2px 0;margin-top:4px">Show more</button>' : '') + '</div>';
+      return '<div class="card"><div class="flex justify-between items-start"><div class="flex-1 mr-2">' + promptContainer + agentBadge + '<div class="text-xs text-gray-500 mt-1">' + cronToHuman(t.schedule) + ' &middot; next in <span class="countdown" data-ts="' + t.next_run + '">' + countdown(t.next_run) + '</span>' + runningInfo + '</div></div><div class="flex items-center gap-1">' + editBtn + silentBtn + pauseBtn + deleteBtn + '<span class="pill ' + statusCls + '">' + t.status + '</span></div></div>' + lastResult + '</div>';
     }).join('');
   } catch(e) {
     document.getElementById('tasks-container').innerHTML = '<div class="card text-red-400 text-sm">Failed to load tasks</div>';

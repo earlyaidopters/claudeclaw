@@ -1,10 +1,14 @@
+import { spawn, ChildProcess } from 'child_process';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 
-import { loadAgentConfig, resolveAgentDir, resolveAgentClaudeMd } from './agent-config.js';
+import { loadAgentConfig, buildVoiceAgentConfigFromEnv, resolveAgentDir, resolveAgentClaudeMd } from './agent-config.js';
 import { createBot } from './bot.js';
 import { checkPendingMigrations } from './migrations.js';
-import { ALLOWED_CHAT_ID, activeBotToken, STORE_DIR, PROJECT_ROOT, CLAUDECLAW_CONFIG, GOOGLE_API_KEY, setAgentOverrides, SECURITY_PIN_HASH, IDLE_LOCK_MINUTES, EMERGENCY_KILL_PHRASE } from './config.js';
+import { ALLOWED_CHAT_ID, activeBotToken, STORE_DIR, PROJECT_ROOT, CLAUDECLAW_CONFIG, GOOGLE_API_KEY, setAgentOverrides, SECURITY_PIN_HASH, IDLE_LOCK_MINUTES, EMERGENCY_KILL_PHRASE, expandHome } from './config.js';
+import { startVoiceApi } from './voice-api.js';
+import { launchVoiceAgent, stopVoiceAgent } from './voice-launcher.js';
 import { startDashboard } from './dashboard.js';
 import { initDatabase, cleanupOldMissionTasks, insertAuditLog } from './db.js';
 import { initSecurity, setAuditCallback } from './security.js';
@@ -23,6 +27,11 @@ const AGENT_ID = agentFlagIndex !== -1 ? process.argv[agentFlagIndex + 1] : 'mai
 // Export AGENT_ID to env so child processes (schedule-cli, etc.) inherit it
 process.env.CLAUDECLAW_AGENT_ID = AGENT_ID;
 
+// Strip Claude Code session vars that leak when PM2 starts from inside a Claude Code session.
+// These cause the SDK to think it's already inside Claude Code and refuse to spawn subprocesses.
+delete process.env.CLAUDECODE;
+delete process.env.CLAUDE_CODE_ENTRYPOINT;
+
 if (AGENT_ID !== 'main') {
   const agentConfig = loadAgentConfig(AGENT_ID);
   const agentDir = resolveAgentDir(AGENT_ID);
@@ -38,6 +47,9 @@ if (AGENT_ID !== 'main') {
     botToken: agentConfig.botToken,
     cwd: agentDir,
     model: agentConfig.model,
+    elevenlabsVoiceId: agentConfig.elevenlabsVoiceId,
+    elevenlabsModelId: agentConfig.elevenlabsModelId,
+    elevenlabsSpeechTags: agentConfig.elevenlabsSpeechTags,
     obsidian: agentConfig.obsidian,
     systemPrompt,
   });
@@ -172,6 +184,48 @@ async function main(): Promise<void> {
     startDashboard(bot.api);
   }
 
+  // Cloudflared tunnel: serves both dashboard and voice agent.
+  // Uses ~/.cloudflared/config.yml which has ingress rules for all hostnames.
+  let tunnelProcess: ChildProcess | null = null;
+  if (AGENT_ID === 'main') {
+    const cfConfig = path.join(os.homedir(), '.cloudflared', 'config.yml');
+    if (fs.existsSync(cfConfig)) {
+      tunnelProcess = spawn('cloudflared', ['tunnel', '--config', cfConfig, 'run'], { stdio: 'pipe' });
+      tunnelProcess.on('error', (err) => logger.warn({ err }, 'Failed to start cloudflared'));
+      tunnelProcess.stderr?.on('data', (data: Buffer) => {
+        const msg = data.toString().trim();
+        if (msg.includes('ERR') || msg.includes('error')) {
+          logger.warn(`[tunnel] ${msg}`);
+        } else {
+          logger.info(`[tunnel] ${msg}`);
+        }
+      });
+      tunnelProcess.on('exit', (code) => {
+        logger.info(`Cloudflared exited with code ${code}`);
+        tunnelProcess = null;
+      });
+      logger.info('Cloudflared tunnel started');
+    } else {
+      logger.info('No ~/.cloudflared/config.yml found, skipping tunnel');
+    }
+  }
+
+  // Voice agent: start internal API + spawn Python process if configured.
+  // Only the main agent runs voice -- sub-agents don't need their own tunnel/Pipecat.
+  if (AGENT_ID === 'main') {
+    const voiceConfig = buildVoiceAgentConfigFromEnv();
+    if (voiceConfig?.enabled) {
+      startVoiceApi();
+      launchVoiceAgent(AGENT_ID, {
+        name: 'main',
+        description: '',
+        botTokenEnv: '',
+        botToken: '',
+        'voice-agent': voiceConfig,
+      });
+    }
+  }
+
   if (ALLOWED_CHAT_ID) {
     initScheduler(
       async (text) => {
@@ -193,6 +247,8 @@ async function main(): Promise<void> {
 
   const shutdown = async () => {
     logger.info('Shutting down...');
+    if (tunnelProcess) { tunnelProcess.kill('SIGTERM'); tunnelProcess = null; }
+    stopVoiceAgent();
     setTelegramConnected(false);
     releaseLock();
     await bot.stop();

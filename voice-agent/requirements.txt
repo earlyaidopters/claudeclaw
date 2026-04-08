@@ -1,0 +1,8 @@
+pipecat-ai[silero,deepgram]>=0.0.52
+elevenlabs>=1.0.0
+ollama>=0.3.0
+aiohttp>=3.9.0
+python-dotenv>=1.0.0
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+websockets>=13.0

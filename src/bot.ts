@@ -14,6 +14,11 @@ import {
   MAX_MESSAGE_LENGTH,
   activeBotToken,
   agentDefaultModel,
+  agentElevenlabsVoiceId,
+  agentElevenlabsModelId,
+  agentElevenlabsSpeechTags,
+  ELEVENLABS_MODEL_ID,
+  ELEVENLABS_SPEECH_TAGS,
   agentSystemPrompt,
   TYPING_REFRESH_MS,
   AGENT_TIMEOUT_MS,
@@ -246,6 +251,88 @@ export function splitMessage(text: string): string[] {
   return parts;
 }
 
+// ── ElevenLabs V3 speech tags ─────────────────────────────────────────
+
+/** Get the effective speech tags for the current agent (agent yaml > .env). */
+function getEffectiveSpeechTags(): string[] {
+  return agentElevenlabsSpeechTags ?? ELEVENLABS_SPEECH_TAGS;
+}
+
+/** Get the effective ElevenLabs model for the current agent (agent yaml > .env). */
+function getEffectiveElevenLabsModel(): string {
+  return agentElevenlabsModelId ?? ELEVENLABS_MODEL_ID ?? '';
+}
+
+/** True if the current agent is configured to use ElevenLabs V3. */
+function isElevenLabsV3(): boolean {
+  return getEffectiveElevenLabsModel().startsWith('eleven_v3');
+}
+
+/**
+ * Build voice-mode instructions for the LLM: spoken-style output + optional V3 speech tags.
+ * Returns empty string if there's nothing to inject.
+ */
+function buildVoiceModeInstruction(): string {
+  const lines: string[] = [];
+
+  lines.push(
+    `[Voice mode active — your response will be spoken aloud via TTS, not read as text]`,
+    `CRITICAL: You must sound like a real human talking, NOT an AI reading a script. This is non-negotiable.`,
+    ``,
+    `FORMAT:`,
+    `- Keep it short. 2-4 sentences max for simple replies. Even complex topics should be distilled to the key point.`,
+    `- No markdown, no bullet points, no numbered lists, no headers, no code blocks. Plain spoken text only.`,
+    `- The listener can always ask follow-ups. Don't try to be comprehensive.`,
+    ``,
+    `BANNED PATTERNS — never do any of these:`,
+    `- NEVER use rhetorical contrasts like "it's not about X, it's about Y" or "clarity doesn't come from X, it comes from Y". This is the #1 tell of AI-generated speech.`,
+    `- NEVER use parallel constructions like "not just X, but Y" or "less X, more Y".`,
+    `- NEVER end with a pressuring follow-up question like "what's your next step?" or "what are you launching first?" or "so what's the plan?". These feel pushy and unnatural.`,
+    `- NEVER use motivational/coaching closers. No rallying cries, no pep talks.`,
+    `- If you want to end with a question, keep it genuinely open-ended and low-pressure: "you know?", "what do you think?", "does that make sense?", "anyway what's going on?", or just trail off naturally.`,
+    ``,
+    `NATURAL SPEECH — study these patterns and use them throughout your response:`,
+    `- Scatter filler words naturally MID-SENTENCE, not just at the start: "uh", "um", "like", "kinda", "you know", "basically", "actually", "I mean", "right".`,
+    `- Use casual contractions everywhere: "gonna", "wanna", "kinda", "gotta", "cuz", "y'know", "it's like".`,
+    `- Self-interrupt and restart words/phrases like real speech: "I, I think", "it's, it's not", "that's, uh, that's kinda the thing".`,
+    `- Chain thoughts with "and", "but uh", "so like", "and then" instead of clean separate sentences.`,
+    `- Start responses casually: "Yeah so uh", "I mean look", "Okay so basically", "So here's the thing".`,
+    `- Trail off naturally with "so yeah", "anyway", "you know", "but yeah".`,
+    `- Aim for roughly 3-5 filler words spread across a typical response. Not every sentence, but enough that it sounds like talking, not reading.`,
+    ``,
+    `EXAMPLE of good voice output:`,
+    `"Yeah so, uh, I mean look — the pipeline's basically done, like the test transcripts are in Supabase and, and dedup is working. So it's, it's kinda ready to scale whenever you want. I'd probably just, uh, kick off the full batch and see what happens, you know?"`,
+  );
+
+  // Add V3 speech tags if available
+  if (isElevenLabsV3()) {
+    const tags = getEffectiveSpeechTags();
+    if (tags.length > 0) {
+      const tagList = tags.map((t) => `[${t}]`).join(', ');
+      lines.push(
+        ``,
+        `SPEECH TAGS — use these to add realistic vocal texture: ${tagList}`,
+        `Include at least 1-2 speech tags per response where they fit naturally. Place them inline exactly as shown.`,
+        `Example: "I mean [sighs] that's basically what's happening [chuckles] anyway so here's what you wanna do".`,
+        `Don't force them where they don't make sense, but DO use them -- they make the voice sound human.`,
+      );
+    }
+  }
+
+  lines.push(`[End voice mode]`);
+  return lines.join('\n');
+}
+
+/** Strip [tag] speech markers from text for non-voice display. */
+function stripSpeechTags(text: string): string {
+  const tags = getEffectiveSpeechTags();
+  if (tags.length === 0) return text;
+  // Build a regex that matches any of the allowed tags in square brackets (case-insensitive)
+  const escaped = tags.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  const pattern = new RegExp(`\\[(?:${escaped.join('|')})\\]`, 'gi');
+  return text.replace(pattern, '').replace(/  +/g, ' ').trim();
+}
+
 // ── File marker types ─────────────────────────────────────────────────
 export interface FileMarker {
   type: 'document' | 'photo';
@@ -439,6 +526,16 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
   if (agentSystemPrompt && !sessionId) parts.push(`[Agent role — follow these instructions]\n${agentSystemPrompt}\n[End agent role]`);
   if (memCtx) parts.push(memCtx);
 
+  // Inject voice mode instructions only when /voice is toggled on
+  const voiceModeOn = voiceEnabledChats.has(chatIdStr);
+  if (voiceModeOn) {
+    const voiceInstruction = buildVoiceModeInstruction();
+    if (voiceInstruction) {
+      logger.info({ v3: isElevenLabsV3(), tagsCount: getEffectiveSpeechTags().length }, 'Voice mode instruction injected');
+      parts.push(voiceInstruction);
+    }
+  }
+
   // Inject recent scheduled task outputs so the user can reply to them naturally.
   // Without this, Claude has no idea what a scheduled task just showed the user.
   const recentTasks = getRecentTaskOutputs(AGENT_ID, 30);
@@ -604,23 +701,25 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
 
     // Voice response: send audio if user sent a voice note (forceVoiceReply)
     // OR if they've toggled /voice on for text messages.
-    const caps = voiceCapabilities();
+    const caps = voiceCapabilities(agentElevenlabsVoiceId);
     const shouldSpeakBack = caps.tts && (forceVoiceReply || voiceEnabledChats.has(chatIdStr));
 
     // Send text response (if there's any left after stripping markers)
     if (responseText) {
       if (shouldSpeakBack) {
         try {
-          const audioBuffer = await synthesizeSpeech(responseText);
+          const audioBuffer = await synthesizeSpeech(responseText, agentElevenlabsVoiceId, agentElevenlabsModelId);
           await ctx.replyWithVoice(new InputFile(audioBuffer, 'response.ogg'));
         } catch (ttsErr) {
           logger.error({ err: ttsErr }, 'TTS failed, falling back to text');
-          for (const part of splitMessage(formatForTelegram(responseText))) {
+          const cleanText = stripSpeechTags(responseText);
+          for (const part of splitMessage(formatForTelegram(cleanText))) {
             await ctx.reply(part, { parse_mode: 'HTML' });
           }
         }
       } else {
-        for (const part of splitMessage(formatForTelegram(responseText))) {
+        const cleanText = stripSpeechTags(responseText);
+        for (const part of splitMessage(formatForTelegram(cleanText))) {
           await ctx.reply(part, { parse_mode: 'HTML' });
         }
       }

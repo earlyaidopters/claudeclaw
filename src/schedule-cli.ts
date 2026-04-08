@@ -31,10 +31,18 @@ const agentFlagIdx = process.argv.indexOf('--agent');
 const cliAgentId = agentFlagIdx !== -1
   ? process.argv[agentFlagIdx + 1] ?? 'main'
   : process.env.CLAUDECLAW_AGENT_ID ?? 'main';
-// Remove --agent and its value from rest args (only filter when flag is present)
-const cleanedArgv = agentFlagIdx !== -1
-  ? process.argv.filter((_, i) => i !== agentFlagIdx && i !== agentFlagIdx + 1)
-  : [...process.argv];
+// Silent by default. Use --loud to make a task non-silent.
+const loudFlagIdx = process.argv.indexOf('--loud');
+const cliSilent = loudFlagIdx === -1;
+// Parse --once flag for one-shot tasks (auto-delete after execution)
+const onceFlagIdx = process.argv.indexOf('--once');
+const cliOneShot = onceFlagIdx !== -1;
+// Remove --agent (and its value), --loud, and --once from rest args
+const flagIndices = new Set<number>();
+if (agentFlagIdx !== -1) { flagIndices.add(agentFlagIdx); flagIndices.add(agentFlagIdx + 1); }
+if (loudFlagIdx !== -1) { flagIndices.add(loudFlagIdx); }
+if (onceFlagIdx !== -1) { flagIndices.add(onceFlagIdx); }
+const cleanedArgv = process.argv.filter((_, i) => !flagIndices.has(i));
 const [, , command, ...rest] = cleanedArgv;
 
 function formatDate(unix: number | null): string {
@@ -66,12 +74,14 @@ switch (command) {
     }
 
     const id = randomBytes(4).toString('hex');
-    createScheduledTask(id, prompt, cron, nextRun, cliAgentId);
+    createScheduledTask(id, prompt, cron, nextRun, cliAgentId, cliSilent, cliOneShot);
 
     console.log(`Task created: ${id}`);
     console.log(`Agent:        ${cliAgentId}`);
     console.log(`Prompt:       ${prompt}`);
     console.log(`Schedule:     ${cron}`);
+    console.log(`Silent:       ${cliSilent ? 'yes' : 'no'}`);
+    console.log(`One-shot:     ${cliOneShot ? 'yes' : 'no'}`);
     console.log(`Next run:     ${formatDate(nextRun)}`);
     break;
   }
@@ -85,7 +95,8 @@ switch (command) {
     console.log(`${tasks.length} scheduled task${tasks.length === 1 ? '' : 's'}:\n`);
     for (const t of tasks) {
       const status = t.status === 'paused' ? ' [PAUSED]' : '';
-      console.log(`${t.id}${status}`);
+      const silent = t.silent ? ' [SILENT]' : '';
+      console.log(`${t.id}${status}${silent}`);
       console.log(`  Prompt:   ${t.prompt}`);
       console.log(`  Schedule: ${t.schedule}`);
       console.log(`  Next run: ${formatDate(t.next_run)}`);

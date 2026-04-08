@@ -349,6 +349,12 @@ function runMigrations(database: Database.Database): void {
   if (!taskColNames.includes('last_status')) {
     database.exec(`ALTER TABLE scheduled_tasks ADD COLUMN last_status TEXT`);
   }
+  if (!taskColNames.includes('silent')) {
+    database.exec(`ALTER TABLE scheduled_tasks ADD COLUMN silent INTEGER NOT NULL DEFAULT 0`);
+  }
+  if (!taskColNames.includes('one_shot')) {
+    database.exec(`ALTER TABLE scheduled_tasks ADD COLUMN one_shot INTEGER NOT NULL DEFAULT 0`);
+  }
 
   // ── Memory V2 migration ──────────────────────────────────────────────
   // Detect old schema (has 'sector' column but no 'importance') and migrate.
@@ -917,6 +923,8 @@ export interface ScheduledTask {
   agent_id: string;
   started_at: number | null;
   last_status: 'success' | 'failed' | 'timeout' | null;
+  silent: number;
+  one_shot: number;
 }
 
 export function createScheduledTask(
@@ -925,12 +933,22 @@ export function createScheduledTask(
   schedule: string,
   nextRun: number,
   agentId = 'main',
+  silent = false,
+  oneShot = false,
 ): void {
   const now = Math.floor(Date.now() / 1000);
   db.prepare(
-    `INSERT INTO scheduled_tasks (id, prompt, schedule, next_run, status, created_at, agent_id)
-     VALUES (?, ?, ?, ?, 'active', ?, ?)`,
-  ).run(id, prompt, schedule, nextRun, now, agentId);
+    `INSERT INTO scheduled_tasks (id, prompt, schedule, next_run, status, created_at, agent_id, silent, one_shot)
+     VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?)`,
+  ).run(id, prompt, schedule, nextRun, now, agentId, silent ? 1 : 0, oneShot ? 1 : 0);
+}
+
+export function toggleTaskSilent(id: string): void {
+  db.prepare(`UPDATE scheduled_tasks SET silent = CASE WHEN silent = 1 THEN 0 ELSE 1 END WHERE id = ?`).run(id);
+}
+
+export function updateTaskPrompt(id: string, prompt: string): void {
+  db.prepare(`UPDATE scheduled_tasks SET prompt = ? WHERE id = ?`).run(prompt, id);
 }
 
 export function getDueTasks(agentId = 'main'): ScheduledTask[] {

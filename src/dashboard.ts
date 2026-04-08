@@ -12,6 +12,8 @@ import {
   deleteScheduledTask,
   pauseScheduledTask,
   resumeScheduledTask,
+  toggleTaskSilent,
+  updateTaskPrompt,
   getConversationPage,
   getDashboardMemoryStats,
   getDashboardPinnedMemories,
@@ -154,6 +156,24 @@ export function startDashboard(botApi?: Api<RawApi>): void {
   app.post('/api/tasks/:id/resume', (c) => {
     const id = c.req.param('id');
     resumeScheduledTask(id);
+    return c.json({ ok: true });
+  });
+
+  // Toggle silent mode on a scheduled task
+  app.post('/api/tasks/:id/silent', (c) => {
+    const id = c.req.param('id');
+    toggleTaskSilent(id);
+    return c.json({ ok: true });
+  });
+
+  // Update a scheduled task's prompt
+  app.post('/api/tasks/:id/prompt', async (c) => {
+    const id = c.req.param('id');
+    const { prompt } = await c.req.json();
+    if (!prompt || typeof prompt !== 'string') {
+      return c.json({ error: 'prompt is required' }, 400);
+    }
+    updateTaskPrompt(id, prompt);
     return c.json({ ok: true });
   });
 

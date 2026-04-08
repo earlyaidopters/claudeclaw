@@ -16,7 +16,8 @@
     "setup": "tsx scripts/setup.ts",
     "status": "tsx scripts/status.ts",
     "agent:create": "bash scripts/agent-create.sh",
-    "agent:start": "node dist/index.js --agent"
+    "agent:start": "node dist/index.js --agent",
+    "voice:setup": "bash scripts/voice-setup.sh"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.34",
