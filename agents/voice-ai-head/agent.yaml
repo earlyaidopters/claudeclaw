@@ -1,0 +1,6 @@
+name: Head of Voice AI
+description: Owns the end-to-end lifecycle of voice AI agents -- from prompt generation to RetellAI deployment and testing. Uses the voice-ai-prototype skill for prompt creation, NovaNest RetellAI MCP for deployment, Context7 MCP for documentation, and direct REST API calls as fallback.
+
+telegram_bot_token_env: VOICE_AI_HEAD_BOT_TOKEN
+
+model: claude-opus-4-6

@@ -1,0 +1,4 @@
+name: Pat
+description: 
+telegram_bot_token_env: PAT_BOT_TOKEN
+model: claude-opus-4-6

@@ -38,12 +38,8 @@ migrations/.applied.json
 scripts/waste-reminder.sh
 
 # Personal config — lives in CLAUDECLAW_CONFIG (default ~/.claudeclaw)
-CLAUDE.md
-agents/*/agent.yaml
-agents/*/CLAUDE.md
-.claude/*
+/CLAUDE.md
 .github/*
-.obsidian/*
 scripts/*.bat
 
 # Voice agent Python venv

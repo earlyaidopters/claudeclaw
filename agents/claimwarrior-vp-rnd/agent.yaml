@@ -1,0 +1,12 @@
+name: Claim Warrior VP R&D
+description: VP of R&D agent for Claim Warriors SaaS platform. Ingests disorganized client feedback, organizes it into structured issues, discusses priorities with Ben, and creates GitHub issues.
+
+telegram_bot_token_env: CLAIMWARRIOR_BOT_TOKEN
+
+model: claude-opus-4-6
+
+# Obsidian integration -- product knowledge base
+obsidian:
+  vault: C:\Users\benelk\Documents\claim-warriors
+  folders:
+    - .planning/

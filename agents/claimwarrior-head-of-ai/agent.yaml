@@ -1,0 +1,10 @@
+name: Claim Warrior Head of AI
+description: Head of AI for Claim Warriors. Oversees all AI implementation across the company -- strategy, tooling, workflows, integrations. Conversational, opinionated, deeply knowledgeable about Claude Code and AI-assisted development.
+
+telegram_bot_token_env: CLAIMWARRIOR_HEAD_OF_AI_BOT_TOKEN
+
+model: claude-opus-4-6
+
+# Obsidian integration -- AI implementation knowledge base
+obsidian:
+  vault: C:\Users\benelk\Documents\claimwarriors-claude-code-hub

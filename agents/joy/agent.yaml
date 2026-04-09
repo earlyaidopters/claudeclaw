@@ -1,0 +1,10 @@
+name: Joy
+description: Email, Google Calendar admin, daily brief, task scheduling via Obsidian
+telegram_bot_token_env: JOY_EA_BOT_TOKEN
+model: claude-haiku-4-5
+obsidian:
+  vault: C:\Users\benelk\Documents\AI-OS
+  folders:
+    - Daily Notes/
+    - Tasks/
+    - Inbox/
