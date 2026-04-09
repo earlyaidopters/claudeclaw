@@ -7,6 +7,7 @@
  * Usage:
  *   node dist/slack-cli.js list [--limit N]
  *   node dist/slack-cli.js read <channel_id> [--limit N]
+ *   node dist/slack-cli.js thread <channel_id> <thread_ts>
  *   node dist/slack-cli.js send <channel_id> <message> [--thread-ts TS]
  *   node dist/slack-cli.js search <query>
  */
@@ -15,6 +16,7 @@ import { initDatabase } from './db.js';
 import {
   getSlackConversations,
   getSlackMessages,
+  getSlackThreadReplies,
   sendSlackMessage,
 } from './slack.js';
 
@@ -62,6 +64,18 @@ async function main() {
       break;
     }
 
+    case 'thread': {
+      const channelId = rest[0];
+      const threadTs = rest[1];
+      if (!channelId || !threadTs || channelId.startsWith('--')) {
+        console.error('Usage: slack-cli thread <channel_id> <thread_ts>');
+        process.exit(1);
+      }
+      const replies = await getSlackThreadReplies(channelId, threadTs);
+      console.log(JSON.stringify(replies, null, 2));
+      break;
+    }
+
     case 'search': {
       const query = rest[0];
       if (!query) {
@@ -76,7 +90,7 @@ async function main() {
     }
 
     default:
-      console.error('Commands: list | read | send | search');
+      console.error('Commands: list | read | thread | send | search');
       process.exit(1);
   }
 }

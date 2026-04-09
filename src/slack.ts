@@ -27,12 +27,21 @@ export interface SlackConversation {
   lastMessageTs: number;
 }
 
+export interface SlackFile {
+  name: string;
+  mimetype: string;
+  size: number;
+  url: string;
+}
+
 export interface SlackMessage {
   text: string;
   userName: string;
   fromMe: boolean;
   ts: string;
   threadTs?: string;
+  replyCount?: number;
+  files?: SlackFile[];
 }
 
 // ── User cache ──────────────────────────────────────────────────────
@@ -152,12 +161,68 @@ export async function getSlackMessages(channelId: string, limit = 15): Promise<S
     const fromMe = userId === meId;
     const userName = fromMe ? 'You' : await resolveUserName(userId);
 
+    // Extract file attachments
+    const files: SlackFile[] = [];
+    if (msg.files && Array.isArray(msg.files)) {
+      for (const f of msg.files) {
+        files.push({
+          name: f.name || 'unknown',
+          mimetype: f.mimetype || 'application/octet-stream',
+          size: f.size || 0,
+          url: f.url_private_download || f.url_private || f.permalink || '',
+        });
+      }
+    }
+
     messages.push({
       text: msg.text || '',
       userName,
       fromMe,
       ts: msg.ts || '',
       threadTs: msg.thread_ts,
+      replyCount: (msg as any).reply_count || undefined,
+      ...(files.length > 0 ? { files } : {}),
+    });
+  }
+
+  return messages;
+}
+
+export async function getSlackThreadReplies(channelId: string, threadTs: string): Promise<SlackMessage[]> {
+  const web = getClient();
+  const meId = await getMyUserId();
+
+  const result = await web.conversations.replies({
+    channel: channelId,
+    ts: threadTs,
+  });
+
+  const messages: SlackMessage[] = [];
+
+  for (const msg of (result.messages || [])) {
+    const userId = msg.user || msg.bot_id || 'unknown';
+    const fromMe = userId === meId;
+    const userName = fromMe ? 'You' : await resolveUserName(userId);
+
+    const files: SlackFile[] = [];
+    if (msg.files && Array.isArray(msg.files)) {
+      for (const f of msg.files) {
+        files.push({
+          name: f.name || 'unknown',
+          mimetype: f.mimetype || 'application/octet-stream',
+          size: f.size || 0,
+          url: f.url_private_download || f.url_private || f.permalink || '',
+        });
+      }
+    }
+
+    messages.push({
+      text: msg.text || '',
+      userName,
+      fromMe,
+      ts: msg.ts || '',
+      threadTs: msg.thread_ts,
+      ...(files.length > 0 ? { files } : {}),
     });
   }
 

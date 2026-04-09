@@ -65,7 +65,15 @@ cd /path/to/claudeclaw && node dist/slack-cli.js read <channel_id>
 cd /path/to/claudeclaw && node dist/slack-cli.js read <channel_id> --limit 30
 ```
 
-Returns JSON array of messages (oldest first). Each object has: `text`, `userName`, `fromMe`, `ts`, `threadTs`.
+Returns JSON array of messages (oldest first). Each object has: `text`, `userName`, `fromMe`, `ts`, `threadTs`, `replyCount` (if threaded), `files` (array of `{name, mimetype, size, url}` if attachments exist).
+
+### Read a thread
+
+```bash
+cd /path/to/claudeclaw && node dist/slack-cli.js thread <channel_id> <thread_ts>
+```
+
+Returns all replies in a thread (including the parent message). Use the `threadTs` or `ts` from a message with `replyCount > 0` to drill into it. Each reply includes the same fields as regular messages, including `files` for attachments.
 
 ### Send a message
 
