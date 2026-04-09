@@ -42,7 +42,16 @@
       "Bash(gws drive:*)",
       "Bash(npx -y n8n-mcp --help)",
       "Bash(npx --version)",
-      "Bash(tasklist)"
+      "Bash(tasklist)",
+      "Bash(rm ~/.claude/skills/voice-ai-prototype/scripts/example.py ~/.claude/skills/voice-ai-prototype/references/api_reference.md ~/.claude/skills/voice-ai-prototype/assets/example_asset.txt)",
+      "Bash(rmdir ~/.claude/skills/voice-ai-prototype/scripts)",
+      "Edit(~/.claude/skills/voice-ai-prototype/**)",
+      "Bash(pip3 install:*)",
+      "Bash(git -C \"/Users/benjaminelkrieff/Documents/Claude Code Master Folder/claudeclaw\" rev-parse --show-toplevel)",
+      "Bash(sqlite3 __TRACKED_VAR__/store/claudeclaw.db 'SELECT session_id FROM sessions LIMIT 1;')"
+    ],
+    "additionalDirectories": [
+      "/Users/benjaminelkrieff/.claude/skills/voice-agent-builder"
     ]
   }
 }
