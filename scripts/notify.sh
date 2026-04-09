@@ -19,7 +19,22 @@ if [ -z "$TOKEN" ] || [ -z "$CHAT_ID" ]; then
   exit 1
 fi
 
+MESSAGE="$1"
+shift
+
+AGENT=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --agent) AGENT="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+
+if [ -n "$AGENT" ]; then
+  MESSAGE="[${AGENT}] ${MESSAGE}"
+fi
+
 curl -s -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" \
   -d chat_id="${CHAT_ID}" \
-  -d text="${1}" \
+  -d text="${MESSAGE}" \
   -d parse_mode="HTML" > /dev/null
