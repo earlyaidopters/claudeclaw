@@ -509,6 +509,14 @@ function activatePm2(agentId: string): ActivationResult {
       stdio: 'ignore',
     });
     execSync('pm2 save', { stdio: 'ignore' });
+
+    // Ensure PM2 resurrects processes after reboot (requires pm2-windows-startup)
+    try {
+      execSync('pm2-startup install', { stdio: 'ignore' });
+    } catch {
+      logger.warn({ agentId }, 'pm2-windows-startup not installed -- processes will not survive reboot. Run: npm install -g pm2-windows-startup');
+    }
+
     logger.info({ agentId }, 'Agent activated (pm2)');
     return { ok: true };
   } catch (err) {
