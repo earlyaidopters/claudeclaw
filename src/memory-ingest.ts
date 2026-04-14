@@ -2,6 +2,7 @@ import { generateContent, parseJsonResponse } from './gemini.js';
 import { cosineSimilarity, embedText } from './embeddings.js';
 import { getMemoriesWithEmbeddings, saveStructuredMemory, saveMemoryEmbedding } from './db.js';
 import { logger } from './logger.js';
+import { GOOGLE_API_KEY } from './config.js';
 
 // Callback for notifying when a high-importance memory is created.
 // Set by bot.ts to send a Telegram notification.
@@ -74,6 +75,7 @@ export async function ingestConversationTurn(
   assistantResponse: string,
   agentId = 'main',
 ): Promise<boolean> {
+  if (!GOOGLE_API_KEY) return false;
   // Hard filter: skip very short messages and commands
   if (userMessage.length <= 15 || userMessage.startsWith('/')) return false;
 
