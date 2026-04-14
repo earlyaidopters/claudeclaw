@@ -289,6 +289,8 @@ function generateServiceConfig(agentId: string): string | null {
     return generateLaunchdPlist(agentId);
   } else if (os.platform() === 'linux') {
     return generateSystemdUnit(agentId);
+  } else if (os.platform() === 'win32') {
+    return generatePm2Config(agentId);
   }
   return null;
 }
@@ -380,6 +382,33 @@ WantedBy=default.target
   return unitPath;
 }
 
+function generatePm2Config(agentId: string): string {
+  const configPath = path.join(PROJECT_ROOT, 'ecosystem.config.cjs');
+  const appName = `claudeclaw-${agentId}`;
+
+  const config = `module.exports = {
+  apps: [{
+    name: '${appName}',
+    script: 'dist/index.js',
+    args: '--agent ${agentId}',
+    cwd: __dirname,
+    env: {
+      NODE_ENV: 'production',
+    },
+    autorestart: true,
+    restart_delay: 5000,
+    error_file: 'store/${agentId}-error.log',
+    out_file: 'store/${agentId}-out.log',
+    merge_logs: true,
+    watch: false,
+  }],
+};
+`;
+
+  fs.writeFileSync(configPath, config, 'utf-8');
+  return configPath;
+}
+
 // ── Activate / Deactivate ────────────────────────────────────────────
 
 export interface ActivationResult {
@@ -394,6 +423,8 @@ export function activateAgent(agentId: string): ActivationResult {
       return activateLaunchd(agentId);
     } else if (os.platform() === 'linux') {
       return activateSystemd(agentId);
+    } else if (os.platform() === 'win32') {
+      return activatePm2(agentId);
     }
     return { ok: false, error: `Unsupported platform: ${os.platform()}` };
   } catch (err) {
@@ -464,6 +495,35 @@ function activateSystemd(agentId: string): ActivationResult {
   }
 }
 
+function activatePm2(agentId: string): ActivationResult {
+  const appName = `claudeclaw-${agentId}`;
+  const configPath = path.join(PROJECT_ROOT, 'ecosystem.config.cjs');
+
+  if (!fs.existsSync(configPath)) {
+    return { ok: false, error: `PM2 config not found: ${configPath}` };
+  }
+
+  try {
+    execSync(`pm2 start ecosystem.config.cjs --only ${appName}`, {
+      cwd: PROJECT_ROOT,
+      stdio: 'ignore',
+    });
+    execSync('pm2 save', { stdio: 'ignore' });
+
+    // Ensure PM2 resurrects processes after reboot (requires pm2-windows-startup)
+    try {
+      execSync('pm2-startup install', { stdio: 'ignore' });
+    } catch {
+      logger.warn({ agentId }, 'pm2-windows-startup not installed -- processes will not survive reboot. Run: npm install -g pm2-windows-startup');
+    }
+
+    logger.info({ agentId }, 'Agent activated (pm2)');
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 export function deactivateAgent(agentId: string): { ok: boolean; error?: string } {
   try {
     if (os.platform() === 'darwin') {
@@ -482,6 +542,11 @@ export function deactivateAgent(agentId: string): { ok: boolean; error?: string 
       const unitPath = path.join(os.homedir(), '.config', 'systemd', 'user', `${serviceName}.service`);
       if (fs.existsSync(unitPath)) fs.unlinkSync(unitPath);
       try { execSync('systemctl --user daemon-reload', { stdio: 'ignore' }); } catch { /* ok */ }
+    } else if (os.platform() === 'win32') {
+      const appName = `claudeclaw-${agentId}`;
+      try { execSync(`pm2 stop ${appName}`, { stdio: 'ignore' }); } catch { /* ok */ }
+      try { execSync(`pm2 delete ${appName}`, { stdio: 'ignore' }); } catch { /* ok */ }
+      try { execSync('pm2 save', { stdio: 'ignore' }); } catch { /* ok */ }
     }
 
     // Kill the process if still running

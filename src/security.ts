@@ -157,6 +157,10 @@ export function executeEmergencyKill(): void {
       try {
         execSync('systemctl --user stop "com.claudeclaw.*" 2>/dev/null', { stdio: 'ignore', timeout: 3000 });
       } catch { /* ok */ }
+    } else if (os.platform() === 'win32') {
+      try {
+        execSync('pm2 kill', { stdio: 'ignore', timeout: 3000 });
+      } catch { /* ok */ }
     }
   } catch { /* don't let anything prevent exit */ }
 
