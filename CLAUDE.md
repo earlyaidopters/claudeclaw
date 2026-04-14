@@ -169,6 +169,16 @@ When a task is marked complete, update all locations where that task is tracked 
 
 Before confirming completion, ask: Where is this task tracked? What references need to be updated?
 
+### Completion Signal Integrity (mandatory -- no exceptions)
+
+Never respond "Done", "Complete", "Fixed", "Shipped", or any completion signal unless the work has actually been performed and evidence exists (commit hash, deployed URL, file path, verification log).
+
+- If a task briefing is received but not yet executed, respond: "Received -- executing now." Then do the work.
+- If a message was treated as context rather than an instruction, say so explicitly: "I read this as context. Want me to execute?"
+- A false completion signal -- saying "Done" when nothing was done -- is the single most damaging thing an agent can do. It wastes Denver's time, breaks trust, and blocks downstream work.
+- The word "Done" means: the deliverable exists, the verification passed, and the evidence is attached. Nothing less.
+- This rule applies to Janet and to every agent Janet delegates to. If an agent responds "Done" without evidence, reject it and send the task back.
+
 ### Error Reporting (No Silent Failures)
 
 If an action cannot be completed for any reason, immediately report: what was attempted, what failed, why it likely failed, and what is needed to resolve it. Never mark tasks complete if any part failed.

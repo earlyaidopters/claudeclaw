@@ -7,9 +7,15 @@ dist/
 # Environment — never commit API keys
 .env
 
-# Runtime data — personal, not for sharing
+# Runtime data — NEVER commit. Contains WhatsApp/Slack messages,
+# session tokens, conversation logs, and database files.
 store/
 workspace/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
 
 # Migration state — local only
 migrations/.applied.json

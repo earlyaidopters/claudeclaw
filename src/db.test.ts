@@ -4,11 +4,23 @@ import {
   setSession,
   getSession,
   clearSession,
-  saveMemory,
+  saveStructuredMemory,
   searchMemories,
   getRecentMemories,
+  getRecentHighImportanceMemories,
   touchMemory,
   decayMemories,
+  getUnconsolidatedMemories,
+  saveConsolidation,
+  markMemoriesConsolidated,
+  getRecentConsolidations,
+  searchConsolidations,
+  updateMemoryConnections,
+  getDashboardMemoryStats,
+  getDashboardLowSalienceMemories,
+  getDashboardTopAccessedMemories,
+  getDashboardMemoriesList,
+  getDashboardMemoryTimeline,
 } from './db.js';
 
 describe('database', () => {
@@ -45,107 +57,81 @@ describe('database', () => {
     });
   });
 
-  // ── Memories ────────────────────────────────────────────────────
+  // ── Structured Memories ────────────────────────────────────────
 
-  describe('saveMemory', () => {
+  describe('saveStructuredMemory', () => {
     it('saves a memory with all fields persisted', () => {
-      saveMemory('chat1', 'I like pizza', 'semantic', 'food');
+      saveStructuredMemory('chat1', 'I like pizza', 'User enjoys pizza', ['pizza'], ['food', 'preferences'], 0.7);
       const mems = getRecentMemories('chat1', 10);
       expect(mems).toHaveLength(1);
       expect(mems[0].chat_id).toBe('chat1');
-      expect(mems[0].content).toBe('I like pizza');
-      expect(mems[0].sector).toBe('semantic');
-      expect(mems[0].topic_key).toBe('food');
+      expect(mems[0].raw_text).toBe('I like pizza');
+      expect(mems[0].summary).toBe('User enjoys pizza');
+      expect(JSON.parse(mems[0].entities)).toEqual(['pizza']);
+      expect(JSON.parse(mems[0].topics)).toEqual(['food', 'preferences']);
+      expect(mems[0].importance).toBe(0.7);
       expect(mems[0].salience).toBe(1.0);
+      expect(mems[0].consolidated).toBe(0);
+      expect(mems[0].source).toBe('conversation');
       expect(mems[0].created_at).toBeGreaterThan(0);
-      expect(mems[0].accessed_at).toBeGreaterThan(0);
     });
 
-    it('defaults sector to semantic', () => {
-      saveMemory('chat1', 'hello world');
-      const mems = getRecentMemories('chat1', 10);
-      expect(mems[0].sector).toBe('semantic');
-    });
-
-    it('defaults topic_key to null', () => {
-      saveMemory('chat1', 'hello world');
-      const mems = getRecentMemories('chat1', 10);
-      expect(mems[0].topic_key).toBeNull();
+    it('returns the memory ID', () => {
+      const id = saveStructuredMemory('chat1', 'test', 'test summary', [], [], 0.5);
+      expect(id).toBeGreaterThan(0);
     });
   });
 
   describe('searchMemories', () => {
-    it('finds matching content via FTS5', () => {
-      saveMemory('chat1', 'I love TypeScript programming');
-      saveMemory('chat1', 'The weather is nice today');
+    it('finds matching summary via FTS5', () => {
+      saveStructuredMemory('chat1', 'raw text about TypeScript', 'User enjoys TypeScript programming', ['TypeScript'], ['coding'], 0.6);
+      saveStructuredMemory('chat1', 'weather stuff', 'The weather is nice today', [], ['weather'], 0.3);
       const results = searchMemories('chat1', 'TypeScript', 5);
       expect(results.length).toBeGreaterThanOrEqual(1);
-      expect(results[0].content).toContain('TypeScript');
+      expect(results[0].summary).toContain('TypeScript');
     });
 
     it('returns empty array for no match', () => {
-      saveMemory('chat1', 'I love TypeScript');
+      saveStructuredMemory('chat1', 'raw', 'I love TypeScript', [], [], 0.5);
       const results = searchMemories('chat1', 'xyznonexistent', 5);
       expect(results).toEqual([]);
     });
 
     it('returns empty array for empty query', () => {
-      saveMemory('chat1', 'something');
+      saveStructuredMemory('chat1', 'raw', 'something', [], [], 0.5);
       const results = searchMemories('chat1', '', 5);
       expect(results).toEqual([]);
     });
 
-    it('returns empty for query with only special characters', () => {
-      saveMemory('chat1', 'something');
-      const results = searchMemories('chat1', '!!!???', 5);
-      expect(results).toEqual([]);
-    });
-
     it('does not return memories from other chats', () => {
-      saveMemory('chat1', 'I love TypeScript');
-      saveMemory('chat2', 'I love Python');
+      saveStructuredMemory('chat1', 'raw', 'I love TypeScript', [], [], 0.5);
+      saveStructuredMemory('chat2', 'raw', 'I love Python', [], [], 0.5);
       const results = searchMemories('chat1', 'Python', 5);
       expect(results).toEqual([]);
     });
 
     it('respects limit parameter', () => {
-      saveMemory('chat1', 'first topic about coding');
-      saveMemory('chat1', 'second topic about coding');
-      saveMemory('chat1', 'third topic about coding');
+      saveStructuredMemory('chat1', 'raw', 'first topic about coding', [], ['coding'], 0.5);
+      saveStructuredMemory('chat1', 'raw', 'second topic about coding', [], ['coding'], 0.5);
+      saveStructuredMemory('chat1', 'raw', 'third topic about coding', [], ['coding'], 0.5);
       const results = searchMemories('chat1', 'coding', 2);
       expect(results).toHaveLength(2);
     });
   });
 
-  describe('getRecentMemories', () => {
-    it('returns most recently accessed first', () => {
-      saveMemory('chat1', 'old memory');
-      // Small delay to ensure different accessed_at
-      saveMemory('chat1', 'new memory');
-      // Touch the second one to make sure it has a later accessed_at
-      const mems = getRecentMemories('chat1', 10);
-      // The last inserted should be most recent (same second, but higher id)
-      // Both have same timestamp to the second, so order is by accessed_at DESC
-      expect(mems).toHaveLength(2);
-    });
-
-    it('respects limit parameter', () => {
-      saveMemory('chat1', 'mem1');
-      saveMemory('chat1', 'mem2');
-      saveMemory('chat1', 'mem3');
-      const mems = getRecentMemories('chat1', 2);
-      expect(mems).toHaveLength(2);
-    });
-
-    it('returns empty for chat with no memories', () => {
-      const mems = getRecentMemories('empty-chat', 5);
-      expect(mems).toEqual([]);
+  describe('getRecentHighImportanceMemories', () => {
+    it('only returns memories with importance >= 0.5', () => {
+      saveStructuredMemory('chat1', 'raw', 'low importance', [], [], 0.3);
+      saveStructuredMemory('chat1', 'raw', 'high importance', [], [], 0.8);
+      const mems = getRecentHighImportanceMemories('chat1', 10);
+      expect(mems).toHaveLength(1);
+      expect(mems[0].summary).toBe('high importance');
     });
   });
 
   describe('touchMemory', () => {
     it('increments salience by 0.1', () => {
-      saveMemory('chat1', 'test memory');
+      saveStructuredMemory('chat1', 'raw', 'test memory', [], [], 0.5);
       const before = getRecentMemories('chat1', 1)[0];
       expect(before.salience).toBe(1.0);
 
@@ -155,10 +141,9 @@ describe('database', () => {
     });
 
     it('caps salience at 5.0', () => {
-      saveMemory('chat1', 'test memory');
+      saveStructuredMemory('chat1', 'raw', 'test memory', [], [], 0.5);
       const mem = getRecentMemories('chat1', 1)[0];
 
-      // Touch many times to try to exceed 5.0
       for (let i = 0; i < 50; i++) {
         touchMemory(mem.id);
       }
@@ -166,68 +151,263 @@ describe('database', () => {
       const after = getRecentMemories('chat1', 1)[0];
       expect(after.salience).toBe(5.0);
     });
-
-    it('updates accessed_at timestamp', () => {
-      saveMemory('chat1', 'test memory');
-      const before = getRecentMemories('chat1', 1)[0];
-      const originalAccessedAt = before.accessed_at;
-
-      // Wait a tiny bit so timestamp changes (floor to seconds)
-      touchMemory(before.id);
-      const after = getRecentMemories('chat1', 1)[0];
-      // accessed_at should be >= original
-      expect(after.accessed_at).toBeGreaterThanOrEqual(originalAccessedAt);
-    });
   });
 
   describe('decayMemories', () => {
-    it('decays old memories (reduces salience)', () => {
-      // Insert a memory, then manually backdate it
-      saveMemory('chat1', 'old memory');
-      const mem = getRecentMemories('chat1', 1)[0];
-
-      // Backdate created_at to more than 1 day ago
-      const twoDaysAgo = Math.floor(Date.now() / 1000) - 200000;
-      // Use raw SQL via the test database -- we need to import Database
-      // Instead, we just check the behavior via the public API:
-      // We'll use _initTestDatabase fresh, insert with backdated time manually
-      // Actually, saveMemory always uses Date.now(), so we need a workaround.
-      // Let's test via direct import of better-sqlite3 and the internal db.
-
-      // Simpler approach: just verify decayMemories doesn't throw on empty DB
-      _initTestDatabase();
+    it('does not throw on empty database', () => {
       expect(() => decayMemories()).not.toThrow();
     });
 
-    it('deletes memories with salience below 0.1', () => {
-      // Save a memory then decay it repeatedly
-      saveMemory('chat1', 'ephemeral memory');
-      let mems = getRecentMemories('chat1', 10);
-      expect(mems).toHaveLength(1);
-
-      // The memory was just created (within last second), so its created_at
-      // is NOT older than 1 day. decayMemories only decays memories with
-      // created_at < oneDayAgo. So we need to manipulate the data.
-      // Since we can't easily backdate, let's test the deletion path by
-      // running decayMemories on a memory that already has low salience
-      // but first we need it to be old.
-
-      // For a proper test, we'll verify the function executes cleanly
-      decayMemories();
-      // Memory should still be there (it's recent, not decayed)
-      mems = getRecentMemories('chat1', 10);
-      expect(mems).toHaveLength(1);
-    });
-
     it('does not decay recent memories', () => {
-      saveMemory('chat1', 'fresh memory');
+      saveStructuredMemory('chat1', 'raw', 'fresh memory', [], [], 0.5);
       const before = getRecentMemories('chat1', 1)[0];
 
       decayMemories();
 
       const after = getRecentMemories('chat1', 1)[0];
-      // Salience should be unchanged since memory was created < 1 day ago
       expect(after.salience).toBe(before.salience);
+    });
+  });
+
+  // ── Consolidation ────────────────────────────────────────────────
+
+  describe('consolidation', () => {
+    it('getUnconsolidatedMemories returns only unconsolidated', () => {
+      saveStructuredMemory('chat1', 'raw', 'mem1', [], [], 0.5);
+      saveStructuredMemory('chat1', 'raw', 'mem2', [], [], 0.6);
+      const uncon = getUnconsolidatedMemories('chat1', 10);
+      expect(uncon).toHaveLength(2);
+    });
+
+    it('markMemoriesConsolidated marks them', () => {
+      const id1 = saveStructuredMemory('chat1', 'raw', 'mem1', [], [], 0.5);
+      const id2 = saveStructuredMemory('chat1', 'raw', 'mem2', [], [], 0.6);
+      markMemoriesConsolidated([id1, id2]);
+      const uncon = getUnconsolidatedMemories('chat1', 10);
+      expect(uncon).toHaveLength(0);
+    });
+
+    it('saveConsolidation creates a record', () => {
+      const id1 = saveStructuredMemory('chat1', 'raw', 'mem1', [], [], 0.5);
+      const id2 = saveStructuredMemory('chat1', 'raw', 'mem2', [], [], 0.6);
+      saveConsolidation('chat1', [id1, id2], 'Both relate to work', 'User is focused on productivity');
+      const cons = getRecentConsolidations('chat1', 5);
+      expect(cons).toHaveLength(1);
+      expect(cons[0].insight).toBe('User is focused on productivity');
+      expect(JSON.parse(cons[0].source_ids)).toEqual([id1, id2]);
+    });
+
+    it('getUnconsolidatedMemories respects limit', () => {
+      for (let i = 0; i < 5; i++) {
+        saveStructuredMemory('chat1', 'raw', `mem${i}`, [], [], 0.5);
+      }
+      const uncon = getUnconsolidatedMemories('chat1', 3);
+      expect(uncon).toHaveLength(3);
+    });
+
+    it('getUnconsolidatedMemories does not return memories from other chats', () => {
+      saveStructuredMemory('chat1', 'raw', 'mine', [], [], 0.5);
+      saveStructuredMemory('chat2', 'raw', 'theirs', [], [], 0.5);
+      const uncon = getUnconsolidatedMemories('chat1', 10);
+      expect(uncon).toHaveLength(1);
+      expect(uncon[0].summary).toBe('mine');
+    });
+
+    it('markMemoriesConsolidated handles empty array', () => {
+      expect(() => markMemoriesConsolidated([])).not.toThrow();
+    });
+
+    it('getRecentConsolidations respects limit', () => {
+      const id1 = saveStructuredMemory('chat1', 'raw', 'mem1', [], [], 0.5);
+      saveConsolidation('chat1', [id1], 'summary1', 'insight1');
+      saveConsolidation('chat1', [id1], 'summary2', 'insight2');
+      saveConsolidation('chat1', [id1], 'summary3', 'insight3');
+      const cons = getRecentConsolidations('chat1', 2);
+      expect(cons).toHaveLength(2);
+    });
+
+    it('getRecentConsolidations returns empty for chat with no consolidations', () => {
+      const cons = getRecentConsolidations('empty-chat', 5);
+      expect(cons).toEqual([]);
+    });
+  });
+
+  // ── searchConsolidations ──────────────────────────────────────────
+
+  describe('searchConsolidations', () => {
+    it('finds consolidations matching summary', () => {
+      const id1 = saveStructuredMemory('chat1', 'raw', 'mem', [], [], 0.5);
+      saveConsolidation('chat1', [id1], 'Morning email routine is important', 'User has structured mornings');
+      const results = searchConsolidations('chat1', 'email', 5);
+      expect(results).toHaveLength(1);
+      expect(results[0].summary).toContain('email');
+    });
+
+    it('finds consolidations matching insight', () => {
+      const id1 = saveStructuredMemory('chat1', 'raw', 'mem', [], [], 0.5);
+      saveConsolidation('chat1', [id1], 'General summary', 'User prefers TypeScript for all projects');
+      const results = searchConsolidations('chat1', 'TypeScript', 5);
+      expect(results).toHaveLength(1);
+    });
+
+    it('returns empty for no match', () => {
+      const id1 = saveStructuredMemory('chat1', 'raw', 'mem', [], [], 0.5);
+      saveConsolidation('chat1', [id1], 'About coding', 'Coding insight');
+      const results = searchConsolidations('chat1', 'xyznonexistent', 5);
+      expect(results).toEqual([]);
+    });
+  });
+
+  // ── updateMemoryConnections ───────────────────────────────────────
+
+  describe('updateMemoryConnections', () => {
+    it('appends connections to an existing memory', () => {
+      const id = saveStructuredMemory('chat1', 'raw', 'mem', [], [], 0.5);
+      updateMemoryConnections(id, [{ linked_to: 99, relationship: 'related to' }]);
+      const mem = getRecentMemories('chat1', 1)[0];
+      const conns = JSON.parse(mem.connections);
+      expect(conns).toHaveLength(1);
+      expect(conns[0]).toEqual({ linked_to: 99, relationship: 'related to' });
+    });
+
+    it('appends to existing connections without overwriting', () => {
+      const id = saveStructuredMemory('chat1', 'raw', 'mem', [], [], 0.5);
+      updateMemoryConnections(id, [{ linked_to: 10, relationship: 'first' }]);
+      updateMemoryConnections(id, [{ linked_to: 20, relationship: 'second' }]);
+      const mem = getRecentMemories('chat1', 1)[0];
+      const conns = JSON.parse(mem.connections);
+      expect(conns).toHaveLength(2);
+      expect(conns[0].linked_to).toBe(10);
+      expect(conns[1].linked_to).toBe(20);
+    });
+
+    it('does not throw for nonexistent memory ID', () => {
+      expect(() => updateMemoryConnections(99999, [{ linked_to: 1, relationship: 'test' }])).not.toThrow();
+    });
+  });
+
+  // ── FTS5 multi-column search ──────────────────────────────────────
+
+  describe('FTS5 multi-column search', () => {
+    it('finds memory by entity match', () => {
+      saveStructuredMemory('chat1', 'raw text', 'summary text', ['OpenAI', 'GPT-4'], ['AI'], 0.6);
+      const results = searchMemories('chat1', 'OpenAI', 5);
+      expect(results.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('finds memory by topic match', () => {
+      saveStructuredMemory('chat1', 'raw text', 'summary text', [], ['productivity', 'workflow'], 0.6);
+      const results = searchMemories('chat1', 'productivity', 5);
+      expect(results.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('finds memory by raw_text match', () => {
+      saveStructuredMemory('chat1', 'I absolutely love hiking in the mountains', 'User enjoys outdoor activities', ['hiking'], ['hobbies'], 0.5);
+      const results = searchMemories('chat1', 'hiking mountains', 5);
+      expect(results.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('handles special characters in search query', () => {
+      saveStructuredMemory('chat1', 'raw', 'summary', [], [], 0.5);
+      const results = searchMemories('chat1', '!!!???', 5);
+      expect(results).toEqual([]);
+    });
+  });
+
+  // ── getRecentHighImportanceMemories edge cases ────────────────────
+
+  describe('getRecentHighImportanceMemories edge cases', () => {
+    it('includes memories with importance exactly 0.5', () => {
+      saveStructuredMemory('chat1', 'raw', 'borderline', [], [], 0.5);
+      const mems = getRecentHighImportanceMemories('chat1', 10);
+      expect(mems).toHaveLength(1);
+    });
+
+    it('excludes memories with importance 0.49', () => {
+      saveStructuredMemory('chat1', 'raw', 'just below', [], [], 0.49);
+      const mems = getRecentHighImportanceMemories('chat1', 10);
+      expect(mems).toHaveLength(0);
+    });
+
+    it('respects limit parameter', () => {
+      for (let i = 0; i < 10; i++) {
+        saveStructuredMemory('chat1', 'raw', `high${i}`, [], [], 0.8);
+      }
+      const mems = getRecentHighImportanceMemories('chat1', 3);
+      expect(mems).toHaveLength(3);
+    });
+  });
+
+  // ── Dashboard queries ─────────────────────────────────────────────
+
+  describe('dashboard queries', () => {
+    it('getDashboardMemoryStats returns correct totals', () => {
+      saveStructuredMemory('chat1', 'raw', 'high', [], [], 0.9);
+      saveStructuredMemory('chat1', 'raw', 'mid', [], [], 0.6);
+      saveStructuredMemory('chat1', 'raw', 'low', [], [], 0.3);
+      saveConsolidation('chat1', [1], 'summary', 'insight');
+
+      const stats = getDashboardMemoryStats('chat1');
+      expect(stats.total).toBe(3);
+      expect(stats.consolidations).toBe(1);
+      expect(stats.avgImportance).toBeCloseTo(0.6, 1);
+      expect(stats.importanceDistribution.length).toBeGreaterThan(0);
+    });
+
+    it('getDashboardMemoryStats returns zeroes for empty chat', () => {
+      const stats = getDashboardMemoryStats('empty');
+      expect(stats.total).toBe(0);
+      expect(stats.consolidations).toBe(0);
+    });
+
+    it('getDashboardLowSalienceMemories returns nothing for fresh memories', () => {
+      saveStructuredMemory('chat1', 'raw', 'fresh', [], [], 0.5);
+      const fading = getDashboardLowSalienceMemories('chat1', 10);
+      // Fresh memory has salience 1.0, threshold is 0.5
+      expect(fading).toHaveLength(0);
+    });
+
+    it('getDashboardTopAccessedMemories only returns importance >= 0.5', () => {
+      saveStructuredMemory('chat1', 'raw', 'low imp', [], [], 0.3);
+      saveStructuredMemory('chat1', 'raw', 'high imp', [], [], 0.7);
+      const top = getDashboardTopAccessedMemories('chat1', 10);
+      expect(top).toHaveLength(1);
+      expect(top[0].summary).toBe('high imp');
+    });
+
+    it('getDashboardMemoriesList sorts by importance', () => {
+      saveStructuredMemory('chat1', 'raw', 'low', [], [], 0.2);
+      saveStructuredMemory('chat1', 'raw', 'high', [], [], 0.9);
+      saveStructuredMemory('chat1', 'raw', 'mid', [], [], 0.5);
+
+      const result = getDashboardMemoriesList('chat1', 10, 0, 'importance');
+      expect(result.total).toBe(3);
+      expect(result.memories[0].summary).toBe('high');
+      expect(result.memories[1].summary).toBe('mid');
+      expect(result.memories[2].summary).toBe('low');
+    });
+
+    it('getDashboardMemoriesList supports pagination', () => {
+      for (let i = 0; i < 5; i++) {
+        saveStructuredMemory('chat1', 'raw', `mem${i}`, [], [], 0.5);
+      }
+      const page1 = getDashboardMemoriesList('chat1', 2, 0);
+      const page2 = getDashboardMemoriesList('chat1', 2, 2);
+      expect(page1.memories).toHaveLength(2);
+      expect(page2.memories).toHaveLength(2);
+      expect(page1.total).toBe(5);
+      // No overlap between pages
+      const ids1 = page1.memories.map(m => m.id);
+      const ids2 = page2.memories.map(m => m.id);
+      expect(ids1.filter(id => ids2.includes(id))).toHaveLength(0);
+    });
+
+    it('getDashboardMemoryTimeline returns data', () => {
+      saveStructuredMemory('chat1', 'raw', 'today', [], [], 0.5);
+      const timeline = getDashboardMemoryTimeline('chat1', 30);
+      expect(timeline.length).toBeGreaterThanOrEqual(1);
+      expect(timeline[0]).toHaveProperty('date');
+      expect(timeline[0]).toHaveProperty('count');
     });
   });
 });

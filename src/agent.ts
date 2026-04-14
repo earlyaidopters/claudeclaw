@@ -1,8 +1,66 @@
+import fs from 'fs';
+import path from 'path';
+
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
-import { PROJECT_ROOT, agentCwd } from './config.js';
+import { AGENT_MAX_TURNS, PROJECT_ROOT, agentCwd } from './config.js';
 import { readEnvFile } from './env.js';
 import { logger } from './logger.js';
+
+// ── MCP server loading ──────────────────────────────────────────────
+// The Agent SDK's settingSources loads CLAUDE.md and permissions from
+// project/user settings, but does NOT load mcpServers from those files.
+// We read them ourselves and pass them via the `mcpServers` option.
+
+interface McpStdioConfig {
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+}
+
+function loadMcpServers(allowlist?: string[]): Record<string, McpStdioConfig> {
+  const merged: Record<string, McpStdioConfig> = {};
+
+  // Load from project settings (.claude/settings.json in cwd)
+  const projectSettings = path.join(agentCwd ?? PROJECT_ROOT, '.claude', 'settings.json');
+  // Load from user settings (~/.claude/settings.json)
+  const userSettings = path.join(
+    process.env.HOME ?? '/tmp',
+    '.claude',
+    'settings.json',
+  );
+
+  for (const file of [userSettings, projectSettings]) {
+    try {
+      const raw = JSON.parse(fs.readFileSync(file, 'utf-8'));
+      const servers = raw?.mcpServers;
+      if (servers && typeof servers === 'object') {
+        for (const [name, config] of Object.entries(servers)) {
+          const cfg = config as Record<string, unknown>;
+          if (cfg.command && typeof cfg.command === 'string') {
+            merged[name] = {
+              command: cfg.command,
+              ...(cfg.args ? { args: cfg.args as string[] } : {}),
+              ...(cfg.env ? { env: cfg.env as Record<string, string> } : {}),
+            };
+          }
+        }
+      }
+    } catch {
+      // File doesn't exist or is invalid — skip
+    }
+  }
+
+  // If an allowlist is provided, only keep the MCPs in that list
+  if (allowlist) {
+    const allowed = new Set(allowlist);
+    for (const name of Object.keys(merged)) {
+      if (!allowed.has(name)) delete merged[name];
+    }
+  }
+
+  return merged;
+}
 
 export interface UsageInfo {
   inputTokens: number;
@@ -108,6 +166,8 @@ export async function runAgent(
   onProgress?: (event: AgentProgressEvent) => void,
   model?: string,
   abortController?: AbortController,
+  onStreamText?: (accumulatedText: string) => void,
+  mcpAllowlist?: string[],
 ): Promise<AgentResult> {
   // Read secrets from .env without polluting process.env.
   // CLAUDE_CODE_OAUTH_TOKEN is optional — the subprocess finds auth via ~/.claude/
@@ -129,16 +189,23 @@ export async function runAgent(
   let preCompactTokens: number | null = null;
   let lastCallCacheRead = 0;
   let lastCallInputTokens = 0;
+  let streamedText = '';
 
   // Refresh typing indicator on an interval while Claude works.
   // Telegram's "typing..." action expires after ~5s.
   const typingInterval = setInterval(onTyping, 4000);
 
   try {
+    // Load MCP servers from project + user settings files, filtered by agent allowlist
+    const mcpServers = loadMcpServers(mcpAllowlist);
+    const mcpServerNames = Object.keys(mcpServers);
     logger.info(
-      { sessionId: sessionId ?? 'new', messageLen: message.length },
+      { sessionId: sessionId ?? 'new', messageLen: message.length, mcpServers: mcpServerNames },
       'Starting agent query',
     );
+
+    // SDK Options.mcpServers expects Record<string, McpServerConfig>
+    const mcpServerSpecs = mcpServerNames.length > 0 ? mcpServers : undefined;
 
     for await (const event of query({
       prompt: singleTurn(message),
@@ -157,8 +224,18 @@ export async function runAgent(
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,
 
+        // Cap agentic turns to prevent runaway tool-use loops (e.g. retrying
+        // stale cookies 40+ times). Configurable via AGENT_MAX_TURNS in .env.
+        ...(AGENT_MAX_TURNS > 0 ? { maxTurns: AGENT_MAX_TURNS } : {}),
+
         // Pass secrets to the subprocess without polluting our own process.env
         env: sdkEnv,
+
+        // MCP servers loaded from .claude/settings.json and ~/.claude/settings.json
+        ...(mcpServerSpecs ? { mcpServers: mcpServerSpecs } : {}),
+
+        // Stream partial text so Telegram can show progressive updates
+        includePartialMessages: !!onStreamText,
 
         // Model override (e.g. 'claude-haiku-4-5', 'claude-sonnet-4-5')
         ...(model ? { model } : {}),
@@ -185,11 +262,12 @@ export async function runAgent(
         );
       }
 
-      // Track per-call token usage from assistant message events.
+      // Track per-call token usage and detect tool use from assistant message events.
       // Each assistant message represents one API call; its usage reflects
       // that single call's context size (not cumulative across the turn).
       if (ev['type'] === 'assistant') {
-        const msgUsage = (ev['message'] as Record<string, unknown>)?.['usage'] as Record<string, number> | undefined;
+        const msg = ev['message'] as Record<string, unknown> | undefined;
+        const msgUsage = msg?.['usage'] as Record<string, number> | undefined;
         const callCacheRead = msgUsage?.['cache_read_input_tokens'] ?? 0;
         const callInputTokens = msgUsage?.['input_tokens'] ?? 0;
         if (callCacheRead > 0) {
@@ -198,12 +276,18 @@ export async function runAgent(
         if (callInputTokens > 0) {
           lastCallInputTokens = callInputTokens;
         }
-      }
 
-      // Tool progress events — surface to dashboard (not Telegram to avoid spam)
-      if (ev['type'] === 'tool_progress' && onProgress) {
-        const name = (ev['tool_name'] as string) ?? 'unknown';
-        onProgress({ type: 'tool_active', description: toolLabel(name) });
+        // Extract tool_use blocks from assistant content for progress reporting
+        if (onProgress) {
+          const content = msg?.['content'] as Array<{ type: string; name?: string }> | undefined;
+          if (Array.isArray(content)) {
+            for (const block of content) {
+              if (block.type === 'tool_use' && block.name) {
+                onProgress({ type: 'tool_active', description: toolLabel(block.name) });
+              }
+            }
+          }
+        }
       }
 
       // Sub-agent lifecycle events — surface to Telegram for user feedback
@@ -218,6 +302,23 @@ export async function runAgent(
           type: 'task_completed',
           description: status === 'failed' ? `Failed: ${summary}` : summary,
         });
+      }
+
+      // Stream text deltas for progressive Telegram updates.
+      // Only stream the outermost assistant response (parent_tool_use_id === null)
+      // to avoid showing internal tool-use reasoning.
+      if (ev['type'] === 'stream_event' && onStreamText && ev['parent_tool_use_id'] === null) {
+        const streamEvent = ev['event'] as Record<string, unknown> | undefined;
+        if (streamEvent?.['type'] === 'content_block_delta') {
+          const delta = streamEvent['delta'] as Record<string, unknown> | undefined;
+          if (delta?.['type'] === 'text_delta' && typeof delta['text'] === 'string') {
+            streamedText += delta['text'];
+            onStreamText(streamedText);
+          }
+        }
+        if (streamEvent?.['type'] === 'message_start') {
+          streamedText = '';
+        }
       }
 
       if (ev['type'] === 'result') {

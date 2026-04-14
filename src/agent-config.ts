@@ -11,6 +11,7 @@ export interface AgentConfig {
   botTokenEnv: string;
   botToken: string;
   model?: string;
+  mcpServers?: string[];
   obsidian?: {
     vault: string;
     folders: string[];
@@ -71,14 +72,33 @@ export function loadAgentConfig(agentId: string): AgentConfig {
   let obsidian: AgentConfig['obsidian'];
   const obsRaw = raw['obsidian'] as Record<string, unknown> | undefined;
   if (obsRaw) {
+    const vault = obsRaw['vault'] as string;
+    if (vault && !fs.existsSync(vault)) {
+      // eslint-disable-next-line no-console
+      console.warn(`[${agentId}] WARNING: Obsidian vault path does not exist: ${vault}`);
+      console.warn(`[${agentId}] Update obsidian.vault in agent.yaml to your local vault path.`);
+    }
     obsidian = {
-      vault: obsRaw['vault'] as string,
+      vault,
       folders: (obsRaw['folders'] as string[]) ?? [],
       readOnly: (obsRaw['read_only'] as string[]) ?? [],
     };
   }
 
-  return { name, description, botTokenEnv, botToken, model, obsidian };
+  const mcpServers = raw['mcp_servers'] as string[] | undefined;
+
+  return { name, description, botTokenEnv, botToken, model, mcpServers, obsidian };
+}
+
+/** Update the model field in an agent's agent.yaml file. */
+export function setAgentModel(agentId: string, model: string): void {
+  const agentDir = resolveAgentDir(agentId);
+  const configPath = path.join(agentDir, 'agent.yaml');
+  if (!fs.existsSync(configPath)) throw new Error(`Agent config not found: ${configPath}`);
+
+  const raw = yaml.load(fs.readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
+  raw['model'] = model;
+  fs.writeFileSync(configPath, yaml.dump(raw, { lineWidth: -1 }), 'utf-8');
 }
 
 /** List all configured agent IDs (directories under agents/ with agent.yaml).

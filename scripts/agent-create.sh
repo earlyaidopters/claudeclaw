@@ -17,7 +17,7 @@ echo ""
 
 # Step 1: Pick a template or start blank
 echo "Available templates:"
-echo "  1. comms     -- Email, Slack, WhatsApp, YouTube comments, Skool, LinkedIn"
+echo "  1. comms     -- Email, Slack, WhatsApp, YouTube comments, community forums, LinkedIn"
 echo "  2. content   -- YouTube, LinkedIn, writing, trend research"
 echo "  3. ops       -- Calendar, billing, Stripe, Gumroad, admin"
 echo "  4. research  -- Deep research, academic, competitive intel"
@@ -60,7 +60,6 @@ mkdir -p "$AGENT_DIR"
 if [ "$TEMPLATE" != "$AGENT_ID" ]; then
   cp "agents/$TEMPLATE/CLAUDE.md" "$AGENT_DIR/CLAUDE.md" 2>/dev/null || \
     cp "agents/$TEMPLATE/CLAUDE.md.example" "$AGENT_DIR/CLAUDE.md" 2>/dev/null || true
-  cp "agents/$TEMPLATE/agent.yaml.example" "$AGENT_DIR/agent.yaml.example"
 fi
 
 # Step 4: Create Telegram bot
@@ -95,7 +94,7 @@ fi
 
 # Step 5: Create agent.yaml from example
 sed "s/telegram_bot_token_env:.*/telegram_bot_token_env: $ENV_KEY/" \
-  "$AGENT_DIR/agent.yaml.example" > "$AGENT_DIR/agent.yaml"
+  "agents/$TEMPLATE/agent.yaml.example" > "$AGENT_DIR/agent.yaml"
 
 # Step 6: Show chat ID info
 CHAT_ID=$(grep '^ALLOWED_CHAT_ID=' .env 2>/dev/null | cut -d'=' -f2-)
