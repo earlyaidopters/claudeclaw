@@ -41,8 +41,16 @@ if (AGENT_ID !== 'main') {
     model: agentConfig.model,
     obsidian: agentConfig.obsidian,
     systemPrompt,
+    mcpServers: agentConfig.mcpServers,
   });
-  logger.info({ agentId: AGENT_ID, name: agentConfig.name }, 'Running as agent');
+  logger.info(
+    {
+      agentId: AGENT_ID,
+      name: agentConfig.name,
+      mcpAllowlist: agentConfig.mcpServers ?? 'all',
+    },
+    'Running as agent',
+  );
 } else {
   // For main bot: read CLAUDE.md from CLAUDECLAW_CONFIG and inject it as
   // systemPrompt — the same pattern used by sub-agents. Never copy the file

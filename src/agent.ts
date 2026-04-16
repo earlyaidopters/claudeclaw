@@ -1,8 +1,80 @@
+import fs from 'fs';
+import path from 'path';
+
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
-import { PROJECT_ROOT, agentCwd } from './config.js';
+import { PROJECT_ROOT, agentCwd, agentMcpAllowlist } from './config.js';
 import { readEnvFile } from './env.js';
 import { logger } from './logger.js';
+
+// ── MCP server loading ──────────────────────────────────────────────
+// The Agent SDK's settingSources loads CLAUDE.md and permissions from
+// project/user settings, but does NOT load mcpServers from those files.
+// We read them ourselves and pass them via the `mcpServers` option.
+// Cherry-picked from earlyaidopters/claudeclaw-os.
+
+export interface McpStdioConfig {
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+}
+
+/**
+ * Merge MCP server configs from user settings (~/.claude/settings.json) and
+ * project settings (.claude/settings.json in cwd), optionally filtered by
+ * an allowlist (e.g. from an agent's agent.yaml `mcp_servers` field).
+ *
+ * Project settings take priority over user settings on name collision.
+ */
+export function loadMcpServers(
+  allowlist?: string[],
+  projectCwd?: string,
+): Record<string, McpStdioConfig> {
+  const merged: Record<string, McpStdioConfig> = {};
+
+  const projectSettings = path.join(
+    projectCwd ?? agentCwd ?? PROJECT_ROOT,
+    '.claude',
+    'settings.json',
+  );
+  const userSettings = path.join(
+    process.env.HOME ?? '/tmp',
+    '.claude',
+    'settings.json',
+  );
+
+  // User first, then project — project overrides on name collision
+  for (const file of [userSettings, projectSettings]) {
+    try {
+      const raw = JSON.parse(fs.readFileSync(file, 'utf-8'));
+      const servers = raw?.mcpServers;
+      if (servers && typeof servers === 'object') {
+        for (const [name, config] of Object.entries(servers)) {
+          const cfg = config as Record<string, unknown>;
+          if (cfg.command && typeof cfg.command === 'string') {
+            merged[name] = {
+              command: cfg.command,
+              ...(cfg.args ? { args: cfg.args as string[] } : {}),
+              ...(cfg.env ? { env: cfg.env as Record<string, string> } : {}),
+            };
+          }
+        }
+      }
+    } catch {
+      // File doesn't exist or is invalid — skip
+    }
+  }
+
+  // Filter by allowlist if provided (empty array = deny all)
+  if (allowlist !== undefined) {
+    const allowed = new Set(allowlist);
+    for (const name of Object.keys(merged)) {
+      if (!allowed.has(name)) delete merged[name];
+    }
+  }
+
+  return merged;
+}
 
 export interface UsageInfo {
   inputTokens: number;
@@ -142,6 +214,12 @@ export async function runAgent(
       'Starting agent query',
     );
 
+    // Load MCP servers for this agent (optionally filtered by agent.yaml).
+    // Undefined allowlist = all MCPs exposed (backward compat for the 7 agents
+    // that don't declare mcp_servers). Empty array = deny all.
+    const mcpServers = loadMcpServers(agentMcpAllowlist);
+    const mcpServerNames = Object.keys(mcpServers);
+
     for await (const event of query({
       prompt: singleTurn(message),
       options: {
@@ -170,6 +248,11 @@ export async function runAgent(
 
         // Abort support — signals the SDK to kill the subprocess
         ...(abortController ? { abortController } : {}),
+
+        // MCP servers filtered by the agent's mcp_servers allowlist (if any).
+        // Omit the option entirely when empty so the SDK uses its own defaults
+        // (otherwise passing {} would explicitly disable all MCPs).
+        ...(mcpServerNames.length > 0 ? { mcpServers } : {}),
       },
     })) {
       const ev = event as Record<string, unknown>;

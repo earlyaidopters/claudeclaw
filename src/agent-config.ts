@@ -16,6 +16,12 @@ export interface AgentConfig {
     folders: string[];
     readOnly?: string[];
   };
+  /**
+   * Optional MCP server allowlist. If set, this agent only sees the listed
+   * MCPs from settings.json. Absent field = full access (backward compat).
+   * Empty array = deny all MCPs.
+   */
+  mcpServers?: string[];
 }
 
 /**
@@ -87,7 +93,14 @@ export function loadAgentConfig(agentId: string): AgentConfig {
     };
   }
 
-  return { name, description, botTokenEnv, botToken, model, obsidian };
+  // Optional: mcp_servers list in agent.yaml. If absent, agent sees all MCPs.
+  let mcpServers: string[] | undefined;
+  const mcpRaw = raw['mcp_servers'];
+  if (Array.isArray(mcpRaw)) {
+    mcpServers = mcpRaw.map(String);
+  }
+
+  return { name, description, botTokenEnv, botToken, model, obsidian, mcpServers };
 }
 
 /** Update the model field in an agent's agent.yaml file. */
