@@ -23,5 +23,15 @@
     "voice_id": "2ee87190-8f84-4925-97da-e52547f9462c",
     "gemini_voice": "Alnilam",
     "name": "Alnilam / American Male (firm, direct)"
+  },
+  "qonto": {
+    "voice_id": "",
+    "gemini_voice": "Orus",
+    "name": "Orus / (confident, measured — fits financial context)"
+  },
+  "hcom": {
+    "voice_id": "",
+    "gemini_voice": "Zephyr",
+    "name": "Zephyr / (calm, minimal — rarely speaks)"
   }
 }
