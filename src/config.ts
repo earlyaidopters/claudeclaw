@@ -26,6 +26,17 @@ const envConfig = readEnvFile([
   'IDLE_LOCK_MINUTES',
   'EMERGENCY_KILL_PHRASE',
   'STREAM_STRATEGY',
+  // ── ccos phase 0 ───────────────────────────────────────────────────
+  'AGENT_MAX_TURNS',
+  'SMART_ROUTING_ENABLED',
+  'SMART_ROUTING_CHEAP_MODEL',
+  'SHOW_COST_FOOTER',
+  'DAILY_COST_BUDGET',
+  'HOURLY_TOKEN_BUDGET',
+  'EXFILTRATION_GUARD_ENABLED',
+  'MEMORY_NUDGE_INTERVAL_TURNS',
+  'WARROOM_ENABLED',
+  'WARROOM_PORT',
 ]);
 
 // ── Multi-agent support ──────────────────────────────────────────────
@@ -172,4 +183,78 @@ export const IDLE_LOCK_MINUTES = parseInt(
 // Emergency kill phrase. Sending this to any bot immediately stops all agents and exits.
 export const EMERGENCY_KILL_PHRASE =
   process.env.EMERGENCY_KILL_PHRASE || envConfig.EMERGENCY_KILL_PHRASE || '';
+
+// ── ccos phase 0 — claudeclaw-os feature flags ───────────────────────
+// All new vars are optional with sensible defaults. Nothing forces existing
+// behavior to change.
+
+// Max agentic turns per query. Caps runaway tool-use loops. Default: 30.
+export const AGENT_MAX_TURNS = parseInt(
+  process.env.AGENT_MAX_TURNS || envConfig.AGENT_MAX_TURNS || '30',
+  10,
+);
+
+// Smart routing: dispatches incoming messages to the best-fit agent using
+// a cheap classifier. Default: disabled (keeps current explicit-bot routing).
+export const SMART_ROUTING_ENABLED =
+  (process.env.SMART_ROUTING_ENABLED || envConfig.SMART_ROUTING_ENABLED || '')
+    .toLowerCase() === 'true';
+
+// Model used for the smart-routing classifier call. Default: haiku.
+export const SMART_ROUTING_CHEAP_MODEL =
+  process.env.SMART_ROUTING_CHEAP_MODEL ||
+  envConfig.SMART_ROUTING_CHEAP_MODEL ||
+  'haiku';
+
+// Cost/usage footer displayed with agent responses.
+//   off     — no footer
+//   compact — tokens + $ on one line
+//   verbose — input/output/cache breakdown
+//   cost    — $ only
+//   full    — compact + context window % used
+export type CostFooterMode = 'off' | 'compact' | 'verbose' | 'cost' | 'full';
+export const SHOW_COST_FOOTER: CostFooterMode =
+  ((process.env.SHOW_COST_FOOTER || envConfig.SHOW_COST_FOOTER || 'compact')
+    .toLowerCase() as CostFooterMode);
+
+// Daily budget in USD for rate-tracker warnings at 80% and 95%. 0 = disabled.
+export const DAILY_COST_BUDGET = parseFloat(
+  process.env.DAILY_COST_BUDGET || envConfig.DAILY_COST_BUDGET || '0',
+);
+
+// Hourly token budget for rate-tracker warnings at 80% and 95%. 0 = disabled.
+export const HOURLY_TOKEN_BUDGET = parseInt(
+  process.env.HOURLY_TOKEN_BUDGET || envConfig.HOURLY_TOKEN_BUDGET || '0',
+  10,
+);
+
+// Scan outgoing messages for credential leaks (API keys, tokens, etc.).
+// Default: true (security on). Set to 'false' to disable.
+export const EXFILTRATION_GUARD_ENABLED =
+  (process.env.EXFILTRATION_GUARD_ENABLED ||
+    envConfig.EXFILTRATION_GUARD_ENABLED ||
+    'true')
+    .toLowerCase() !== 'false';
+
+// Memory nudge : trigger a "what's worth remembering?" pass every N turns.
+// 0 = disabled.
+export const MEMORY_NUDGE_INTERVAL_TURNS = parseInt(
+  process.env.MEMORY_NUDGE_INTERVAL_TURNS ||
+    envConfig.MEMORY_NUDGE_INTERVAL_TURNS ||
+    '0',
+  10,
+);
+
+// War Room voice meeting feature. Default: disabled. Requires separate
+// Python service (see warroom/) and DAILY_API_KEY + GOOGLE_API_KEY
+// (or VOXTRAL_LOCAL_URL + GROQ_API_KEY for voxtral mode).
+export const WARROOM_ENABLED =
+  (process.env.WARROOM_ENABLED || envConfig.WARROOM_ENABLED || '')
+    .toLowerCase() === 'true';
+
+// War Room WebSocket port. Default: 7860.
+export const WARROOM_PORT = parseInt(
+  process.env.WARROOM_PORT || envConfig.WARROOM_PORT || '7860',
+  10,
+);
 
