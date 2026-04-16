@@ -2065,3 +2065,39 @@ export function getChatsWithPref(key: string, value: string): string[] {
     'SELECT chat_id FROM chat_prefs WHERE key = ? AND value = ?'
   ).all(key, value) as { chat_id: string }[]).map(r => r.chat_id);
 }
+
+// ── ccos phase 1 — skill health helpers ─────────────────────────────
+// Used by src/skill-health.ts. Table created in phase 0.
+
+export interface SkillHealthRow {
+  skill_id: string;
+  status: string;
+  error_msg: string | null;
+  last_check: number | null;
+  created_at: number;
+}
+
+export function upsertSkillHealth(
+  skillId: string,
+  status: string,
+  errorMsg = '',
+): void {
+  const now = Math.floor(Date.now() / 1000);
+  db.prepare(`
+    INSERT INTO skill_health (skill_id, status, error_msg, last_check, created_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(skill_id) DO UPDATE SET status = ?, error_msg = ?, last_check = ?
+  `).run(skillId, status, errorMsg, now, now, status, errorMsg, now);
+}
+
+export function getSkillHealth(skillId: string): SkillHealthRow | undefined {
+  return db
+    .prepare('SELECT * FROM skill_health WHERE skill_id = ?')
+    .get(skillId) as SkillHealthRow | undefined;
+}
+
+export function getAllSkillHealth(): SkillHealthRow[] {
+  return db
+    .prepare('SELECT * FROM skill_health ORDER BY skill_id')
+    .all() as SkillHealthRow[];
+}
