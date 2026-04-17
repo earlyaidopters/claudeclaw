@@ -175,6 +175,18 @@ export async function runAgent(
   const secrets = readEnvFile(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY']);
 
   const sdkEnv: Record<string, string | undefined> = { ...process.env };
+  // Strip nested-session markers inherited from a parent Claude Code process
+  // (e.g. when ClaudeClaw is launched from within an interactive Claude Code
+  // session or a PM2 daemon that was started from one). The vendored CLI
+  // aborts with "cannot be launched inside another Claude Code session" if
+  // these are present. See claude-agent-sdk cli.js nested-session check.
+  delete sdkEnv.CLAUDECODE;
+  delete sdkEnv.CLAUDE_CODE_ENTRYPOINT;
+  delete sdkEnv.CLAUDE_CODE_EXECPATH;
+  delete sdkEnv.CLAUDE_AGENT_SDK_VERSION;
+  delete sdkEnv.CLAUDE_CODE_SDK_HAS_OAUTH_REFRESH;
+  delete sdkEnv.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST;
+  delete sdkEnv.CLAUDE_INTERNAL_FC_OVERRIDES;
   if (secrets.CLAUDE_CODE_OAUTH_TOKEN) {
     sdkEnv.CLAUDE_CODE_OAUTH_TOKEN = secrets.CLAUDE_CODE_OAUTH_TOKEN;
   }
