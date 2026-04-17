@@ -58,6 +58,7 @@ import {
 } from './agent-create.js';
 import { processMessageFromDashboard } from './bot.js';
 import { getDashboardHtml } from './dashboard-html.js';
+import { getWarRoomHtml } from './warroom-html.js';
 import { logger } from './logger.js';
 import { getTelegramConnected, getBotInfo, chatEvents, getIsProcessing, abortActiveQuery, ChatEvent } from './state.js';
 
@@ -239,6 +240,12 @@ export function startDashboard(botApi?: Api<RawApi>): void {
   app.get('/', (c) => {
     const chatId = c.req.query('chatId') || '';
     return c.html(getDashboardHtml(DASHBOARD_TOKEN, chatId));
+  });
+
+  // War Room voice meeting page (served from /warroom on the dashboard port)
+  app.get('/warroom', (c) => {
+    const warroomPort = parseInt(process.env.WARROOM_PORT || '7860', 10);
+    return c.html(getWarRoomHtml(DASHBOARD_TOKEN, ALLOWED_CHAT_ID, warroomPort));
   });
 
   // Scheduled tasks
