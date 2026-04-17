@@ -19,12 +19,25 @@ interface Credentials {
   };
 }
 
-function readCredentials(): Credentials | null {
+type ReadResult =
+  | { kind: 'ok'; creds: Credentials }
+  | { kind: 'missing' }
+  | { kind: 'invalid' };
+
+function readCredentials(): ReadResult {
+  let raw: string;
   try {
-    const raw = fs.readFileSync(CREDENTIALS_PATH, 'utf-8');
-    return JSON.parse(raw) as Credentials;
+    raw = fs.readFileSync(CREDENTIALS_PATH, 'utf-8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      return { kind: 'missing' };
+    }
+    return { kind: 'invalid' };
+  }
+  try {
+    return { kind: 'ok', creds: JSON.parse(raw) as Credentials };
   } catch {
-    return null;
+    return { kind: 'invalid' };
   }
 }
 
@@ -49,22 +62,29 @@ async function checkOAuthHealth(sender: Sender): Promise<void> {
     return;
   }
 
-  const creds = readCredentials();
+  const result = readCredentials();
 
-  if (!creds?.claudeAiOauth?.expiresAt) {
+  // Missing file = keychain-based auth on modern macOS. Subprocess still finds
+  // credentials via the Claude CLI's own lookup chain. Log and skip — don't spam.
+  if (result.kind === 'missing') {
+    logger.debug({ path: CREDENTIALS_PATH }, 'OAuth credentials file absent (likely keychain auth) — skipping check');
+    lastAlertLevel = 'none';
+    return;
+  }
+
+  if (result.kind === 'invalid' || !result.creds?.claudeAiOauth?.expiresAt) {
     if (lastAlertLevel !== 'expired') {
       lastAlertLevel = 'expired';
       await sender(
         '<b>OAuth Health Check</b>\n\n' +
-        'Cannot read OAuth token.\n' +
-        'File missing or invalid structure.\n\n' +
+        'OAuth credentials file exists but is unreadable or malformed.\n\n' +
         'Run: <code>claude auth login</code>',
       );
     }
     return;
   }
 
-  const expiresAt = creds.claudeAiOauth.expiresAt;
+  const expiresAt = result.creds.claudeAiOauth.expiresAt;
   const now = Date.now();
   const remainingMs = expiresAt - now;
   const remainingHours = Math.floor(remainingMs / (60 * 60 * 1000));
