@@ -527,6 +527,13 @@ function runMigrations(database: Database.Database): void {
     `);
     logger.info('Migration: made mission_tasks.assigned_agent nullable');
   }
+
+  // Inter-agent messaging: add acknowledged column (tracks whether sender has read the result)
+  const interAgentCols = database.prepare(`PRAGMA table_info(inter_agent_tasks)`).all() as Array<{ name: string }>;
+  if (!interAgentCols.some((c) => c.name === 'acknowledged')) {
+    database.exec(`ALTER TABLE inter_agent_tasks ADD COLUMN acknowledged INTEGER NOT NULL DEFAULT 0`);
+    logger.info('Migration: added acknowledged column to inter_agent_tasks');
+  }
 }
 
 /** @internal - for tests only. Creates a fresh in-memory database. */
@@ -1706,6 +1713,7 @@ export interface InterAgentTask {
   result: string | null;
   created_at: string;
   completed_at: string | null;
+  acknowledged: number;
 }
 
 export function createInterAgentTask(
@@ -1747,6 +1755,61 @@ export function getInterAgentTasks(
       'SELECT * FROM inter_agent_tasks ORDER BY created_at DESC LIMIT ?',
     )
     .all(limit) as InterAgentTask[];
+}
+
+/** Fetch the oldest pending message addressed to this agent (FIFO). Returns null if none. */
+export function getNextPendingMessage(toAgent: string): InterAgentTask | null {
+  return (db
+    .prepare(
+      `SELECT * FROM inter_agent_tasks WHERE to_agent = ? AND status = 'pending' ORDER BY created_at ASC LIMIT 1`,
+    )
+    .get(toAgent) as InterAgentTask | undefined) ?? null;
+}
+
+/** Mark a pending message as in_progress to prevent double-processing. */
+export function markInterAgentTaskInProgress(id: string): void {
+  db.prepare(
+    `UPDATE inter_agent_tasks SET status = 'in_progress' WHERE id = ? AND status = 'pending'`,
+  ).run(id);
+}
+
+/**
+ * Crash recovery: reset any in_progress inter-agent tasks back to pending for this agent.
+ * Called at scheduler startup to recover from mid-execution crashes.
+ * Returns the number of tasks reset.
+ */
+export function resetStuckInterAgentTasks(toAgent: string): number {
+  const info = db
+    .prepare(
+      `UPDATE inter_agent_tasks SET status = 'pending' WHERE to_agent = ? AND status = 'in_progress'`,
+    )
+    .run(toAgent);
+  return info.changes;
+}
+
+/** Retrieve all completed/failed tasks originally sent by fromAgent. */
+export function getCompletedMessagesFrom(fromAgent: string): InterAgentTask[] {
+  return db
+    .prepare(
+      `SELECT * FROM inter_agent_tasks WHERE from_agent = ? AND status IN ('completed', 'failed') ORDER BY completed_at DESC`,
+    )
+    .all(fromAgent) as InterAgentTask[];
+}
+
+/** Get unacknowledged completed/failed responses sent by fromAgent. */
+export function getPendingResponses(fromAgent: string): InterAgentTask[] {
+  return db
+    .prepare(
+      `SELECT * FROM inter_agent_tasks WHERE from_agent = ? AND status IN ('completed', 'failed') AND acknowledged = 0 ORDER BY completed_at ASC`,
+    )
+    .all(fromAgent) as InterAgentTask[];
+}
+
+/** Mark a completed response as acknowledged so it won't be returned again. */
+export function acknowledgeInterAgentTask(id: string): void {
+  db.prepare(
+    `UPDATE inter_agent_tasks SET acknowledged = 1 WHERE id = ?`,
+  ).run(id);
 }
 
 // ── Mission Tasks (one-shot async tasks for Mission Control) ─────────

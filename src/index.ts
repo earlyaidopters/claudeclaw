@@ -10,11 +10,13 @@ import { initDatabase, cleanupOldMissionTasks, insertAuditLog } from './db.js';
 import { initSecurity, setAuditCallback } from './security.js';
 import { logger } from './logger.js';
 import { cleanupOldUploads } from './media.js';
+import { cancelAllBatches } from './media-group.js';
 import { runConsolidation } from './memory-consolidate.js';
 import { runDecaySweep } from './memory.js';
 import { initOAuthHealthCheck } from './oauth-health.js';
 import { initOrchestrator } from './orchestrator.js';
-import { initScheduler } from './scheduler.js';
+import { initMCPoller } from './mc-poller.js';
+import { initScheduler, triggerSchedulerTick, triggerMessageCheck } from './scheduler.js';
 import { setTelegramConnected, setBotInfo } from './state.js';
 
 // Parse --agent flag
@@ -190,6 +192,35 @@ async function main(): Promise<void> {
       AGENT_ID,
     );
 
+    // MC Poller — wakes agents when Mission Control tasks are assigned (main only)
+    if (AGENT_ID === 'main') {
+      const mcSender = async (text: string) => {
+        const { splitMessage } = await import('./bot.js');
+        for (const chunk of splitMessage(text)) {
+          await bot.api.sendMessage(ALLOWED_CHAT_ID, chunk, { parse_mode: 'HTML' }).catch((err) =>
+            logger.error({ err }, 'MC poller failed to send message'),
+          );
+        }
+      };
+      // Status channel sender (uses STATUS_BOT_TOKEN + STATUS_CHAT_ID if available)
+      const statusToken = process.env.STATUS_BOT_TOKEN;
+      const statusChatId = process.env.STATUS_CHAT_ID;
+      let statusSender: ((text: string) => Promise<void>) | undefined;
+      if (statusToken && statusChatId) {
+        const { Api } = await import('grammy');
+        const statusApi = new Api(statusToken);
+        statusSender = async (text: string) => {
+          const { splitMessage } = await import('./bot.js');
+          for (const chunk of splitMessage(text)) {
+            await statusApi.sendMessage(statusChatId, chunk, { parse_mode: 'HTML' }).catch((err) =>
+              logger.error({ err }, 'MC poller status channel send failed'),
+            );
+          }
+        };
+      }
+      initMCPoller(mcSender, statusSender);
+    }
+
     // Proactive OAuth health monitoring - alerts before token expires
     initOAuthHealthCheck(async (text) => {
       const { splitMessage } = await import('./bot.js');
@@ -203,8 +234,18 @@ async function main(): Promise<void> {
     logger.warn('ALLOWED_CHAT_ID not set — scheduler disabled (no destination for results)');
   }
 
+  // SIGUSR1 handler: instant wake for inter-agent messaging.
+  // When nudgeAgent() sends SIGUSR1 to this process, trigger an immediate
+  // scheduler tick so the injected task gets picked up in <5s instead of ~60s.
+  process.on('SIGUSR1', () => {
+    logger.info({ agentId: AGENT_ID }, 'Received SIGUSR1 -- triggering immediate scheduler tick and message check');
+    triggerSchedulerTick();
+    triggerMessageCheck();
+  });
+
   const shutdown = async () => {
     logger.info('Shutting down...');
+    cancelAllBatches();
     setTelegramConnected(false);
     releaseLock();
     await bot.stop();

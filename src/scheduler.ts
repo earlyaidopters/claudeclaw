@@ -11,17 +11,39 @@ import {
   claimNextMissionTask,
   completeMissionTask,
   resetStuckMissionTasks,
+  getNextPendingMessage,
+  markInterAgentTaskInProgress,
+  resetStuckInterAgentTasks,
+  completeInterAgentTask,
 } from './db.js';
 import { logger } from './logger.js';
 import { messageQueue } from './message-queue.js';
 import { runAgent } from './agent.js';
 import { formatForTelegram, splitMessage } from './bot.js';
 import { emitChatEvent } from './state.js';
+import { loadAgentConfig } from './agent-config.js';
 
 type Sender = (text: string) => Promise<void>;
 
-/** Max time (ms) a scheduled task can run before being killed. */
-const TASK_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+/** Default timeout (ms) for tasks when no agent-specific override exists. */
+const DEFAULT_TASK_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+
+/**
+ * Resolve the timeout for a scheduled task based on the agent's config.
+ * Uses task_timeout_minutes from agent.yaml if available, otherwise falls back
+ * to DEFAULT_TASK_TIMEOUT_MS (10 minutes).
+ */
+function resolveTaskTimeoutMs(agentId: string): number {
+  try {
+    const config = loadAgentConfig(agentId);
+    if (config.taskTimeoutMinutes) {
+      return config.taskTimeoutMinutes * 60 * 1000;
+    }
+  } catch {
+    // Agent config not found or broken -- use default
+  }
+  return DEFAULT_TASK_TIMEOUT_MS;
+}
 
 let sender: Sender;
 
@@ -30,6 +52,13 @@ let sender: Sender;
  * Acts as a fast-path guard alongside the DB-level lock in markTaskRunning.
  */
 const runningTaskIds = new Set<string>();
+
+/**
+ * Guard flag for inter-agent message processing.
+ * Prevents parallel execution of checkInterAgentMessages() if a poll fires
+ * while a previous message is still being processed.
+ */
+let messageProcessing = false;
 
 /**
  * Initialise the scheduler. Call once after the Telegram bot is ready.
@@ -54,8 +83,89 @@ export function initScheduler(send: Sender, agentId = 'main'): void {
     logger.warn({ recovered: recoveredMission, agentId }, 'Reset stuck mission tasks from previous crash');
   }
 
+  const recoveredInterAgent = resetStuckInterAgentTasks(agentId);
+  if (recoveredInterAgent > 0) {
+    logger.warn({ recovered: recoveredInterAgent, agentId }, 'Reset stuck inter-agent tasks from previous crash');
+  }
+
   setInterval(() => void runDueTasks(), 60_000);
-  logger.info({ agentId }, 'Scheduler started (checking every 60s)');
+  setInterval(() => void checkInterAgentMessages(), 30_000);
+  logger.info({ agentId }, 'Scheduler started (checking every 60s, inter-agent messages every 30s)');
+}
+
+/**
+ * Trigger an immediate scheduler tick (bypasses the 60s interval).
+ * Called by the SIGUSR1 handler so that nudgeAgent() actually results in
+ * near-instant task pickup instead of waiting up to 60s for the next poll.
+ */
+export function triggerSchedulerTick(): void {
+  logger.info('Scheduler: SIGUSR1 received -- running immediate tick');
+  void runDueTasks();
+}
+
+/**
+ * Trigger an immediate inter-agent message check (bypasses the 30s poll interval).
+ * Called by the SIGUSR1 handler when nudgeAgent() wakes this process.
+ */
+export function triggerMessageCheck(): void {
+  logger.info('Scheduler: triggering immediate inter-agent message check');
+  void checkInterAgentMessages();
+}
+
+/** The timeout (ms) for a single inter-agent task execution. */
+const INTER_AGENT_TASK_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+
+/**
+ * Poll for pending inter-agent messages addressed to this agent.
+ * Processes them one at a time in FIFO order. After completing a message,
+ * immediately checks for the next one to drain the queue.
+ */
+async function checkInterAgentMessages(): Promise<void> {
+  if (messageProcessing) return;
+
+  const message = getNextPendingMessage(schedulerAgentId);
+  if (!message) return;
+
+  messageProcessing = true;
+  markInterAgentTaskInProgress(message.id);
+  logger.info({ id: message.id, fromAgent: message.from_agent, prompt: message.prompt.slice(0, 60) }, 'Processing inter-agent message');
+
+  const abortController = new AbortController();
+  const timeout = setTimeout(() => abortController.abort(), INTER_AGENT_TASK_TIMEOUT_MS);
+
+  try {
+    const result = await runAgent(message.prompt, undefined, () => {}, undefined, undefined, abortController, undefined, agentMcpAllowlist);
+    clearTimeout(timeout);
+
+    if (result.aborted) {
+      completeInterAgentTask(message.id, 'failed', `Timed out after ${Math.round(INTER_AGENT_TASK_TIMEOUT_MS / 60_000)}m`);
+      logger.warn({ id: message.id }, 'Inter-agent task timed out');
+    } else {
+      const text = result.text?.trim() || 'Task completed with no output.';
+      completeInterAgentTask(message.id, 'completed', text);
+
+      // Inject into conversation context so the agent can reference it
+      if (ALLOWED_CHAT_ID) {
+        const activeSession = getSession(ALLOWED_CHAT_ID, schedulerAgentId);
+        logConversationTurn(ALLOWED_CHAT_ID, 'user', `[Inter-agent task from ${message.from_agent}]: ${message.prompt}`, activeSession ?? undefined, schedulerAgentId);
+        logConversationTurn(ALLOWED_CHAT_ID, 'assistant', text, activeSession ?? undefined, schedulerAgentId);
+      }
+
+      logger.info({ id: message.id, fromAgent: message.from_agent }, 'Inter-agent task completed');
+    }
+  } catch (err) {
+    clearTimeout(timeout);
+    const errMsg = err instanceof Error ? err.message : String(err);
+    completeInterAgentTask(message.id, 'failed', errMsg.slice(0, 500));
+    logger.error({ err, id: message.id }, 'Inter-agent task failed');
+  } finally {
+    messageProcessing = false;
+    // Drain: check immediately for the next queued message
+    const next = getNextPendingMessage(schedulerAgentId);
+    if (next) {
+      void checkInterAgentMessages();
+    }
+  }
 }
 
 async function runDueTasks(): Promise<void> {
@@ -84,9 +194,14 @@ async function runDueTasks(): Promise<void> {
     // in-flight user message to finish before running. This prevents
     // two Claude processes from hitting the same session simultaneously.
     const chatId = ALLOWED_CHAT_ID || 'scheduler';
+    const taskTimeoutMs = resolveTaskTimeoutMs(schedulerAgentId);
+    const taskTimeoutLabel = taskTimeoutMs >= 60_000
+      ? `${Math.round(taskTimeoutMs / 60_000)}m`
+      : `${Math.round(taskTimeoutMs / 1000)}s`;
+
     messageQueue.enqueue(chatId, async () => {
       const abortController = new AbortController();
-      const timeout = setTimeout(() => abortController.abort(), TASK_TIMEOUT_MS);
+      const timeout = setTimeout(() => abortController.abort(), taskTimeoutMs);
 
       try {
         await sender(`Scheduled task running: "${task.prompt.slice(0, 80)}${task.prompt.length > 80 ? '...' : ''}"`);
@@ -96,9 +211,9 @@ async function runDueTasks(): Promise<void> {
         clearTimeout(timeout);
 
         if (result.aborted) {
-          updateTaskAfterRun(task.id, nextRun, 'Timed out after 10 minutes', 'timeout');
-          await sender(`⏱ Task timed out after 10m: "${task.prompt.slice(0, 60)}..." — killed.`);
-          logger.warn({ taskId: task.id }, 'Task timed out');
+          updateTaskAfterRun(task.id, nextRun, `Timed out after ${taskTimeoutLabel}`, 'timeout');
+          await sender(`⏱ Task timed out after ${taskTimeoutLabel}: "${task.prompt.slice(0, 60)}..." — killed.`);
+          logger.warn({ taskId: task.id, timeoutMs: taskTimeoutMs }, 'Task timed out');
           return;
         }
 
@@ -149,17 +264,22 @@ async function runDueMissionTasks(): Promise<void> {
   logger.info({ missionId: mission.id, title: mission.title }, 'Running mission task');
 
   const chatId = ALLOWED_CHAT_ID || 'mission';
+  const missionTimeoutMs = resolveTaskTimeoutMs(schedulerAgentId);
+  const missionTimeoutLabel = missionTimeoutMs >= 60_000
+    ? `${Math.round(missionTimeoutMs / 60_000)}m`
+    : `${Math.round(missionTimeoutMs / 1000)}s`;
+
   messageQueue.enqueue(chatId, async () => {
     const abortController = new AbortController();
-    const timeout = setTimeout(() => abortController.abort(), TASK_TIMEOUT_MS);
+    const timeout = setTimeout(() => abortController.abort(), missionTimeoutMs);
 
     try {
       const result = await runAgent(mission.prompt, undefined, () => {}, undefined, undefined, abortController, undefined, agentMcpAllowlist);
       clearTimeout(timeout);
 
       if (result.aborted) {
-        completeMissionTask(mission.id, null, 'failed', 'Timed out after 10 minutes');
-        logger.warn({ missionId: mission.id }, 'Mission task timed out');
+        completeMissionTask(mission.id, null, 'failed', `Timed out after ${missionTimeoutLabel}`);
+        logger.warn({ missionId: mission.id, timeoutMs: missionTimeoutMs }, 'Mission task timed out');
         try { await sender('Mission task timed out: "' + mission.title + '"'); } catch {}
       } else {
         const text = result.text?.trim() || 'Task completed with no output.';
