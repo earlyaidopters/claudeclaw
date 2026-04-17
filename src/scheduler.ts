@@ -112,9 +112,6 @@ export function triggerMessageCheck(): void {
   void checkInterAgentMessages();
 }
 
-/** The timeout (ms) for a single inter-agent task execution. */
-const INTER_AGENT_TASK_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
-
 /**
  * Poll for pending inter-agent messages addressed to this agent.
  * Processes them one at a time in FIFO order. After completing a message,
@@ -130,16 +127,23 @@ async function checkInterAgentMessages(): Promise<void> {
   markInterAgentTaskInProgress(message.id);
   logger.info({ id: message.id, fromAgent: message.from_agent, prompt: message.prompt.slice(0, 60) }, 'Processing inter-agent message');
 
+  // Resolve timeout from the receiving agent's config (agent.yaml task_timeout_minutes).
+  // Previously hardcoded at 10 minutes, which killed build tasks for agents with longer timeouts.
+  const taskTimeoutMs = resolveTaskTimeoutMs(message.to_agent);
+  const taskTimeoutLabel = taskTimeoutMs >= 60_000
+    ? `${Math.round(taskTimeoutMs / 60_000)}m`
+    : `${Math.round(taskTimeoutMs / 1000)}s`;
+
   const abortController = new AbortController();
-  const timeout = setTimeout(() => abortController.abort(), INTER_AGENT_TASK_TIMEOUT_MS);
+  const timeout = setTimeout(() => abortController.abort(), taskTimeoutMs);
 
   try {
     const result = await runAgent(message.prompt, undefined, () => {}, undefined, undefined, abortController, undefined, agentMcpAllowlist);
     clearTimeout(timeout);
 
     if (result.aborted) {
-      completeInterAgentTask(message.id, 'failed', `Timed out after ${Math.round(INTER_AGENT_TASK_TIMEOUT_MS / 60_000)}m`);
-      logger.warn({ id: message.id }, 'Inter-agent task timed out');
+      completeInterAgentTask(message.id, 'failed', `Timed out after ${taskTimeoutLabel}`);
+      logger.warn({ id: message.id, timeoutMs: taskTimeoutMs }, 'Inter-agent task timed out');
     } else {
       const text = result.text?.trim() || 'Task completed with no output.';
       completeInterAgentTask(message.id, 'completed', text);
