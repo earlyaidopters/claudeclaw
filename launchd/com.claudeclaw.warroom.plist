@@ -38,9 +38,9 @@
   <integer>10</integer>
 
   <key>StandardOutPath</key>
-  <string>/tmp/claudeclaw-warroom.log</string>
+  <string>/Users/macminirolland/Dev/ClaudeClaw/logs/warroom.out.log</string>
   <key>StandardErrorPath</key>
-  <string>/tmp/claudeclaw-warroom.err.log</string>
+  <string>/Users/macminirolland/Dev/ClaudeClaw/logs/warroom.err.log</string>
 
   <key>EnvironmentVariables</key>
   <dict>

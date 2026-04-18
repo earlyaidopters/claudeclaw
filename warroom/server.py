@@ -105,6 +105,29 @@ logging.basicConfig(
 )
 logger = logging.getLogger("warroom.server")
 
+# Pipecat + Gemini Live backends log via loguru. Route their output to a
+# rotated file sink so it persists across reboots and doesn't grow unbounded.
+# stderr stays capped at WARNING (the LaunchAgent captures it, kept small).
+try:
+    from loguru import logger as _loguru_logger
+
+    _logs_dir = Path.home() / "Dev" / "ClaudeClaw" / "logs"
+    _logs_dir.mkdir(parents=True, exist_ok=True)
+    _loguru_logger.remove()
+    _loguru_logger.add(sys.stderr, level="WARNING")
+    _loguru_logger.add(
+        _logs_dir / "warroom-pipecat.log",
+        rotation="10 MB",
+        retention="7 days",
+        level="DEBUG",
+        enqueue=True,
+        backtrace=False,
+        diagnose=False,
+    )
+    logger.info("loguru configured: sink=%s rotation=10MB retention=7d", _logs_dir / "warroom-pipecat.log")
+except ImportError:
+    logger.warning("loguru not available; pipecat logs will remain on stderr only")
+
 
 # ─── Shared helpers ────────────────────────────────────────────────────────
 

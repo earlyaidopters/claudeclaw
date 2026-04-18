@@ -23,6 +23,7 @@ migrations/.applied.json
 # Logs
 *.log
 /tmp/claudeclaw.*
+logs/
 
 # macOS
 .DS_Store
