@@ -199,6 +199,13 @@ export const AGENT_MAX_TURNS = parseInt(
   10,
 );
 
+// Engine backend for agent invocation (docs/rfc-sdk-engine.md).
+//   cli — spawn the claude CLI subprocess (default, current behavior)
+//   sdk — direct Anthropic Messages API (phases 2-5, not yet implemented)
+export type EngineKind = 'cli' | 'sdk';
+export const ENGINE: EngineKind =
+  ((process.env.ENGINE || envConfig.ENGINE || 'cli').toLowerCase() as EngineKind);
+
 // Smart routing: dispatches incoming messages to the best-fit agent using
 // a cheap classifier. Default: disabled (keeps current explicit-bot routing).
 export const SMART_ROUTING_ENABLED =
