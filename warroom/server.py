@@ -82,7 +82,9 @@ try:
     from pipecat.pipeline.runner import PipelineRunner
     from pipecat.pipeline.task import PipelineTask, PipelineParams
     from pipecat.transports.network.websocket_server import WebsocketServerTransport, WebsocketServerParams
-    from pipecat.serializers.protobuf import ProtobufFrameSerializer
+    # ProtobufFrameSerializer removed: incompatible with @pipecat-ai/client-js
+    # 1.7.0 which expects JSON text frames. Default (no serializer) = JSON.
+    # from pipecat.serializers.protobuf import ProtobufFrameSerializer
 except ModuleNotFoundError as e:
     print(
         f"Error: pipecat-ai dependency not found: {e}\n"
@@ -146,7 +148,6 @@ def make_transport(port: int, audio_in_sr: int = 16000, audio_out_sr: int = 2400
             audio_in_sample_rate=audio_in_sr,
             audio_out_sample_rate=audio_out_sr,
             vad_analyzer=None,
-            serializer=ProtobufFrameSerializer(),
         ),
     )
 

@@ -1052,7 +1052,10 @@ async function reloadMeetingAfterRespawn(statusLabel, targetAgent) {
       return;
     }
 
-    var wsUrl = (window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host + '/ws/warroom';
+    // Connect directly to the War Room Python WebSocket server.
+    // Upstream routes through dashboard proxy (/ws/warroom), but we run
+    // the server as a separate LaunchAgent on its own port.
+    var wsUrl = 'ws://' + window.location.hostname + ':' + WARROOM_PORT;
     var WebSocketTransport = window.PipecatWarRoom.WebSocketTransport;
     var PipecatClient = window.PipecatWarRoom.PipecatClient;
     currentTransport = new WebSocketTransport({ wsUrl: wsUrl });
@@ -1375,7 +1378,10 @@ async function togglePin(agentId) {
       }
 
       // 5. Reconnect a fresh Pipecat client to the respawned server
-      var wsUrl = (window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host + '/ws/warroom';
+      // Connect directly to the War Room Python WebSocket server.
+    // Upstream routes through dashboard proxy (/ws/warroom), but we run
+    // the server as a separate LaunchAgent on its own port.
+    var wsUrl = 'ws://' + window.location.hostname + ':' + WARROOM_PORT;
       var WebSocketTransport = window.PipecatWarRoom.WebSocketTransport;
       var PipecatClient = window.PipecatWarRoom.PipecatClient;
       currentTransport = new WebSocketTransport({ wsUrl: wsUrl });
@@ -1647,7 +1653,8 @@ async function toggleMeeting() {
         return;
       }
 
-      var wsUrl = data.ws_url || ((window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host + '/ws/warroom');
+      // Connect directly to War Room Python server (separate LaunchAgent).
+      var wsUrl = data.ws_url || ('ws://' + window.location.hostname + ':' + WARROOM_PORT);
 
       // Create the Pipecat client with WebSocket transport
       var WebSocketTransport = window.PipecatWarRoom.WebSocketTransport;

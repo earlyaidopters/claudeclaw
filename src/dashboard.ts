@@ -59,6 +59,14 @@ import {
 import { processMessageFromDashboard } from './bot.js';
 import { getDashboardHtml } from './dashboard-html.js';
 import { getWarRoomHtml } from './warroom-html.js';
+import { WARROOM_ENABLED, WARROOM_PORT } from './config.js';
+import {
+  createWarRoomMeeting,
+  endWarRoomMeeting,
+  addWarRoomTranscript,
+  getWarRoomMeetings,
+  getWarRoomTranscript,
+} from './db.js';
 import { logger } from './logger.js';
 import { getTelegramConnected, getBotInfo, chatEvents, getIsProcessing, abortActiveQuery, ChatEvent } from './state.js';
 
@@ -242,11 +250,141 @@ export function startDashboard(botApi?: Api<RawApi>): void {
     return c.html(getDashboardHtml(DASHBOARD_TOKEN, chatId));
   });
 
-  // War Room voice meeting page (served from /warroom on the dashboard port)
+  // ── War Room routes ──────────────────────────────────────────────────
+  // Cherry-picked from earlyaidopters/claudeclaw-os dashboard.ts.
+  // Provides the API endpoints that warroom-html.ts frontend depends on.
+
   app.get('/warroom', (c) => {
-    const warroomPort = parseInt(process.env.WARROOM_PORT || '7860', 10);
-    return c.html(getWarRoomHtml(DASHBOARD_TOKEN, ALLOWED_CHAT_ID, warroomPort));
+    return c.html(getWarRoomHtml(DASHBOARD_TOKEN, ALLOWED_CHAT_ID, WARROOM_PORT));
   });
+
+  app.get('/warroom-client.js', (c) => {
+    const bundlePath = path.join(PROJECT_ROOT, 'warroom', 'client.bundle.js');
+    if (!fs.existsSync(bundlePath)) return c.text('// bundle not built', 404);
+    const data = fs.readFileSync(bundlePath, 'utf-8');
+    return new Response(data, {
+      headers: { 'Content-Type': 'application/javascript', 'Cache-Control': 'public, max-age=3600' },
+    });
+  });
+
+  app.get('/warroom-music', (c) => {
+    const musicPath = path.join(PROJECT_ROOT, 'warroom', 'music.mp3');
+    if (!fs.existsSync(musicPath)) return c.text('', 404);
+    const data = fs.readFileSync(musicPath);
+    return new Response(data, {
+      headers: { 'Content-Type': 'audio/mpeg', 'Cache-Control': 'public, max-age=86400' },
+    });
+  });
+
+  app.get('/warroom-avatar/:id', (c) => {
+    const agentId = c.req.param('id').replace(/[^a-z0-9_-]/g, '');
+    const avatarPath = path.join(PROJECT_ROOT, 'warroom', 'avatars', `${agentId}.png`);
+    if (!fs.existsSync(avatarPath)) return c.text('', 404);
+    const data = fs.readFileSync(avatarPath);
+    return new Response(data, {
+      headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=86400' },
+    });
+  });
+
+  app.get('/api/warroom/agents', (c) => {
+    const ids = ['main', ...listAgentIds().filter((id) => id !== 'main')];
+    const agents = ids.map((id) => {
+      try {
+        if (id === 'main') return { id: 'main', name: 'Main', description: 'General ops and triage' };
+        const cfg = loadAgentConfig(id);
+        return { id, name: cfg.name || id, description: cfg.description || '' };
+      } catch {
+        return { id, name: id, description: '' };
+      }
+    });
+    return c.json({ agents });
+  });
+
+  app.post('/api/warroom/start', async (c) => {
+    if (!WARROOM_ENABLED) {
+      return c.json({ error: 'War Room not enabled. Set WARROOM_ENABLED=true in .env.' }, 400);
+    }
+    try {
+      const net = await import('net');
+      const ready = await new Promise<boolean>((resolve) => {
+        const sock = new net.Socket();
+        const timer = setTimeout(() => { sock.destroy(); resolve(false); }, 3000);
+        sock.connect(WARROOM_PORT, '127.0.0.1', () => {
+          clearTimeout(timer); sock.destroy(); resolve(true);
+        });
+        sock.on('error', () => { clearTimeout(timer); sock.destroy(); resolve(false); });
+      });
+      if (!ready) {
+        return c.json({ ok: false, status: 'starting', error: 'War Room server not ready yet' }, 503);
+      }
+      await new Promise((r) => setTimeout(r, 200));
+    } catch {
+      return c.json({ ok: false, status: 'starting', error: 'Could not probe War Room server' }, 503);
+    }
+    return c.json({ ok: true, status: 'ready' });
+  });
+
+  const WARROOM_PIN_PATH = '/tmp/warroom-pin.json';
+  const VALID_PIN_AGENTS = new Set(['main', ...listAgentIds()]);
+
+  app.get('/api/warroom/pin', (c) => {
+    try {
+      if (fs.existsSync(WARROOM_PIN_PATH)) {
+        const raw = JSON.parse(fs.readFileSync(WARROOM_PIN_PATH, 'utf-8'));
+        return c.json({ ok: true, agent: raw.agent || null, mode: raw.mode || 'direct' });
+      }
+    } catch { /* fall through */ }
+    return c.json({ ok: true, agent: null, mode: 'direct' });
+  });
+
+  app.post('/api/warroom/pin', async (c) => {
+    let body: { agent?: string; mode?: string; restart?: boolean } = {};
+    try { body = await c.req.json(); } catch { /* empty */ }
+    const agent = body.agent || 'main';
+    const mode = body.mode || 'direct';
+    if (!VALID_PIN_AGENTS.has(agent)) {
+      return c.json({ ok: false, error: 'invalid agent' }, 400);
+    }
+    fs.writeFileSync(WARROOM_PIN_PATH, JSON.stringify({ agent, mode, pinnedAt: Date.now() }), 'utf-8');
+    return c.json({ ok: true, agent, mode });
+  });
+
+  app.post('/api/warroom/unpin', async (c) => {
+    try { if (fs.existsSync(WARROOM_PIN_PATH)) fs.unlinkSync(WARROOM_PIN_PATH); } catch { /* */ }
+    return c.json({ ok: true, agent: null, mode: 'direct' });
+  });
+
+  app.post('/api/warroom/meeting/start', async (c) => {
+    const body = await c.req.json().catch(() => ({})) as { id?: string; mode?: string; agent?: string };
+    const id = body.id || crypto.randomUUID();
+    createWarRoomMeeting(id, body.mode || 'direct', body.agent || 'main');
+    return c.json({ ok: true, meetingId: id });
+  });
+
+  app.post('/api/warroom/meeting/end', async (c) => {
+    const body = await c.req.json().catch(() => ({})) as { id?: string; entryCount?: number };
+    if (body.id) endWarRoomMeeting(body.id, body.entryCount || 0);
+    return c.json({ ok: true });
+  });
+
+  app.post('/api/warroom/meeting/transcript', async (c) => {
+    const body = await c.req.json().catch(() => ({})) as { meetingId?: string; speaker?: string; text?: string };
+    if (body.meetingId && body.speaker && body.text) {
+      addWarRoomTranscript(body.meetingId, body.speaker, body.text);
+    }
+    return c.json({ ok: true });
+  });
+
+  app.get('/api/warroom/meetings', (c) => {
+    const limit = parseInt(c.req.query('limit') || '20');
+    return c.json({ meetings: getWarRoomMeetings(limit) });
+  });
+
+  app.get('/api/warroom/meeting/:id/transcript', (c) => {
+    return c.json({ transcript: getWarRoomTranscript(c.req.param('id')) });
+  });
+
+  // ── End War Room routes ────────────────────────────────────────────
 
   // Scheduled tasks
   app.get('/api/tasks', (c) => {

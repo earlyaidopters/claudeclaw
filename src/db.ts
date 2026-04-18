@@ -2101,3 +2101,34 @@ export function getAllSkillHealth(): SkillHealthRow[] {
     .prepare('SELECT * FROM skill_health ORDER BY skill_id')
     .all() as SkillHealthRow[];
 }
+
+// ── ccos phase 3 — warroom meeting helpers ──────────────────────────
+
+export function createWarRoomMeeting(id: string, mode: string, pinnedAgent: string): void {
+  const now = Math.floor(Date.now() / 1000);
+  db.prepare(
+    `INSERT INTO warroom_meetings (id, started_at, mode, pinned_agent) VALUES (?, ?, ?, ?)`,
+  ).run(id, now, mode, pinnedAgent);
+}
+
+export function endWarRoomMeeting(id: string, entryCount: number): void {
+  const now = Math.floor(Date.now() / 1000);
+  db.prepare(
+    `UPDATE warroom_meetings SET ended_at = ?, duration_s = ended_at - started_at, entry_count = ? WHERE id = ?`,
+  ).run(now, entryCount, id);
+}
+
+export function addWarRoomTranscript(meetingId: string, speaker: string, text: string): void {
+  const now = Math.floor(Date.now() / 1000);
+  db.prepare(
+    `INSERT INTO warroom_transcript (meeting_id, speaker, text, created_at) VALUES (?, ?, ?, ?)`,
+  ).run(meetingId, speaker, text, now);
+}
+
+export function getWarRoomMeetings(limit = 20): unknown[] {
+  return db.prepare('SELECT * FROM warroom_meetings ORDER BY started_at DESC LIMIT ?').all(limit);
+}
+
+export function getWarRoomTranscript(meetingId: string): unknown[] {
+  return db.prepare('SELECT * FROM warroom_transcript WHERE meeting_id = ? ORDER BY id').all(meetingId);
+}
