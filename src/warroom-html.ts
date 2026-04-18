@@ -1092,7 +1092,13 @@ async function reloadMeetingAfterRespawn(statusLabel, targetAgent) {
         onServerMessage: function(msg) { handleServerMessage(msg); },
         onError: function(err) {
           var m = formatErr(err);
-          if (m && m.length < 200) addTranscriptEntry('system', 'Error: ' + m);
+          // During a pin/mode switch the Python server is restarting;
+          // show a friendly reconnect hint instead of the raw error.
+          if (switching) {
+            addTranscriptEntry('system', 'Reconnexion…');
+            return;
+          }
+          addTranscriptEntry('system', '⚠️ Erreur de connexion. Clique Stop Meeting puis Start Meeting pour réessayer. (Details: ' + (m || 'unknown').slice(0, 120) + ')');
         },
       },
     });
@@ -1421,9 +1427,12 @@ async function togglePin(agentId) {
           onError: function(err) {
             console.error('[WarRoom] Post-switch error:', err);
             var msg = formatErr(err);
-            if (msg && msg.length < 200) {
-              addTranscriptEntry('system', 'Error: ' + msg);
+            // Silent during switching — server respawn is expected.
+            if (switching) {
+              addTranscriptEntry('system', 'Reconnexion…');
+              return;
             }
+            addTranscriptEntry('system', '⚠️ Erreur post-switch. Clique Stop Meeting puis Start Meeting pour relancer. (Details: ' + (msg || 'unknown').slice(0, 120) + ')');
           },
         },
       });
@@ -1813,9 +1822,16 @@ async function toggleMeeting() {
               if (!meetingActive && connectAttempts < 2) {
                 return;
               }
-              if (msg && msg.length < 200) {
-                addTranscriptEntry('system', 'Error: ' + msg);
+              // During a pin/mode switch the Python server respawns (~2-3 s).
+              // Show a reconnect hint rather than the raw error.
+              if (switching) {
+                addTranscriptEntry('system', 'Reconnexion…');
+                return;
               }
+              // Gemini Live (1011 internal error) or other backend failures.
+              // Surface a clear, actionable message so the user knows to
+              // retry rather than wondering why their voice gets no reply.
+              addTranscriptEntry('system', '⚠️ Le service vocal a rencontré une erreur. Clique Stop Meeting puis Start Meeting pour réessayer. (Details: ' + (msg || 'unknown').slice(0, 120) + ')');
             },
           },
         });

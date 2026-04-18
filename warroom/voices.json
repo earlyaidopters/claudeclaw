@@ -2,36 +2,49 @@
   "main": {
     "voice_id": "a0e99841-438c-4a64-b679-ae501e7d6091",
     "gemini_voice": "Charon",
+    "voxtral_voice": "fr_male",
     "name": "Charon / British Male (informative, confident)"
   },
   "research": {
     "voice_id": "bf991597-6c13-47e4-8411-91ec2de5c466",
     "gemini_voice": "Kore",
+    "voxtral_voice": "fr_female",
     "name": "Kore / American Female (firm, analytical)"
   },
   "comms": {
     "voice_id": "c2ac25f9-ecc4-4f56-9095-651354df60c0",
     "gemini_voice": "Aoede",
+    "voxtral_voice": "fr_female",
     "name": "Aoede / American Male (breezy, warm)"
   },
   "content": {
     "voice_id": "a01c369f-6d2d-4185-bc20-b32c225eab70",
     "gemini_voice": "Leda",
+    "voxtral_voice": "fr_female",
     "name": "Leda / British Female (youthful, creative)"
   },
   "ops": {
     "voice_id": "2ee87190-8f84-4925-97da-e52547f9462c",
     "gemini_voice": "Alnilam",
+    "voxtral_voice": "fr_male",
     "name": "Alnilam / American Male (firm, direct)"
   },
   "qonto": {
     "voice_id": "",
     "gemini_voice": "Orus",
+    "voxtral_voice": "fr_male",
     "name": "Orus / (confident, measured — fits financial context)"
   },
   "hcom": {
     "voice_id": "",
     "gemini_voice": "Zephyr",
+    "voxtral_voice": "fr_male",
     "name": "Zephyr / (calm, minimal — rarely speaks)"
+  },
+  "rc2": {
+    "voice_id": "",
+    "gemini_voice": "Charon",
+    "voxtral_voice": "fr_male",
+    "name": "Charon / Dev interne (matches main voice for team cohesion)"
   }
 }

@@ -153,13 +153,23 @@ def check_required_keys(required: dict):
         sys.exit(1)
 
 
-def make_transport(port: int, audio_in_sr: int = 16000, audio_out_sr: int = 24000) -> WebsocketServerTransport:
+def make_transport(
+    port: int,
+    audio_in_sr: int = 16000,
+    audio_out_sr: int = 24000,
+    vad_analyzer=None,
+) -> WebsocketServerTransport:
     # Input defaults to 16 kHz because that's what the bundled
     # @pipecat-ai/client-js ships audio at for server-side VAD/STT pipelines,
     # AND Gemini Live's native-audio endpoint locks to whatever rate arrives
     # first ("Sample rate changed from previously X to Y, which is not
     # supported"). Output stays at 24 kHz — Gemini Live emits 24 kHz audio
     # and Pipecat passes it through unchanged.
+    #
+    # vad_analyzer defaults to None for Gemini Live mode (server-side VAD
+    # is handled natively by Gemini). Legacy/voxtral modes must pass a
+    # local analyzer (e.g. SileroVADAnalyzer) or the STT service will never
+    # receive end-of-turn signals and nothing gets transcribed.
     return WebsocketServerTransport(
         host="0.0.0.0",
         port=port,
@@ -168,7 +178,7 @@ def make_transport(port: int, audio_in_sr: int = 16000, audio_out_sr: int = 2400
             audio_out_enabled=True,
             audio_in_sample_rate=audio_in_sr,
             audio_out_sample_rate=audio_out_sr,
-            vad_analyzer=None,
+            vad_analyzer=vad_analyzer,
             serializer=ProtobufFrameSerializer(),
         ),
     )
@@ -697,10 +707,14 @@ async def run_legacy_mode_with_services(stt_service, tts_service, mode_name: str
     """
     from router import AgentRouter
     from agent_bridge import ClaudeAgentBridge
+    from pipecat.audio.vad.silero import SileroVADAnalyzer
 
     port = int(os.environ.get("WARROOM_PORT", "7860"))
 
-    transport = make_transport(port)
+    # Legacy/voxtral pipeline does not have native VAD (unlike Gemini Live).
+    # Without it the STT service never sees end-of-turn and no transcription
+    # ever fires. Silero is bundled with pipecat-ai and runs locally.
+    transport = make_transport(port, vad_analyzer=SileroVADAnalyzer())
 
     router = AgentRouter()
     bridge = ClaudeAgentBridge()
@@ -770,9 +784,14 @@ async def run_warroom():
         # Reuses the same Telegram bot's voice for meeting consistency.
         from voxtral_mode import run_voxtral_mode
         await run_voxtral_mode()
+    elif mode == "kokoro":
+        # Fork-specific: Groq STT + Kokoro Docker TTS (port 8880).
+        # Higher voice quality than Voxtral MLX, same Claude CLI bridge.
+        from kokoro_mode import run_kokoro_mode
+        await run_kokoro_mode()
     else:
         logger.error(
-            "Unknown WARROOM_MODE=%r. Expected 'live', 'voxtral', or 'legacy'. Defaulting to 'live'.",
+            "Unknown WARROOM_MODE=%r. Expected 'live', 'voxtral', 'kokoro' or 'legacy'. Defaulting to 'live'.",
             mode,
         )
         await run_live_mode()

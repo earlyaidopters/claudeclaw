@@ -13,9 +13,15 @@ voice before emitting the response as a TextFrame.
 import asyncio
 import json
 import logging
+import os
 from typing import Optional
 
-from pipecat.frames.frames import TextFrame, TTSUpdateSettingsFrame
+from pipecat.frames.frames import (
+    LLMFullResponseEndFrame,
+    LLMFullResponseStartFrame,
+    LLMTextFrame,
+    TTSUpdateSettingsFrame,
+)
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
 
 from config import PROJECT_ROOT, AGENT_VOICES, DEFAULT_AGENT
@@ -82,7 +88,17 @@ class ClaudeAgentBridge(FrameProcessor):
         # only tracks `gemini_voice`). Either case would raise TypeError
         # or KeyError mid-response and crash the bridge silently.
         voice_config = AGENT_VOICES.get(agent_id) or AGENT_VOICES.get(DEFAULT_AGENT) or {}
-        voice_id = voice_config.get("voice_id", "")
+        # FORK: mode-aware voice resolution. Local TTS backends use their
+        # own voice identifiers — pushing a Cartesia UUID into OpenAITTSService
+        # raises KeyError on VALID_VOICES lookup. Each local mode has its own
+        # voice field in voices.json.
+        mode = os.environ.get("WARROOM_MODE", "").lower()
+        if mode == "voxtral":
+            voice_id = voice_config.get("voxtral_voice", "fr_male")
+        elif mode == "kokoro":
+            voice_id = voice_config.get("kokoro_voice", "ff_siwis")
+        else:
+            voice_id = voice_config.get("voice_id", "")
 
         # Only send a voice-switch frame if we have a voice AND it actually changed
         if voice_id and voice_id != self._current_voice:
@@ -91,7 +107,18 @@ class ClaudeAgentBridge(FrameProcessor):
             ))
             self._current_voice = voice_id
 
-        await self.push_frame(TextFrame(text=text))
+        # Use LLMTextFrame (subclass of TextFrame) instead of plain TextFrame:
+        # - Still reaches TTS downstream (TTS listens to TextFrame subclasses)
+        # - Pipecat's RTVIObserver watches LLMTextFrame to emit
+        #   BotLLMTextMessage + BotTranscriptionMessage to the client,
+        #   which populates the War Room chat transcript with the agent's
+        #   response (otherwise only user transcripts appear, as observed
+        #   during voxtral smoke test 2026-04-18).
+        # Bracket with Start/End frames so the client receives proper
+        # response boundaries.
+        await self.push_frame(LLMFullResponseStartFrame())
+        await self.push_frame(LLMTextFrame(text=text))
+        await self.push_frame(LLMFullResponseEndFrame())
 
     async def _call_agent(self, agent_id: str, message: str) -> Optional[str]:
         """Call the Node.js voice bridge subprocess for the given agent.

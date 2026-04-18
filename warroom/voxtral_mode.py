@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 # Default HTTP endpoints — overridable via env
 DEFAULT_VOXTRAL_URL = "http://localhost:8881"
 DEFAULT_VOXTRAL_VOICE = "fr_male"
-DEFAULT_VOXTRAL_MODEL = "voxtral-4b-tts-2603-mlx-4bit"
+DEFAULT_VOXTRAL_MODEL = "mlx-community/Voxtral-4B-TTS-2603-mlx-4bit"
 GROQ_STT_BASE_URL = "https://api.groq.com/openai/v1"
 GROQ_STT_MODEL = "whisper-large-v3-turbo"
 
@@ -55,25 +55,49 @@ def check_required_keys() -> None:
 
 
 def _build_stt_service():
-    """Groq Whisper STT via OpenAI-compatible pipecat service."""
+    """Groq Whisper STT via OpenAI-compatible pipecat service.
+
+    Forces French language. Without it, Whisper auto-detects and often
+    misreads spoken French as English (observed 2026-04-18 smoke test).
+    """
     from pipecat.services.openai.stt import OpenAISTTService
+    from pipecat.transcriptions.language import Language
+
+    stt_lang = os.environ.get("GROQ_STT_LANGUAGE", "fr").lower()
+    language = Language(stt_lang) if stt_lang else Language.FR
 
     return OpenAISTTService(
         api_key=_require_env("GROQ_API_KEY"),
         base_url=GROQ_STT_BASE_URL,
         model=os.environ.get("GROQ_STT_MODEL", GROQ_STT_MODEL),
+        language=language,
     )
 
 
 def _build_tts_service():
-    """Voxtral MLX TTS via OpenAI-compatible /v1/audio/speech endpoint."""
-    from pipecat.services.openai.tts import OpenAITTSService
+    """Voxtral MLX TTS via OpenAI-compatible /v1/audio/speech endpoint.
+
+    Pipecat's OpenAITTSService enforces the OpenAI-official voice list
+    (alloy, echo, fable, ...). Voxtral uses custom voices like fr_male,
+    fr_female — we register them in VALID_VOICES so they pass through.
+    """
+    from pipecat.services.openai.tts import OpenAITTSService, VALID_VOICES
+
+    voice = os.environ.get("VOXTRAL_VOICE", DEFAULT_VOXTRAL_VOICE)
+    # Register ALL Voxtral voices that agents may switch to at runtime.
+    # Agent switching in voxtral mode updates the TTS service's voice setting
+    # based on voices.json:voxtral_voice, and any voice name not in
+    # VALID_VOICES triggers a KeyError on OpenAITTSService.run_tts().
+    for voxtral_voice in ("fr_male", "fr_female"):
+        VALID_VOICES.setdefault(voxtral_voice, voxtral_voice)
+    # Plus anything exotic the user may have set via VOXTRAL_VOICE.
+    VALID_VOICES.setdefault(voice, voice)
 
     voxtral_url = os.environ.get("VOXTRAL_LOCAL_URL", DEFAULT_VOXTRAL_URL)
     return OpenAITTSService(
         api_key="not-needed",  # local server, no auth
         base_url=f"{voxtral_url}/v1",
-        voice=os.environ.get("VOXTRAL_VOICE", DEFAULT_VOXTRAL_VOICE),
+        voice=voice,
         model=os.environ.get("VOXTRAL_MODEL", DEFAULT_VOXTRAL_MODEL),
     )
 

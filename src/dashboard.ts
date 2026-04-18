@@ -327,6 +327,47 @@ export function startDashboard(botApi?: Api<RawApi>): void {
   const WARROOM_PIN_PATH = '/tmp/warroom-pin.json';
   const VALID_PIN_AGENTS = new Set(['main', ...listAgentIds()]);
 
+  // Kill the warroom Python subprocess so it respawns with whatever pin /
+  // config files we just wrote. Port of upstream's killWarroomAsync
+  // (earlyaidopters/claudeclaw-os). Runs fire-and-forget so the HTTP
+  // response doesn't block on the respawn.
+  async function killWarroomAsync(reason: string): Promise<number[]> {
+    try {
+      const { spawn } = await import('child_process');
+      const pids: number[] = await new Promise((resolve) => {
+        const p = spawn('pgrep', ['-f', 'warroom/server.py']);
+        let out = '';
+        p.stdout.on('data', (chunk) => { out += chunk.toString(); });
+        p.on('close', () => {
+          resolve(out.trim().split(/\s+/).map((s) => parseInt(s, 10)).filter((n) => Number.isFinite(n)));
+        });
+        p.on('error', () => resolve([]));
+      });
+      for (const pid of pids) {
+        try { process.kill(pid, 'SIGTERM'); } catch { /* already gone */ }
+      }
+      if (pids.length > 0) {
+        logger.info({ pids, reason }, 'Killed warroom subprocess for respawn');
+      }
+      // FORK: when warroom runs as a separate LaunchAgent (com.claudeclaw.warroom),
+      // launchd auto-respawns after SIGTERM but honors ThrottleInterval (10s).
+      // Use `launchctl kickstart -k` to bypass throttle for fast pin switches.
+      // Silent-fails if the LaunchAgent is not registered (e.g., subprocess mode).
+      try {
+        const { execSync } = await import('child_process');
+        const uid = typeof process.getuid === 'function' ? process.getuid() : 0;
+        execSync(`launchctl kickstart -k gui/${uid}/com.claudeclaw.warroom`, {
+          stdio: 'ignore',
+          timeout: 3000,
+        });
+      } catch { /* LaunchAgent not registered, upstream SIGTERM is enough */ }
+      return pids;
+    } catch (err) {
+      logger.warn({ err, reason }, 'killWarroomAsync failed');
+      return [];
+    }
+  }
+
   app.get('/api/warroom/pin', (c) => {
     try {
       if (fs.existsSync(WARROOM_PIN_PATH)) {
@@ -345,13 +386,46 @@ export function startDashboard(botApi?: Api<RawApi>): void {
     if (!VALID_PIN_AGENTS.has(agent)) {
       return c.json({ ok: false, error: 'invalid agent' }, 400);
     }
+
+    // Determine whether the pin actually changed — the Python process loads
+    // system_prompt at startup, so without a respawn it keeps serving the
+    // previous persona even when no meeting is active. The client's
+    // `restart` flag only tracks meeting state, which is not enough here.
+    let previousAgent: string | null = null;
+    let previousMode = 'direct';
+    try {
+      if (fs.existsSync(WARROOM_PIN_PATH)) {
+        const prev = JSON.parse(fs.readFileSync(WARROOM_PIN_PATH, 'utf-8'));
+        previousAgent = prev.agent || null;
+        previousMode = prev.mode || 'direct';
+      }
+    } catch { /* no prior pin */ }
+    const pinChanged = previousAgent !== agent || previousMode !== mode;
+
     fs.writeFileSync(WARROOM_PIN_PATH, JSON.stringify({ agent, mode, pinnedAt: Date.now() }), 'utf-8');
-    return c.json({ ok: true, agent, mode });
+
+    // Always respawn on actual pin change. Fire-and-forget (HTTP response
+    // returns immediately; the client reconnect flow handles UX during the
+    // 2-3 s warroom restart window).
+    if (pinChanged) {
+      killWarroomAsync(`pin changed: ${previousAgent}/${previousMode} -> ${agent}/${mode}`);
+    }
+    return c.json({ ok: true, agent, mode, respawning: pinChanged });
   });
 
   app.post('/api/warroom/unpin', async (c) => {
-    try { if (fs.existsSync(WARROOM_PIN_PATH)) fs.unlinkSync(WARROOM_PIN_PATH); } catch { /* */ }
-    return c.json({ ok: true, agent: null, mode: 'direct' });
+    let hadPin = false;
+    try {
+      if (fs.existsSync(WARROOM_PIN_PATH)) {
+        hadPin = true;
+        fs.unlinkSync(WARROOM_PIN_PATH);
+      }
+    } catch { /* */ }
+    // Respawn so Python loads the default ('main') persona after unpin.
+    if (hadPin) {
+      killWarroomAsync('unpinned, reverting to main');
+    }
+    return c.json({ ok: true, agent: null, mode: 'direct', respawning: hadPin });
   });
 
   app.post('/api/warroom/meeting/start', async (c) => {
