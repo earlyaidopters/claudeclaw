@@ -290,7 +290,7 @@ export function startDashboard(botApi?: Api<RawApi>): void {
     const ids = ['main', ...listAgentIds().filter((id) => id !== 'main')];
     const agents = ids.map((id) => {
       try {
-        if (id === 'main') return { id: 'main', name: 'Main', description: 'General ops and triage' };
+        if (id === 'main') return { id: 'main', name: 'RC1 (Main)', description: 'Orchestrateur principal, triage, comms externes' };
         const cfg = loadAgentConfig(id);
         return { id, name: cfg.name || id, description: cfg.description || '' };
       } catch {
