@@ -34,6 +34,8 @@
     "whatsapp-web.js": "^1.34.6"
   },
   "devDependencies": {
+    "@pipecat-ai/client-js": "^1.7.0",
+    "@pipecat-ai/websocket-transport": "^1.6.2",
     "@types/better-sqlite3": "^7.6.12",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.10.0",
