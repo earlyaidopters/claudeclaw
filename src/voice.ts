@@ -226,15 +226,19 @@ async function transcribeAudioGroq(filePath: string): Promise<string> {
 
 /**
  * Transcribe an audio file using local whisper-cpp binary.
- * Converts to WAV first (whisper-cpp requires WAV input).
+ * Converts to WAV first (whisper.cpp requires WAV input).
+ *
+ * Homebrew 1.8+ ships the binary as `whisper-cli`; older installs use
+ * `whisper-cpp`. Set WHISPER_CPP_PATH to override. The binary prints the
+ * transcription to stdout followed by timing stats, so we filter those
+ * out and join the remaining lines.
  */
 async function transcribeAudioLocal(filePath: string): Promise<string> {
   const env = readEnvFile(['WHISPER_CPP_PATH', 'WHISPER_MODEL_PATH']);
-  const whisperPath = env.WHISPER_CPP_PATH || 'whisper-cpp';
+  const whisperPath = env.WHISPER_CPP_PATH || 'whisper-cli';
   const modelPath = env.WHISPER_MODEL_PATH;
   if (!modelPath) throw new Error('WHISPER_MODEL_PATH not set');
 
-  // whisper-cpp needs WAV input — convert from ogg/mp3/etc.
   const wavPath = filePath.replace(/\.[^.]+$/, '.wav');
   await execFileAsync('ffmpeg', ['-i', filePath, '-ar', '16000', '-ac', '1', '-y', wavPath]);
 
@@ -242,12 +246,15 @@ async function transcribeAudioLocal(filePath: string): Promise<string> {
     const { stdout } = await execFileAsync(whisperPath, [
       '-m', modelPath,
       '-f', wavPath,
-      '--output-json',
       '--no-timestamps',
       '-l', 'auto',
     ]);
-    const result = JSON.parse(stdout);
-    return (result.transcription || []).map((s: { text: string }) => s.text).join(' ').trim();
+    return stdout
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line && !line.startsWith('whisper_') && !line.startsWith('ggml_'))
+      .join(' ')
+      .trim();
   } finally {
     try { fs.unlinkSync(wavPath); } catch { /* ignore */ }
   }
