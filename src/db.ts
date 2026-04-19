@@ -1955,3 +1955,64 @@ export function getRecentBlockedActions(limit = 10): AuditLogEntry[] {
     `SELECT * FROM audit_log WHERE blocked = 1 ORDER BY created_at DESC LIMIT ?`,
   ).all(limit) as AuditLogEntry[];
 }
+
+// ── DION Slide Cache ──────────────────────────────────────────────────────────
+
+export interface CachedSlide {
+  id: number;
+  fragrance_id: string;
+  slide_type: string;
+  content_hash: string;
+  asset_path: string;
+  metadata: string | null;
+  passed_qc_at: number;
+  created_at: number;
+  expires_at: number | null;
+  invalidated: number;
+}
+
+export function getCachedSlide(
+  fragranceId: string,
+  slideType: string,
+  contentHash: string,
+): CachedSlide | null {
+  const now = Math.floor(Date.now() / 1000);
+  return db.prepare(
+    `SELECT * FROM dion_slide_cache
+     WHERE fragrance_id = ? AND slide_type = ? AND content_hash = ?
+       AND invalidated = 0
+       AND (expires_at IS NULL OR expires_at > ?)
+     ORDER BY passed_qc_at DESC
+     LIMIT 1`,
+  ).get(fragranceId, slideType, contentHash, now) as CachedSlide | null;
+}
+
+export function cacheSlide(
+  fragranceId: string,
+  slideType: string,
+  contentHash: string,
+  assetPath: string,
+  metadata?: string | null,
+  expiresAt?: number | null,
+): number {
+  const now = Math.floor(Date.now() / 1000);
+  const result = db.prepare(
+    `INSERT INTO dion_slide_cache
+       (fragrance_id, slide_type, content_hash, asset_path, metadata, passed_qc_at, created_at, expires_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(fragranceId, slideType, contentHash, assetPath, metadata ?? null, now, now, expiresAt ?? null);
+  return result.lastInsertRowid as number;
+}
+
+export function invalidateSlide(fragranceId: string, slideType?: string): void {
+  if (slideType) {
+    db.prepare(
+      `UPDATE dion_slide_cache SET invalidated = 1
+       WHERE fragrance_id = ? AND slide_type = ?`,
+    ).run(fragranceId, slideType);
+  } else {
+    db.prepare(
+      `UPDATE dion_slide_cache SET invalidated = 1 WHERE fragrance_id = ?`,
+    ).run(fragranceId);
+  }
+}

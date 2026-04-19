@@ -1,5 +1,6 @@
 {
   "migrations": {
-    "v1.2.1": ["add-model-to-scheduled-tasks"]
+    "v1.2.1": ["add-model-to-scheduled-tasks"],
+    "v1.3.0": ["add-dion-slide-cache"]
   }
 }
