@@ -1,6 +1,7 @@
 import { CronExpressionParser } from 'cron-parser';
 
 import { AGENT_ID, ALLOWED_CHAT_ID, agentMcpAllowlist } from './config.js';
+import { resolveModelAlias } from './model-aliases.js';
 import {
   getDueTasks,
   getSession,
@@ -92,7 +93,7 @@ async function runDueTasks(): Promise<void> {
         await sender(`Scheduled task running: "${task.prompt.slice(0, 80)}${task.prompt.length > 80 ? '...' : ''}"`);
 
         // Run as a fresh agent call (no session — scheduled tasks are autonomous)
-        const result = await runAgent(task.prompt, undefined, () => {}, undefined, undefined, abortController, undefined, agentMcpAllowlist);
+        const result = await runAgent(task.prompt, undefined, () => {}, undefined, resolveModelAlias(task.model), abortController, undefined, agentMcpAllowlist);
         clearTimeout(timeout);
 
         if (result.aborted) {

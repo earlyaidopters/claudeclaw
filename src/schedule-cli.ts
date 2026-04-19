@@ -6,6 +6,7 @@
  *
  * Usage:
  *   node dist/schedule-cli.js create "prompt text" "0 9 * * 1"
+ *   node dist/schedule-cli.js create "prompt text" "0 9 * * 1" --model haiku
  *   node dist/schedule-cli.js list
  *   node dist/schedule-cli.js delete <id>
  *   node dist/schedule-cli.js pause <id>
@@ -22,6 +23,7 @@ import {
   pauseScheduledTask,
   resumeScheduledTask,
 } from './db.js';
+import { resolveModelAlias } from './model-aliases.js';
 import { computeNextRun } from './scheduler.js';
 
 initDatabase();
@@ -31,11 +33,30 @@ const agentFlagIdx = process.argv.indexOf('--agent');
 const cliAgentId = agentFlagIdx !== -1
   ? process.argv[agentFlagIdx + 1] ?? 'main'
   : process.env.CLAUDECLAW_AGENT_ID ?? 'main';
-// Remove --agent and its value from rest args (only filter when flag is present)
-const cleanedArgv = agentFlagIdx !== -1
-  ? process.argv.filter((_, i) => i !== agentFlagIdx && i !== agentFlagIdx + 1)
-  : [...process.argv];
+
+// Parse --model flag from anywhere in argv
+const modelFlagIdx = process.argv.indexOf('--model');
+const cliModelRaw = modelFlagIdx !== -1 ? process.argv[modelFlagIdx + 1] ?? null : null;
+
+// Remove --agent, --model, and their values from rest args
+const cleanedArgv = process.argv.filter((_, i) => {
+  if (agentFlagIdx !== -1 && (i === agentFlagIdx || i === agentFlagIdx + 1)) return false;
+  if (modelFlagIdx !== -1 && (i === modelFlagIdx || i === modelFlagIdx + 1)) return false;
+  return true;
+});
+
 const [, , command, ...rest] = cleanedArgv;
+
+// Validate model alias early if provided
+if (cliModelRaw !== null) {
+  try {
+    resolveModelAlias(cliModelRaw);
+  } catch (err) {
+    console.error((err as Error).message);
+    console.error('Valid aliases: haiku | sonnet | opus (or a full claude-* model ID)');
+    process.exit(1);
+  }
+}
 
 function formatDate(unix: number | null): string {
   if (!unix) return 'never';
@@ -51,8 +72,8 @@ switch (command) {
     const cron = rest[1];
 
     if (!prompt || !cron) {
-      console.error('Usage: schedule-cli create "prompt" "cron expression"');
-      console.error('Example: schedule-cli create "Summarise AI news" "0 9 * * 1"');
+      console.error('Usage: schedule-cli create "prompt" "cron expression" [--model haiku|sonnet|opus]');
+      console.error('Example: schedule-cli create "Summarise AI news" "0 9 * * 1" --model sonnet');
       process.exit(1);
     }
 
@@ -66,10 +87,11 @@ switch (command) {
     }
 
     const id = randomBytes(4).toString('hex');
-    createScheduledTask(id, prompt, cron, nextRun, cliAgentId);
+    createScheduledTask(id, prompt, cron, nextRun, cliAgentId, cliModelRaw);
 
     console.log(`Task created: ${id}`);
     console.log(`Agent:        ${cliAgentId}`);
+    console.log(`Model:        ${cliModelRaw ?? '(agent default)'}`);
     console.log(`Prompt:       ${prompt}`);
     console.log(`Schedule:     ${cron}`);
     console.log(`Next run:     ${formatDate(nextRun)}`);
@@ -88,6 +110,7 @@ switch (command) {
       console.log(`${t.id}${status}`);
       console.log(`  Prompt:   ${t.prompt}`);
       console.log(`  Schedule: ${t.schedule}`);
+      console.log(`  Model:    ${t.model ?? '(agent default)'}`);
       console.log(`  Next run: ${formatDate(t.next_run)}`);
       console.log(`  Last run: ${formatDate(t.last_run)}`);
       console.log();

@@ -1,4 +1,5 @@
 {
-  "migrations": {   
+  "migrations": {
+    "v1.2.1": ["add-model-to-scheduled-tasks"]
   }
 }
