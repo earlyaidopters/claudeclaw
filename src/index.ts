@@ -60,6 +60,10 @@ if (AGENT_ID !== 'main') {
         agentId: 'main',
         botToken: activeBotToken,
         cwd: PROJECT_ROOT,
+        // Use the 'opus' alias so we always get the latest Opus release
+        // without having to chase version IDs (opus-4-6, 4-7, etc.).
+        // CLI docs: --model accepts aliases ('opus', 'sonnet') or full names.
+        model: 'opus',
         systemPrompt,
       });
       logger.info({ source: externalClaudeMd }, 'Loaded CLAUDE.md from CLAUDECLAW_CONFIG');

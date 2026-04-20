@@ -172,16 +172,25 @@ export async function runAgent(
   // Read secrets from .env without polluting process.env.
   // CLAUDE_CODE_OAUTH_TOKEN is optional — the subprocess finds auth via ~/.claude/
   // automatically. Only needed if you want to override which account is used.
-  const secrets = readEnvFile(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY']);
+  const secrets = readEnvFile(['CLAUDE_CODE_OAUTH_TOKEN']);
 
   const sdkEnv: Record<string, string | undefined> = { ...process.env };
   if (secrets.CLAUDE_CODE_OAUTH_TOKEN) {
     sdkEnv.CLAUDE_CODE_OAUTH_TOKEN = secrets.CLAUDE_CODE_OAUTH_TOKEN;
   }
-  if (secrets.ANTHROPIC_API_KEY) {
-    sdkEnv.ANTHROPIC_API_KEY = secrets.ANTHROPIC_API_KEY;
-  }
 
+  // CRITICAL: Scrub ANTHROPIC_API_KEY from the subprocess env so the CLI is
+  // forced to use the Claude Max OAuth session (~/.claude/) instead of
+  // falling back to pay-per-token API billing. Even if the key appears in
+  // the parent shell (e.g. sourced from another project's .env), we don't
+  // let it reach the child. Set CLAUDE_CODE_OAUTH_TOKEN in .env if you want
+  // to pin a specific OAuth account.
+  delete sdkEnv.ANTHROPIC_API_KEY;
+
+  // Force model via env var — more reliable than SDK options.model
+  if (model) {
+    sdkEnv.ANTHROPIC_MODEL = model;
+  }
   let newSessionId: string | undefined;
   let resultText: string | null = null;
   let usage: UsageInfo | null = null;
@@ -248,7 +257,15 @@ export async function runAgent(
 
       if (ev['type'] === 'system' && ev['subtype'] === 'init') {
         newSessionId = ev['session_id'] as string;
-        logger.info({ newSessionId }, 'Session initialized');
+        logger.info(
+          {
+            newSessionId,
+            model: ev['model'],
+            apiKeySource: ev['apiKeySource'],
+            permissionMode: ev['permissionMode'],
+          },
+          'Session initialized',
+        );
       }
 
       // Detect auto-compaction (context window was getting full)
