@@ -33,27 +33,49 @@ export interface McpHttpConfig {
 
 export type McpConfig = McpStdioConfig | McpHttpConfig;
 
+const ENV_VAR_PATTERN = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
+
 /**
- * Expand ${VAR} placeholders in a string using process.env.
+ * Expand ${VAR} placeholders in a string using the supplied lookup map.
  * Unknown variables are left as-is so the MCP server can surface a clear
  * error instead of silently getting an empty value.
  */
-function expandEnvVars(value: string): string {
-  return value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (full, name) => {
-    const resolved = process.env[name];
-    return resolved !== undefined ? resolved : full;
+function expandEnvVars(value: string, lookup: Record<string, string | undefined>): string {
+  return value.replace(ENV_VAR_PATTERN, (full, name) => {
+    const resolved = lookup[name];
+    return resolved !== undefined && resolved !== '' ? resolved : full;
   });
 }
 
 function expandRecord(
   rec: Record<string, string> | undefined,
+  lookup: Record<string, string | undefined>,
 ): Record<string, string> | undefined {
   if (!rec) return undefined;
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(rec)) {
-    out[k] = typeof v === 'string' ? expandEnvVars(v) : v;
+    out[k] = typeof v === 'string' ? expandEnvVars(v, lookup) : v;
   }
   return out;
+}
+
+/**
+ * Scan a JSON value recursively and collect every `${VAR}` name referenced.
+ * Used so we can load the matching keys from .env without pulling the whole
+ * file into process.env.
+ */
+function collectEnvVarRefs(value: unknown, out: Set<string>): void {
+  if (typeof value === 'string') {
+    for (const match of value.matchAll(ENV_VAR_PATTERN)) out.add(match[1]);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const v of value) collectEnvVarRefs(v, out);
+    return;
+  }
+  if (value && typeof value === 'object') {
+    for (const v of Object.values(value)) collectEnvVarRefs(v, out);
+  }
 }
 
 function loadMcpServers(allowlist?: string[]): Record<string, McpConfig> {
@@ -68,39 +90,66 @@ function loadMcpServers(allowlist?: string[]): Record<string, McpConfig> {
     'settings.json',
   );
 
+  // First pass: parse both files and collect every ${VAR} name referenced so
+  // we can pull just those keys from .env (readEnvFile is opt-in per key).
+  const parsed: Array<Record<string, unknown>> = [];
+  const referenced = new Set<string>();
   for (const file of [userSettings, projectSettings]) {
     try {
       const raw = JSON.parse(fs.readFileSync(file, 'utf-8'));
       const servers = raw?.mcpServers;
       if (servers && typeof servers === 'object') {
-        for (const [name, config] of Object.entries(servers)) {
-          const cfg = config as Record<string, unknown>;
-
-          // HTTP/SSE transport: url-based, no subprocess
-          if (typeof cfg.url === 'string') {
-            const transport = cfg.type === 'sse' ? 'sse' : 'http';
-            const headers = expandRecord(cfg.headers as Record<string, string> | undefined);
-            merged[name] = {
-              type: transport,
-              url: expandEnvVars(cfg.url),
-              ...(headers ? { headers } : {}),
-            };
-            continue;
-          }
-
-          // Stdio transport: command-based (default)
-          if (typeof cfg.command === 'string') {
-            const env = expandRecord(cfg.env as Record<string, string> | undefined);
-            merged[name] = {
-              command: expandEnvVars(cfg.command),
-              ...(cfg.args ? { args: (cfg.args as string[]).map(expandEnvVars) } : {}),
-              ...(env ? { env } : {}),
-            };
-          }
-        }
+        parsed.push(servers as Record<string, unknown>);
+        collectEnvVarRefs(servers, referenced);
       }
     } catch {
       // File doesn't exist or is invalid — skip
+    }
+  }
+
+  // Build a lookup that prefers process.env then falls back to .env. This
+  // mirrors how the CLI resolves variables: ambient env wins, .env is the
+  // safety net for values that intentionally aren't exported.
+  const fromEnvFile = referenced.size > 0 ? readEnvFile([...referenced]) : {};
+  const lookup: Record<string, string | undefined> = { ...fromEnvFile };
+  for (const name of referenced) {
+    const fromProcess = process.env[name];
+    if (fromProcess !== undefined && fromProcess !== '') lookup[name] = fromProcess;
+  }
+
+  for (const servers of parsed) {
+    for (const [name, config] of Object.entries(servers)) {
+      const cfg = config as Record<string, unknown>;
+
+      // HTTP/SSE transport: url-based, no subprocess
+      if (typeof cfg.url === 'string') {
+        const transport = cfg.type === 'sse' ? 'sse' : 'http';
+        const headers = expandRecord(
+          cfg.headers as Record<string, string> | undefined,
+          lookup,
+        );
+        merged[name] = {
+          type: transport,
+          url: expandEnvVars(cfg.url, lookup),
+          ...(headers ? { headers } : {}),
+        };
+        continue;
+      }
+
+      // Stdio transport: command-based (default)
+      if (typeof cfg.command === 'string') {
+        const env = expandRecord(
+          cfg.env as Record<string, string> | undefined,
+          lookup,
+        );
+        merged[name] = {
+          command: expandEnvVars(cfg.command, lookup),
+          ...(cfg.args
+            ? { args: (cfg.args as string[]).map((a) => expandEnvVars(a, lookup)) }
+            : {}),
+          ...(env ? { env } : {}),
+        };
+      }
     }
   }
 
