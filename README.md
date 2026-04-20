@@ -55,6 +55,24 @@ Without this, git operations will fail with a confusing error about missing iden
 
 That's it for hard requirements. Everything else (voice, video, WhatsApp) is optional and the setup wizard will ask about them.
 
+#### macOS setup notes
+These are the real gotchas you'll hit on a fresh Mac; handling them up front avoids wasted time later.
+- **`npm i -g` fails with `EACCES` on `/usr/local/...`**: macOS ships an npm prefix owned by root. Install to a user-writable prefix instead:
+  ```bash
+  mkdir -p "$HOME/.npm-global"
+  npm config set prefix "$HOME/.npm-global"
+  echo 'export PATH="$HOME/.npm-global/bin:$PATH"' >> ~/.zshrc
+  exec zsh -l
+  npm i -g @anthropic-ai/claude-code
+  ```
+- **Local voice output (`say` + ffmpeg) needs ffmpeg installed**: ClaudeClaw's free TTS fallback encodes OGG Opus via ffmpeg. Without it, voice replies fall back to text.
+  ```bash
+  brew install ffmpeg
+  ```
+- **Groq API keys start with `gsk_`**, not `org_...`. An `org_...` value is an organization identifier, not a key, and will fail with `HTTP 401 invalid_api_key`.
+- **Secrets go in `.env`, not the shell**. If you paste a key directly at the prompt, zsh tries to execute it (`command not found`). Only edit `claudeclaw/.env` or let `npm run setup` write it for you.
+- **macOS launchd service**: when the wizard installs `com.claudeclaw.app`, make sure its `EnvironmentVariables.PATH` includes the directory where `claude` lives (e.g. `$HOME/.npm-global/bin`). Otherwise the bot starts but Claude Code subprocesses can't be spawned.
+
 ---
 
 ### Step 2: Create a Telegram bot
