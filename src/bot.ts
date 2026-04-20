@@ -20,7 +20,7 @@ import {
   AGENT_TIMEOUT_MS,
   STREAM_STRATEGY,
 } from './config.js';
-import { clearSession, getRecentConversation, getRecentMemories, getRecentTaskOutputs, getSession, getSessionConversation, logToHiveMind, pinMemory, unpinMemory, setSession, lookupWaChatId, saveWaMessageMap, saveTokenUsage } from './db.js';
+import { clearSession, getRecentConversation, getRecentMemories, getRecentTaskOutputs, getSession, getSessionConversation, logToHiveMind, pinMemory, unpinMemory, setSession, lookupWaChatId, saveWaMessageMap, saveTokenUsage, getChatSetting, setChatSetting, deleteChatSetting, getAllChatSettingsByKey } from './db.js';
 import { logger } from './logger.js';
 import { downloadMedia, buildPhotoMessage, buildDocumentMessage, buildVideoMessage } from './media.js';
 import { buildMemoryContext, evaluateMemoryRelevance, saveConversationTurn } from './memory.js';
@@ -101,8 +101,17 @@ import {
 import { getSlackConversations, getSlackMessages, sendSlackMessage, SlackConversation } from './slack.js';
 import { getWaChats, getWaChatMessages, sendWhatsAppMessage, WaChat } from './whatsapp.js';
 
-// Per-chat voice mode toggle (in-memory, resets on restart)
+// Per-chat voice mode toggle — persisted to DB, loaded on startup
 const voiceEnabledChats = new Set<string>();
+
+export function loadVoiceEnabledChats(): void {
+  try {
+    const rows = getAllChatSettingsByKey('voice_enabled');
+    for (const row of rows) {
+      if (row.value === '1') voiceEnabledChats.add(row.chat_id);
+    }
+  } catch { /* DB not ready yet — ignore */ }
+}
 
 // Per-chat model override (in-memory, resets on restart)
 // When not set, uses CLI default (Opus via Max/OAuth)
@@ -921,9 +930,11 @@ export function createBot(): Bot {
     const chatIdStr = ctx.chat!.id.toString();
     if (voiceEnabledChats.has(chatIdStr)) {
       voiceEnabledChats.delete(chatIdStr);
+      deleteChatSetting(chatIdStr, 'voice_enabled');
       await ctx.reply('Voice mode OFF');
     } else {
       voiceEnabledChats.add(chatIdStr);
+      setChatSetting(chatIdStr, 'voice_enabled', '1');
       await ctx.reply('Voice mode ON');
     }
   });
