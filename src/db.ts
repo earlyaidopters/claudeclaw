@@ -759,6 +759,41 @@ export function getRecentMemories(chatId: string, limit = 5): Memory[] {
     .all(chatId, limit) as Memory[];
 }
 
+/**
+ * Return the unix-seconds timestamp of the most recent memory saved for this
+ * chat+agent, or null if no memories exist yet. Used by the memory nudge to
+ * detect gaps in long-term memory capture.
+ */
+export function getLastMemorySaveTime(chatId: string, agentId = 'main'): number | null {
+  const row = db
+    .prepare(
+      `SELECT MAX(created_at) AS ts FROM memories WHERE chat_id = ? AND agent_id = ?`,
+    )
+    .get(chatId, agentId) as { ts: number | null } | undefined;
+  return row?.ts ?? null;
+}
+
+/**
+ * Count user turns in conversation_log for this chat+agent strictly after
+ * `sinceTs` (unix seconds). Used alongside getLastMemorySaveTime to decide
+ * whether to fire a memory nudge based on elapsed turns.
+ */
+export function getTurnCountSinceTimestamp(
+  chatId: string,
+  sinceTs: number,
+  agentId = 'main',
+): number {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS c FROM conversation_log
+       WHERE chat_id = ? AND role = 'user' AND created_at > ?
+         AND (session_id IS NULL OR session_id != '')
+         AND (agent_id = ? OR agent_id IS NULL)`,
+    )
+    .get(chatId, sinceTs, agentId) as { c: number } | undefined;
+  return row?.c ?? 0;
+}
+
 export function touchMemory(id: number): void {
   const now = Math.floor(Date.now() / 1000);
   db.prepare(

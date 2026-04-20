@@ -11,15 +11,53 @@ import { logger } from './logger.js';
 // The Agent SDK's settingSources loads CLAUDE.md and permissions from
 // project/user settings, but does NOT load mcpServers from those files.
 // We read them ourselves and pass them via the `mcpServers` option.
+//
+// Two transports supported:
+//   - stdio: { command, args, env }       — default, spawns a subprocess
+//   - http:  { url, headers, type:'http' } — talks to a remote MCP server
+// Any `${VAR}` tokens in env values or header values are resolved against
+// process.env so we can keep secrets out of .claude/settings.json.
 
-interface McpStdioConfig {
+export interface McpStdioConfig {
+  type?: 'stdio';
   command: string;
   args?: string[];
   env?: Record<string, string>;
 }
 
-function loadMcpServers(allowlist?: string[]): Record<string, McpStdioConfig> {
-  const merged: Record<string, McpStdioConfig> = {};
+export interface McpHttpConfig {
+  type: 'http' | 'sse';
+  url: string;
+  headers?: Record<string, string>;
+}
+
+export type McpConfig = McpStdioConfig | McpHttpConfig;
+
+/**
+ * Expand ${VAR} placeholders in a string using process.env.
+ * Unknown variables are left as-is so the MCP server can surface a clear
+ * error instead of silently getting an empty value.
+ */
+function expandEnvVars(value: string): string {
+  return value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (full, name) => {
+    const resolved = process.env[name];
+    return resolved !== undefined ? resolved : full;
+  });
+}
+
+function expandRecord(
+  rec: Record<string, string> | undefined,
+): Record<string, string> | undefined {
+  if (!rec) return undefined;
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(rec)) {
+    out[k] = typeof v === 'string' ? expandEnvVars(v) : v;
+  }
+  return out;
+}
+
+function loadMcpServers(allowlist?: string[]): Record<string, McpConfig> {
+  const merged: Record<string, McpConfig> = {};
 
   // Load from project settings (.claude/settings.json in cwd)
   const projectSettings = path.join(agentCwd ?? PROJECT_ROOT, '.claude', 'settings.json');
@@ -37,11 +75,26 @@ function loadMcpServers(allowlist?: string[]): Record<string, McpStdioConfig> {
       if (servers && typeof servers === 'object') {
         for (const [name, config] of Object.entries(servers)) {
           const cfg = config as Record<string, unknown>;
-          if (cfg.command && typeof cfg.command === 'string') {
+
+          // HTTP/SSE transport: url-based, no subprocess
+          if (typeof cfg.url === 'string') {
+            const transport = cfg.type === 'sse' ? 'sse' : 'http';
+            const headers = expandRecord(cfg.headers as Record<string, string> | undefined);
             merged[name] = {
-              command: cfg.command,
-              ...(cfg.args ? { args: cfg.args as string[] } : {}),
-              ...(cfg.env ? { env: cfg.env as Record<string, string> } : {}),
+              type: transport,
+              url: expandEnvVars(cfg.url),
+              ...(headers ? { headers } : {}),
+            };
+            continue;
+          }
+
+          // Stdio transport: command-based (default)
+          if (typeof cfg.command === 'string') {
+            const env = expandRecord(cfg.env as Record<string, string> | undefined);
+            merged[name] = {
+              command: expandEnvVars(cfg.command),
+              ...(cfg.args ? { args: (cfg.args as string[]).map(expandEnvVars) } : {}),
+              ...(env ? { env } : {}),
             };
           }
         }

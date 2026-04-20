@@ -24,6 +24,12 @@ const envConfig = readEnvFile([
   'SECURITY_PIN_HASH',
   'IDLE_LOCK_MINUTES',
   'EMERGENCY_KILL_PHRASE',
+  'MEMORY_NUDGE_INTERVAL_TURNS',
+  'MEMORY_NUDGE_INTERVAL_HOURS',
+  'EXFILTRATION_GUARD_ENABLED',
+  'PROTECTED_ENV_VARS',
+  'SMART_ROUTING_ENABLED',
+  'SMART_ROUTING_CHEAP_MODEL',
 ]);
 
 // ── Multi-agent support ──────────────────────────────────────────────
@@ -178,4 +184,33 @@ export const IDLE_LOCK_MINUTES = parseInt(
 // Emergency kill phrase. Sending this to any bot immediately stops all agents and exits.
 export const EMERGENCY_KILL_PHRASE =
   process.env.EMERGENCY_KILL_PHRASE || envConfig.EMERGENCY_KILL_PHRASE || '';
+
+// ── Memory nudge (reminds agent to save long-term memory after a gap) ──
+// Turns since last memory save before a nudge fires.
+export const MEMORY_NUDGE_INTERVAL_TURNS = parseInt(
+  process.env.MEMORY_NUDGE_INTERVAL_TURNS || envConfig.MEMORY_NUDGE_INTERVAL_TURNS || '10',
+  10,
+);
+// Hours since last memory save before a nudge fires (whichever comes first).
+export const MEMORY_NUDGE_INTERVAL_HOURS = parseInt(
+  process.env.MEMORY_NUDGE_INTERVAL_HOURS || envConfig.MEMORY_NUDGE_INTERVAL_HOURS || '2',
+  10,
+);
+
+// ── Exfiltration guard (redacts secrets from outbound Telegram replies) ──
+export const EXFILTRATION_GUARD_ENABLED =
+  (process.env.EXFILTRATION_GUARD_ENABLED || envConfig.EXFILTRATION_GUARD_ENABLED || 'true').toLowerCase() === 'true';
+
+// Env var names whose values (base64/url-encoded variants included) are
+// scanned for in outbound responses and redacted if they leak.
+export const PROTECTED_ENV_VARS = (
+  process.env.PROTECTED_ENV_VARS || envConfig.PROTECTED_ENV_VARS ||
+  'ANTHROPIC_API_KEY,CLAUDE_CODE_OAUTH_TOKEN,DB_ENCRYPTION_KEY,TELEGRAM_BOT_TOKEN,SLACK_USER_TOKEN,GROQ_API_KEY,ELEVENLABS_API_KEY,GOOGLE_API_KEY'
+).split(',').map((s) => s.trim()).filter(Boolean);
+
+// ── Smart model routing (cheaper model for simple acknowledgements) ──
+export const SMART_ROUTING_ENABLED =
+  (process.env.SMART_ROUTING_ENABLED || envConfig.SMART_ROUTING_ENABLED || 'false').toLowerCase() === 'true';
+export const SMART_ROUTING_CHEAP_MODEL =
+  process.env.SMART_ROUTING_CHEAP_MODEL || envConfig.SMART_ROUTING_CHEAP_MODEL || 'haiku';
 
