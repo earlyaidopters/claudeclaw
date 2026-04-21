@@ -64,3 +64,8 @@ TASKS.md
 
 # Machine-specific launchd plists (contain absolute home paths)
 launchd/com.claudeclaw.tunnel.plist
+
+# War Room (Python) local artifacts
+warroom/.venv/
+warroom/__pycache__/
+warroom/**/__pycache__/
