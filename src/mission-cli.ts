@@ -48,12 +48,18 @@ const priorityArg = priorityFlagIdx !== -1
   ? parseInt(process.argv[priorityFlagIdx + 1] ?? '0', 10)
   : 5;
 
+// Parse --acceptance-criteria flag (optional verifiable outcome contract)
+const acceptanceFlagIdx = process.argv.indexOf('--acceptance-criteria');
+const acceptanceArg = acceptanceFlagIdx !== -1
+  ? process.argv[acceptanceFlagIdx + 1] ?? null
+  : null;
+
 // Who created this task
 const createdBy = process.env.CLAUDECLAW_AGENT_ID ?? 'main';
 
 // Clean argv: remove all flag pairs
 const flagIndices = new Set<number>();
-[agentFlagIdx, titleFlagIdx, statusFlagIdx, priorityFlagIdx].forEach(idx => {
+[agentFlagIdx, titleFlagIdx, statusFlagIdx, priorityFlagIdx, acceptanceFlagIdx].forEach(idx => {
   if (idx !== -1) { flagIndices.add(idx); flagIndices.add(idx + 1); }
 });
 const cleanedArgv = process.argv.filter((_, i) => !flagIndices.has(i));
@@ -76,13 +82,16 @@ switch (command) {
     }
     const title = titleArg || prompt.slice(0, 60);
     const id = randomBytes(4).toString('hex');
-    createMissionTask(id, title, prompt, targetAgent ?? null, createdBy, priorityArg);
+    createMissionTask(id, title, prompt, targetAgent ?? null, createdBy, priorityArg, acceptanceArg);
 
     console.log(`Mission task created: ${id}`);
     console.log(`  Title:    ${title}`);
     console.log(`  Agent:    ${targetAgent || 'unassigned (use dashboard to assign)'}`);
     console.log(`  Priority: ${priorityArg}`);
     console.log(`  Prompt:   ${prompt.slice(0, 100)}${prompt.length > 100 ? '...' : ''}`);
+    if (acceptanceArg) {
+      console.log(`  Accept:   ${acceptanceArg.slice(0, 100)}${acceptanceArg.length > 100 ? '...' : ''}`);
+    }
     break;
   }
 

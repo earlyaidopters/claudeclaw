@@ -15,6 +15,7 @@ import { runDecaySweep } from './memory.js';
 import { initOAuthHealthCheck } from './oauth-health.js';
 import { initOrchestrator } from './orchestrator.js';
 import { initScheduler } from './scheduler.js';
+import { sendAlert } from './alert-router.js';
 import { setTelegramConnected, setBotInfo } from './state.js';
 
 // Parse --agent flag
@@ -179,30 +180,25 @@ async function main(): Promise<void> {
   }
 
   if (ALLOWED_CHAT_ID) {
+    // Scheduler owns its own sendAlert calls for task/mission results (mission
+    // 9b3dc2d1). The sender callback here is the fallback path for ad-hoc
+    // status messages; route it through sendAlert so nothing bypasses the
+    // router.
     initScheduler(
       async (text) => {
-        // Split long messages to respect Telegram's 4096 char limit.
-        // The scheduler's splitMessage handles chunking, but the sender
-        // callback is also called directly for status messages which may exceed the limit.
-        const { splitMessage } = await import('./bot.js');
-        for (const chunk of splitMessage(text)) {
-          await bot.api.sendMessage(ALLOWED_CHAT_ID, chunk, { parse_mode: 'HTML' }).catch((err) =>
-            logger.error({ err }, 'Scheduler failed to send message'),
-          );
-        }
+        await sendAlert({
+          agentId: AGENT_ID,
+          chatId: ALLOWED_CHAT_ID,
+          content: text,
+          category: 'task_result',
+        }).catch((err) => logger.error({ err }, 'Scheduler failed to send message'));
       },
       AGENT_ID,
     );
 
-    // Proactive OAuth health monitoring - alerts before token expires
-    initOAuthHealthCheck(async (text) => {
-      const { splitMessage } = await import('./bot.js');
-      for (const chunk of splitMessage(text)) {
-        await bot.api.sendMessage(ALLOWED_CHAT_ID, chunk, { parse_mode: 'HTML' }).catch((err) =>
-          logger.error({ err }, 'OAuth health alert failed'),
-        );
-      }
-    });
+    // Proactive OAuth health monitoring - alerts before token expires.
+    // oauth-health.ts now emits directly via sendAlert(); no callback needed.
+    initOAuthHealthCheck();
   } else {
     logger.warn('ALLOWED_CHAT_ID not set — scheduler disabled (no destination for results)');
   }

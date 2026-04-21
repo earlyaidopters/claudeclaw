@@ -217,18 +217,19 @@ function createSchema(database: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_inter_agent_tasks_status ON inter_agent_tasks(status, created_at DESC);
 
     CREATE TABLE IF NOT EXISTS mission_tasks (
-      id              TEXT PRIMARY KEY,
-      title           TEXT NOT NULL,
-      prompt          TEXT NOT NULL,
-      assigned_agent  TEXT,
-      status          TEXT NOT NULL DEFAULT 'queued',
-      result          TEXT,
-      error           TEXT,
-      created_by      TEXT NOT NULL DEFAULT 'dashboard',
-      priority        INTEGER NOT NULL DEFAULT 0,
-      created_at      INTEGER NOT NULL,
-      started_at      INTEGER,
-      completed_at    INTEGER
+      id                  TEXT PRIMARY KEY,
+      title               TEXT NOT NULL,
+      prompt              TEXT NOT NULL,
+      assigned_agent      TEXT,
+      status              TEXT NOT NULL DEFAULT 'queued',
+      result              TEXT,
+      error               TEXT,
+      created_by          TEXT NOT NULL DEFAULT 'dashboard',
+      priority            INTEGER NOT NULL DEFAULT 0,
+      created_at          INTEGER NOT NULL,
+      started_at          INTEGER,
+      completed_at        INTEGER,
+      acceptance_criteria TEXT
     );
 
     CREATE INDEX IF NOT EXISTS idx_mission_status
@@ -283,6 +284,9 @@ export function initDatabase(): void {
 
   db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
+  // Wait up to 5s for a lock instead of throwing SQLITE_BUSY immediately.
+  // Multiple agent daemons share this DB; without this, contention crashes workers.
+  db.pragma('busy_timeout = 5000');
   createSchema(db);
   runMigrations(db);
 
@@ -529,6 +533,13 @@ function runMigrations(database: Database.Database): void {
         ON mission_tasks(assigned_agent, status, priority DESC, created_at ASC);
     `);
     logger.info('Migration: made mission_tasks.assigned_agent nullable');
+  }
+
+  // Mission Control: add acceptance_criteria column for verifiable outcomes (Watchdog B)
+  const missionColsPost = database.prepare(`PRAGMA table_info(mission_tasks)`).all() as Array<{ name: string }>;
+  if (!missionColsPost.some((c) => c.name === 'acceptance_criteria')) {
+    database.exec(`ALTER TABLE mission_tasks ADD COLUMN acceptance_criteria TEXT`);
+    logger.info('Migration: added acceptance_criteria column to mission_tasks');
   }
 }
 
@@ -1804,6 +1815,7 @@ export interface MissionTask {
   created_at: number;
   started_at: number | null;
   completed_at: number | null;
+  acceptance_criteria: string | null;
 }
 
 export function createMissionTask(
@@ -1813,12 +1825,13 @@ export function createMissionTask(
   assignedAgent: string | null = null,
   createdBy = 'dashboard',
   priority = 0,
+  acceptanceCriteria: string | null = null,
 ): void {
   const now = Math.floor(Date.now() / 1000);
   db.prepare(
-    `INSERT INTO mission_tasks (id, title, prompt, assigned_agent, status, created_by, priority, created_at)
-     VALUES (?, ?, ?, ?, 'queued', ?, ?, ?)`,
-  ).run(id, title, prompt, assignedAgent, createdBy, priority, now);
+    `INSERT INTO mission_tasks (id, title, prompt, assigned_agent, status, created_by, priority, created_at, acceptance_criteria)
+     VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?)`,
+  ).run(id, title, prompt, assignedAgent, createdBy, priority, now, acceptanceCriteria);
 }
 
 export function getUnassignedMissionTasks(): MissionTask[] {
@@ -2050,4 +2063,222 @@ export function invalidateSlide(fragranceId: string, slideType?: string): void {
       `UPDATE dion_slide_cache SET invalidated = 1 WHERE fragrance_id = ?`,
     ).run(fragranceId);
   }
+}
+
+// ── Kanban Tasks (ported from Supabase 2026-04-19) ─────────────────
+// Table created by migration v1.2.0/port-supabase-operational-tables.ts.
+// priority: 'low' | 'medium' | 'high' | 'critical'
+// column_id: 'todo' | 'inprogress' | 'blocked' | 'done'
+
+export interface KanbanTask {
+  id: string;
+  title: string;
+  description: string | null;
+  priority: string | null;
+  due_date: string | null;
+  tags: string; // JSON array (string in DB)
+  column_id: string | null;
+  notes: string | null;
+  created_at: number;
+  updated_at: number;
+  created_by: string | null;
+}
+
+export function getKanbanTasks(opts?: {
+  column?: string;
+  priority?: string;
+  limit?: number;
+}): KanbanTask[] {
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+  if (opts?.column) {
+    conditions.push('column_id = ?');
+    params.push(opts.column);
+  }
+  if (opts?.priority) {
+    conditions.push('priority = ?');
+    params.push(opts.priority);
+  }
+  const where = conditions.length ? ' WHERE ' + conditions.join(' AND ') : '';
+  // Priority DESC: sort critical > high > medium > low > (others)
+  const orderExpr = `
+    column_id,
+    CASE LOWER(COALESCE(priority, ''))
+      WHEN 'critical' THEN 0
+      WHEN 'high'     THEN 1
+      WHEN 'medium'   THEN 2
+      WHEN 'low'      THEN 3
+      ELSE 4
+    END,
+    updated_at DESC
+  `;
+  const limitClause = opts?.limit && Number.isFinite(opts.limit) ? ' LIMIT ' + Math.floor(opts.limit) : '';
+  return db
+    .prepare(`SELECT * FROM kanban_tasks${where} ORDER BY ${orderExpr}${limitClause}`)
+    .all(...params) as KanbanTask[];
+}
+
+export function getKanbanTaskById(id: string): KanbanTask | null {
+  return (db.prepare('SELECT * FROM kanban_tasks WHERE id = ?').get(id) as KanbanTask) ?? null;
+}
+
+export function createKanbanTask(input: {
+  title: string;
+  description?: string | null;
+  priority?: string | null;
+  column_id?: string | null;
+}): KanbanTask | null {
+  const id = crypto.randomUUID();
+  const now = Math.floor(Date.now() / 1000);
+  db.prepare(
+    `INSERT INTO kanban_tasks (id, title, description, priority, tags, column_id, created_at, updated_at, created_by)
+     VALUES (?, ?, ?, ?, '[]', ?, ?, ?, 'dashboard')`,
+  ).run(
+    id,
+    input.title,
+    input.description ?? null,
+    input.priority ?? 'medium',
+    input.column_id ?? 'todo',
+    now,
+    now,
+  );
+  return getKanbanTaskById(id);
+}
+
+export function updateKanbanTask(
+  id: string,
+  patch: {
+    title?: string;
+    description?: string | null;
+    priority?: string | null;
+    column_id?: string | null;
+    notes?: string | null;
+  },
+): KanbanTask | null {
+  const sets: string[] = [];
+  const params: unknown[] = [];
+  if (patch.title !== undefined) { sets.push('title = ?'); params.push(patch.title); }
+  if (patch.description !== undefined) { sets.push('description = ?'); params.push(patch.description); }
+  if (patch.priority !== undefined) { sets.push('priority = ?'); params.push(patch.priority); }
+  if (patch.column_id !== undefined) { sets.push('column_id = ?'); params.push(patch.column_id); }
+  if (patch.notes !== undefined) { sets.push('notes = ?'); params.push(patch.notes); }
+  if (sets.length === 0) return getKanbanTaskById(id);
+  sets.push(`updated_at = strftime('%s','now')`);
+  params.push(id);
+  db.prepare(`UPDATE kanban_tasks SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+  return getKanbanTaskById(id);
+}
+
+export function deleteKanbanTask(id: string): boolean {
+  const result = db.prepare('DELETE FROM kanban_tasks WHERE id = ?').run(id);
+  return result.changes > 0;
+}
+
+// ── Kanban assignments (derived, read-only) ─────────────────────────
+// Surfaces which agent is actively working on each kanban task by
+// joining two pre-existing sources (no schema changes):
+//   1. anti_idle_sessions (status='running')   — authoritative
+//   2. mission_tasks (ANTI-IDLE DISPATCH prompt, status in queued|running) — fallback
+// Returns a map keyed by kanban_task_id. Tasks with no active assignment
+// are omitted entirely.
+export type KanbanAssignment = {
+  agent: string;
+  mission_id: string | null;
+  status: 'running' | 'queued';
+  since: number;
+};
+
+export function getKanbanAssignments(): Record<string, KanbanAssignment> {
+  const out: Record<string, KanbanAssignment> = {};
+
+  // Source 2 first (lower priority). Extracts kanban_task_id from the
+  // dispatch prompt via a LIKE-filter on the database side; parsing is
+  // done in JS for clarity. Most recent per task_id wins (ORDER BY DESC +
+  // first-write wins).
+  const missionRows = db
+    .prepare(
+      `SELECT id, assigned_agent, status, prompt, created_at
+         FROM mission_tasks
+        WHERE status IN ('queued', 'running')
+          AND prompt LIKE 'ANTI-IDLE DISPATCH%kanban_task_id: %'
+        ORDER BY created_at DESC`,
+    )
+    .all() as Array<{
+      id: string;
+      assigned_agent: string | null;
+      status: string;
+      prompt: string;
+      created_at: number;
+    }>;
+
+  for (const row of missionRows) {
+    const m = row.prompt.match(/^kanban_task_id:\s*(\S+)/m);
+    if (!m) continue;
+    const taskId = m[1];
+    if (out[taskId]) continue; // most recent already taken
+    const status: 'running' | 'queued' = row.status === 'running' ? 'running' : 'queued';
+    out[taskId] = {
+      agent: row.assigned_agent || 'unknown',
+      mission_id: row.id,
+      status,
+      since: row.created_at,
+    };
+  }
+
+  // Source 1 unconditionally overrides Source 2. ORDER BY started_at DESC
+  // + first-write-wins ensures most recent session wins within the source.
+  const sessionRows = db
+    .prepare(
+      `SELECT task_id, routing_target, mission_task_id, started_at
+         FROM anti_idle_sessions
+        WHERE status = 'running'
+        ORDER BY started_at DESC`,
+    )
+    .all() as Array<{
+      task_id: string;
+      routing_target: string;
+      mission_task_id: string | null;
+      started_at: number;
+    }>;
+
+  const sessionOwned = new Set<string>();
+  for (const row of sessionRows) {
+    if (sessionOwned.has(row.task_id)) continue; // keep most recent session
+    sessionOwned.add(row.task_id);
+    out[row.task_id] = {
+      agent: row.routing_target,
+      mission_id: row.mission_task_id,
+      status: 'running',
+      since: row.started_at,
+    };
+  }
+
+  return out;
+}
+
+// Mirrors dispatcher anti-idle-check.mjs heading detection.
+// Returns which of the 4 required SOP sections are missing from a task description.
+// Headings checked (case-insensitive, alias groups):
+//   - objective       → OBJECTIVE | GOAL
+//   - desired_outcome → DESIRED OUTCOME | OUTCOME | SUCCESS CRITERIA
+//   - blocker         → BLOCKER | BLOCKED BY
+//   - next_step       → NEXT STEP | NEXT ACTION
+export function kanbanSopMissing(task: KanbanTask): string[] {
+  const text = [task.title, task.description, task.notes].filter(Boolean).join('\n');
+  const groups: Array<{ key: string; labels: string[] }> = [
+    { key: 'objective', labels: ['OBJECTIVE', 'GOAL'] },
+    { key: 'desired_outcome', labels: ['DESIRED OUTCOME', 'OUTCOME', 'SUCCESS CRITERIA'] },
+    { key: 'blocker', labels: ['BLOCKER', 'BLOCKED BY'] },
+    { key: 'next_step', labels: ['NEXT STEP', 'NEXT ACTION'] },
+  ];
+  const missing: string[] = [];
+  for (const g of groups) {
+    const hit = g.labels.some((label) => {
+      const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const re = new RegExp(`(?:^|\\n)\\s*${escaped}\\s*:`, 'i');
+      return re.test(text);
+    });
+    if (!hit) missing.push(g.key);
+  }
+  return missing;
 }
