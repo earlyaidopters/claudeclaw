@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { loadAgentConfig, resolveAgentDir, resolveAgentClaudeMd } from './agent-config.js';
-import { createBot } from './bot.js';
+import { createBot, loadVoiceEnabledChats } from './bot.js';
 import { checkPendingMigrations } from './migrations.js';
 import { ALLOWED_CHAT_ID, activeBotToken, STORE_DIR, PROJECT_ROOT, CLAUDECLAW_CONFIG, GOOGLE_API_KEY, setAgentOverrides, SECURITY_PIN_HASH, IDLE_LOCK_MINUTES, EMERGENCY_KILL_PHRASE } from './config.js';
 import { startDashboard } from './dashboard.js';
@@ -125,6 +125,9 @@ async function main(): Promise<void> {
 
   initDatabase();
   logger.info('Database ready');
+
+  loadVoiceEnabledChats();
+  logger.info('Voice settings loaded');
 
   // Initialize security (PIN lock, kill phrase, destructive confirmation, audit)
   initSecurity({

@@ -246,6 +246,14 @@ function createSchema(database: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_audit_time ON audit_log(created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_audit_agent ON audit_log(agent_id, created_at DESC);
 
+    CREATE TABLE IF NOT EXISTS chat_settings (
+      chat_id    TEXT NOT NULL,
+      key        TEXT NOT NULL,
+      value      TEXT NOT NULL,
+      updated_at INTEGER NOT NULL,
+      PRIMARY KEY (chat_id, key)
+    );
+
     CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
       summary,
       raw_text,
@@ -1901,6 +1909,32 @@ export function resetStuckMissionTasks(agentId: string): number {
     `UPDATE mission_tasks SET status = 'queued', started_at = NULL WHERE status = 'running' AND assigned_agent = ?`,
   ).run(agentId);
   return result.changes;
+}
+
+// ── Chat Settings ────────────────────────────────────────────────────
+
+export function getChatSetting(chatId: string, key: string): string | null {
+  const row = db
+    .prepare('SELECT value FROM chat_settings WHERE chat_id = ? AND key = ?')
+    .get(chatId, key) as { value: string } | undefined;
+  return row?.value ?? null;
+}
+
+export function setChatSetting(chatId: string, key: string, value: string): void {
+  db.prepare(
+    `INSERT OR REPLACE INTO chat_settings (chat_id, key, value, updated_at)
+     VALUES (?, ?, ?, ?)`,
+  ).run(chatId, key, value, Math.floor(Date.now() / 1000));
+}
+
+export function deleteChatSetting(chatId: string, key: string): void {
+  db.prepare('DELETE FROM chat_settings WHERE chat_id = ? AND key = ?').run(chatId, key);
+}
+
+export function getAllChatSettingsByKey(key: string): Array<{ chat_id: string; value: string }> {
+  return db
+    .prepare('SELECT chat_id, value FROM chat_settings WHERE key = ?')
+    .all(key) as Array<{ chat_id: string; value: string }>;
 }
 
 // ── Audit Log ────────────────────────────────────────────────────────

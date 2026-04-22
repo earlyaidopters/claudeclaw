@@ -40,3 +40,32 @@ scripts/waste-reminder.sh
 CLAUDE.md
 agents/*/agent.yaml
 agents/*/CLAUDE.md
+
+# Skills install artifacts (managed by the `skills` CLI).
+# Keep skills-lock.json tracked so installs are reproducible.
+.agents/
+.claude/skills/defuddle
+.claude/skills/json-canvas
+.claude/skills/obsidian-bases
+.claude/skills/obsidian-cli
+.claude/skills/obsidian-markdown
+
+# Third-party CLI cloned for reference (has its own .git)
+cli/
+
+# Personal knowledge base / memory
+memory/
+
+# Generated dashboard HTML (rebuilt from src/dashboard-html.ts)
+dashboard.html
+
+# Personal task tracker
+TASKS.md
+
+# Machine-specific launchd plists (contain absolute home paths)
+launchd/com.claudeclaw.tunnel.plist
+
+# War Room (Python) local artifacts
+warroom/.venv/
+warroom/__pycache__/
+warroom/**/__pycache__/
