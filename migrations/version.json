@@ -1,4 +1,11 @@
 {
-  "migrations": {   
+  "migrations": {
+    "v1.2.0": ["port-supabase-operational-tables"],
+    "v1.2.1": ["add-model-to-scheduled-tasks"],
+    "v1.3.0": ["add-dion-slide-cache"],
+    "v1.4.0": ["add-alert-router"],
+    "v1.5.0": ["add-mission-watchdog"],
+    "v1.6.0": ["add-mission-verifications"],
+    "v1.7.0": ["add-scheduled-task-escalation"]
   }
 }

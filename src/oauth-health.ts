@@ -2,12 +2,28 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 
+import { sendAlert } from './alert-router.js';
+import { AGENT_ID, ALLOWED_CHAT_ID } from './config.js';
 import { logger } from './logger.js';
 import { readEnvFile } from './env.js';
 
-type Sender = (text: string) => Promise<void>;
-
 const CREDENTIALS_PATH = path.join(os.homedir(), '.claude', '.credentials.json');
+
+async function emitOAuthAlert(content: string): Promise<void> {
+  if (!ALLOWED_CHAT_ID) return;
+  try {
+    await sendAlert({
+      agentId: AGENT_ID,
+      chatId: ALLOWED_CHAT_ID,
+      content,
+      // OAuth token problems block every API call — treat as realtime error,
+      // not a digest item. classify() already promotes 'error' to realtime.
+      category: 'error',
+    });
+  } catch (err) {
+    logger.error({ err }, 'OAuth health alert failed');
+  }
+}
 
 /** Don't spam - track last alert level to avoid repeating */
 let lastAlertLevel: 'none' | 'warning' | 'expired' = 'none';
@@ -40,7 +56,7 @@ function getAlertThresholdMs(): number {
   return (isNaN(hours) || hours < 1 ? 2 : hours) * 60 * 60 * 1000;
 }
 
-async function checkOAuthHealth(sender: Sender): Promise<void> {
+async function checkOAuthHealth(): Promise<void> {
   // If a long-lived setup token is configured, the credentials file is irrelevant
   const env = readEnvFile(['CLAUDE_CODE_OAUTH_TOKEN']);
   if (env.CLAUDE_CODE_OAUTH_TOKEN) {
@@ -54,7 +70,7 @@ async function checkOAuthHealth(sender: Sender): Promise<void> {
   if (!creds?.claudeAiOauth?.expiresAt) {
     if (lastAlertLevel !== 'expired') {
       lastAlertLevel = 'expired';
-      await sender(
+      await emitOAuthAlert(
         '<b>OAuth Health Check</b>\n\n' +
         'Cannot read OAuth token.\n' +
         'File missing or invalid structure.\n\n' +
@@ -75,7 +91,7 @@ async function checkOAuthHealth(sender: Sender): Promise<void> {
     if (lastAlertLevel !== 'expired') {
       lastAlertLevel = 'expired';
       logger.error({ expiresAt, remainingMs }, 'OAuth token EXPIRED');
-      await sender(
+      await emitOAuthAlert(
         '<b>OAuth Health Check - TOKEN EXPIRED</b>\n\n' +
         `The OAuth token expired ${Math.abs(remainingMinutes)} minutes ago.\n` +
         'All API calls will fail until renewed.\n\n' +
@@ -87,7 +103,7 @@ async function checkOAuthHealth(sender: Sender): Promise<void> {
     if (lastAlertLevel !== 'warning') {
       lastAlertLevel = 'warning';
       logger.warn({ expiresAt, remainingHours, remainingMinutes }, 'OAuth token expiring soon');
-      await sender(
+      await emitOAuthAlert(
         '<b>OAuth Health Check - Expiring soon</b>\n\n' +
         `The OAuth token expires in <b>${remainingHours}h${remainingMinutes}min</b>.\n\n` +
         '<b>Recommended action:</b>\n' +
@@ -106,7 +122,7 @@ async function checkOAuthHealth(sender: Sender): Promise<void> {
 /**
  * Start periodic OAuth health checks.
  * Monitors ~/.claude/.credentials.json for token expiration.
- * Alerts via the provided sender callback when expiration is near.
+ * Alerts route through sendAlert() (classified as 'error' → realtime).
  *
  * Configure via env vars:
  * - OAUTH_CHECK_MINUTES: check interval (default 30)
@@ -114,15 +130,15 @@ async function checkOAuthHealth(sender: Sender): Promise<void> {
  *
  * Automatically skips when CLAUDE_CODE_OAUTH_TOKEN is set.
  */
-export function initOAuthHealthCheck(sender: Sender): void {
+export function initOAuthHealthCheck(): void {
   const checkIntervalMs = getCheckIntervalMs();
   const alertThresholdMs = getAlertThresholdMs();
 
   // Initial check after 10s (let bot fully start)
-  setTimeout(() => void checkOAuthHealth(sender), 10_000);
+  setTimeout(() => void checkOAuthHealth(), 10_000);
 
   // Periodic checks
-  setInterval(() => void checkOAuthHealth(sender), checkIntervalMs);
+  setInterval(() => void checkOAuthHealth(), checkIntervalMs);
 
   logger.info(
     { intervalMin: checkIntervalMs / 60_000, alertThresholdHours: alertThresholdMs / (60 * 60 * 1000) },

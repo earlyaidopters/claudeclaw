@@ -1,11 +1,18 @@
-import { agentObsidianConfig, GOOGLE_API_KEY } from './config.js';
+import {
+  agentObsidianConfig,
+  GOOGLE_API_KEY,
+  MEMORY_NUDGE_INTERVAL_HOURS,
+  MEMORY_NUDGE_INTERVAL_TURNS,
+} from './config.js';
 import {
   batchUpdateMemoryRelevance,
   decayMemories,
   getConsolidationsWithEmbeddings,
+  getLastMemorySaveTime,
   getOtherAgentActivity,
   getRecentConsolidations,
   getRecentHighImportanceMemories,
+  getTurnCountSinceTimestamp,
   logConversationTurn,
   pruneConversationLog,
   pruneSlackMessages,
@@ -260,6 +267,29 @@ ${memoryList}`;
     // Non-fatal, never block
   }
 }
+
+/**
+ * Check whether a memory nudge should be injected into the next context.
+ * Returns true when either enough turns or enough time has elapsed since
+ * the last memory save for this chat+agent. Returns false on the first
+ * conversation (no memories yet) so we don't pester fresh installs.
+ */
+export function shouldNudgeMemory(chatId: string, agentId = 'main'): boolean {
+  const lastSave = getLastMemorySaveTime(chatId, agentId);
+  if (lastSave === null) return false;
+
+  const now = Math.floor(Date.now() / 1000);
+  const hoursSinceSave = (now - lastSave) / 3600;
+  if (hoursSinceSave >= MEMORY_NUDGE_INTERVAL_HOURS) return true;
+
+  const turnsSinceSave = getTurnCountSinceTimestamp(chatId, lastSave, agentId);
+  if (turnsSinceSave >= MEMORY_NUDGE_INTERVAL_TURNS) return true;
+
+  return false;
+}
+
+export const MEMORY_NUDGE_TEXT =
+  '[Memory nudge: It has been a while since anything was saved to long-term memory. If any decisions, preferences, or important facts came up in this conversation, consider mentioning them so they can be remembered.]';
 
 /** Safely parse a JSON array string, returning [] on failure. */
 function safeParse(json: string): string[] {

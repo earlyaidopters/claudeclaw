@@ -160,6 +160,7 @@ export function getDashboardHtml(token: string, chatId: string): string {
     <span id="device-badge" class="device-badge"></span>
   </div>
   <div class="flex items-center gap-3">
+    <a href="/kanban?token=${encodeURIComponent(token)}" class="text-xs text-gray-400 hover:text-white transition" style="text-decoration:none;padding:4px 10px;border:1px solid #2a2a2a;border-radius:8px;background:#1a1a1a">Kanban</a>
     <span id="last-updated" class="text-xs text-gray-500"></span>
     <button id="refresh-btn" onclick="refreshAll()" class="text-gray-400 hover:text-white transition">
       <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -2283,6 +2284,439 @@ async function abortProcessing() {
     <button class="chat-send-btn" id="chat-send-btn" onclick="sendChatMessage()">Send</button>
   </div>
 </div>
+
+</body>
+</html>`;
+}
+
+// ── Kanban board page ────────────────────────────────────────────────
+// Standalone /kanban page. Matches the dark dashboard aesthetic but is
+// intentionally self-contained (no Tailwind CDN — one small CSS block).
+export function getKanbanHtml(token: string): string {
+  const TPL_PLACEHOLDER =
+    'OBJECTIVE: …\\nDESIRED OUTCOME: …\\nBLOCKER: none\\nNEXT STEP: …';
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ClaudeClaw Kanban</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #0f0f0f; color: #e0e0e0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
+  .top-bar { display: flex; align-items: center; justify-content: space-between; padding: 12px 20px; border-bottom: 1px solid #1e1e1e; background: #141414; position: sticky; top: 0; z-index: 10; }
+  .top-bar h1 { margin: 0; font-size: 18px; font-weight: 700; }
+  .top-bar .nav-link { color: #9ca3af; font-size: 12px; text-decoration: none; padding: 4px 10px; border: 1px solid #2a2a2a; border-radius: 8px; background: #1a1a1a; margin-right: 8px; }
+  .top-bar .nav-link:hover { color: #fff; }
+  .top-bar .new-btn { background: #4f46e5; color: #fff; border: none; border-radius: 8px; padding: 6px 14px; font-size: 12px; font-weight: 600; cursor: pointer; }
+  .top-bar .new-btn:hover { background: #4338ca; }
+  .board { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; padding: 16px; }
+  @media (max-width: 900px) { .board { grid-template-columns: 1fr; } }
+  .column { background: #141414; border: 1px solid #1e1e1e; border-radius: 12px; padding: 10px; min-height: 300px; }
+  .column-head { display: flex; align-items: center; justify-content: space-between; padding: 4px 6px 8px; font-size: 11px; text-transform: uppercase; letter-spacing: 0.6px; color: #6b7280; font-weight: 700; border-bottom: 1px solid #1e1e1e; margin-bottom: 8px; }
+  .column-count { background: #1e1e1e; color: #9ca3af; padding: 1px 8px; border-radius: 10px; font-size: 10px; }
+  .card { position: relative; background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; cursor: pointer; transition: border-color 0.15s, transform 0.1s; }
+  .card:hover { border-color: #4f46e5; }
+  .card:active { transform: scale(0.99); }
+  .card-title { font-size: 13px; font-weight: 600; color: #e0e0e0; line-height: 1.35; margin-bottom: 6px; word-break: break-word; padding-right: 72px; }
+  .agent-chip { position: absolute; top: 8px; right: 8px; font-size: 10px; font-weight: 700; text-transform: lowercase; letter-spacing: 0.3px; padding: 2px 8px; border-radius: 999px; line-height: 1.4; max-width: 66px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .agent-chip.queued { background: transparent; border-style: dashed; border-width: 1px; }
+  .agent-chip.running { border-style: solid; border-width: 1px; }
+  .card-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .badge { display: inline-block; font-size: 10px; padding: 2px 8px; border-radius: 999px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.4px; }
+  .pr-critical { background: #3b0f0f; color: #fca5a5; }
+  .pr-high     { background: #422006; color: #fbbf24; }
+  .pr-medium   { background: #1e3a5f; color: #60a5fa; }
+  .pr-low      { background: #1f2937; color: #9ca3af; }
+  .pr-unknown  { background: #1f2937; color: #6b7280; }
+  .age { font-size: 10px; color: #6b7280; }
+  .warn { font-size: 13px; line-height: 1; margin-left: auto; }
+  .warn-grey { color: #6b7280; }
+  .warn-red  { color: #f87171; }
+  .empty { color: #4b5563; font-size: 12px; padding: 20px 6px; text-align: center; }
+  .status-line { padding: 8px 20px; font-size: 11px; color: #6b7280; border-bottom: 1px solid #1e1e1e; }
+  /* Modal */
+  .overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 40; opacity: 0; pointer-events: none; transition: opacity 0.15s; }
+  .overlay.open { opacity: 1; pointer-events: auto; }
+  .modal { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%) scale(0.97); z-index: 50; background: #141414; border: 1px solid #2a2a2a; border-radius: 12px; width: 92%; max-width: 560px; max-height: 88vh; opacity: 0; pointer-events: none; transition: opacity 0.15s, transform 0.15s; display: flex; flex-direction: column; }
+  .modal.open { opacity: 1; pointer-events: auto; transform: translate(-50%, -50%) scale(1); }
+  .modal-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid #1e1e1e; }
+  .modal-head h3 { margin: 0; font-size: 14px; font-weight: 700; }
+  .modal-close { background: none; border: none; color: #6b7280; font-size: 20px; cursor: pointer; line-height: 1; }
+  .modal-close:hover { color: #fff; }
+  .modal-body { padding: 14px 16px; overflow-y: auto; }
+  .modal-foot { padding: 12px 16px; border-top: 1px solid #1e1e1e; display: flex; gap: 8px; justify-content: flex-end; }
+  .field { margin-bottom: 10px; }
+  .field label { display: block; font-size: 11px; color: #9ca3af; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.4px; }
+  .field input, .field select, .field textarea { width: 100%; background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 8px; padding: 8px 10px; color: #e0e0e0; font-size: 13px; outline: none; font-family: inherit; }
+  .field input:focus, .field select:focus, .field textarea:focus { border-color: #4f46e5; }
+  .field textarea { resize: vertical; min-height: 160px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.5; white-space: pre; }
+  .field-row { display: flex; gap: 10px; }
+  .field-row > .field { flex: 1; }
+  .btn { border: none; border-radius: 8px; padding: 8px 14px; font-size: 13px; font-weight: 600; cursor: pointer; }
+  .btn-primary { background: #4f46e5; color: #fff; }
+  .btn-primary:hover { background: #4338ca; }
+  .btn-danger  { background: #3b0f0f; color: #fca5a5; border: 1px solid #7f1d1d; }
+  .btn-danger:hover { background: #7f1d1d; color: #fff; }
+  .btn-secondary { background: #1a1a1a; color: #9ca3af; border: 1px solid #2a2a2a; }
+  .btn-secondary:hover { color: #fff; border-color: #3a3a3a; }
+  .missing-note { font-size: 11px; color: #fbbf24; margin-top: 4px; min-height: 14px; }
+  .error-note { font-size: 12px; color: #f87171; margin-top: 6px; }
+</style>
+</head>
+<body>
+
+<div class="top-bar">
+  <h1>ClaudeClaw <span style="color:#6b7280;font-weight:400;font-size:12px">Kanban</span></h1>
+  <div>
+    <a class="nav-link" href="/?token=${encodeURIComponent(token)}">&larr; Dashboard</a>
+    <button class="new-btn" onclick="openNewModal()">+ New task</button>
+  </div>
+</div>
+<div class="status-line" id="status-line">Loading…</div>
+
+<div class="board" id="board">
+  <div class="column" data-col="todo">
+    <div class="column-head">Todo <span class="column-count" id="count-todo">0</span></div>
+    <div class="column-body" id="col-todo"></div>
+  </div>
+  <div class="column" data-col="inprogress">
+    <div class="column-head">In Progress <span class="column-count" id="count-inprogress">0</span></div>
+    <div class="column-body" id="col-inprogress"></div>
+  </div>
+  <div class="column" data-col="blocked">
+    <div class="column-head">Blocked <span class="column-count" id="count-blocked">0</span></div>
+    <div class="column-body" id="col-blocked"></div>
+  </div>
+  <div class="column" data-col="done">
+    <div class="column-head">Done <span class="column-count" id="count-done">0</span></div>
+    <div class="column-body" id="col-done"></div>
+  </div>
+</div>
+
+<!-- Edit / create modal -->
+<div class="overlay" id="overlay" onclick="closeModal()"></div>
+<div class="modal" id="modal" role="dialog" aria-modal="true">
+  <div class="modal-head">
+    <h3 id="modal-title">Task</h3>
+    <button class="modal-close" onclick="closeModal()" aria-label="Close">&times;</button>
+  </div>
+  <div class="modal-body">
+    <div class="field">
+      <label for="f-title">Title</label>
+      <input id="f-title" type="text" maxlength="300" />
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label for="f-priority">Priority</label>
+        <select id="f-priority">
+          <option value="low">Low</option>
+          <option value="medium" selected>Medium</option>
+          <option value="high">High</option>
+          <option value="critical">Critical</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="f-column">Column</label>
+        <select id="f-column">
+          <option value="todo">Todo</option>
+          <option value="inprogress">In Progress</option>
+          <option value="blocked">Blocked</option>
+          <option value="done">Done</option>
+        </select>
+      </div>
+    </div>
+    <div class="field">
+      <label for="f-description">Description <span style="color:#6b7280;text-transform:none;letter-spacing:0">(fill all 4 sections so the dispatcher can pick it up)</span></label>
+      <textarea id="f-description" placeholder="${TPL_PLACEHOLDER}"></textarea>
+      <div class="missing-note" id="missing-note"></div>
+    </div>
+    <div class="error-note" id="err" style="display:none"></div>
+  </div>
+  <div class="modal-foot">
+    <button class="btn btn-danger" id="delete-btn" onclick="deleteTask()" style="display:none;margin-right:auto">Delete</button>
+    <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+    <button class="btn btn-primary" id="save-btn" onclick="saveTask()">Save</button>
+  </div>
+</div>
+
+<script>
+const TOKEN = ${JSON.stringify(token)};
+const Q = '?token=' + encodeURIComponent(TOKEN);
+const COLS = ['todo', 'inprogress', 'blocked', 'done'];
+const SOP_KEYS = ['objective', 'desired_outcome', 'blocker', 'next_step'];
+const SOP_RE = {
+  objective:       /(?:^|\\n)\\s*(OBJECTIVE|GOAL)\\s*:/i,
+  desired_outcome: /(?:^|\\n)\\s*(DESIRED OUTCOME|OUTCOME|SUCCESS CRITERIA)\\s*:/i,
+  blocker:         /(?:^|\\n)\\s*(BLOCKER|BLOCKED BY)\\s*:/i,
+  next_step:       /(?:^|\\n)\\s*(NEXT STEP|NEXT ACTION)\\s*:/i,
+};
+
+let editingId = null;
+let allTasks = [];
+let assignments = {};
+
+// Palette aligned with Mission Control's AGENT_COLORS, with additional
+// anti-idle routing targets ('builder') filled in with a distinct HSL.
+const AGENT_COLORS = {
+  main: '#4f46e5',
+  builder: '#22d3ee',
+  comms: '#0ea5e9',
+  content: '#f59e0b',
+  ops: '#10b981',
+  research: '#8b5cf6',
+};
+function agentColor(id) {
+  return AGENT_COLORS[String(id || '').toLowerCase()] || '#9ca3af';
+}
+
+function escapeHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function priorityClass(p) {
+  const k = String(p || '').toLowerCase();
+  if (k === 'critical') return 'pr-critical';
+  if (k === 'high') return 'pr-high';
+  if (k === 'medium') return 'pr-medium';
+  if (k === 'low') return 'pr-low';
+  return 'pr-unknown';
+}
+
+function priorityRank(p) {
+  const k = String(p || '').toLowerCase();
+  if (k === 'critical') return 0;
+  if (k === 'high') return 1;
+  if (k === 'medium') return 2;
+  if (k === 'low') return 3;
+  return 4;
+}
+
+function ageHours(task) {
+  const ts = Number(task.updated_at || task.created_at || 0);
+  if (!ts) return 0;
+  return (Date.now() / 1000 - ts) / 3600;
+}
+
+function ageLabel(h) {
+  if (h < 1) return Math.max(0, Math.round(h * 60)) + 'm';
+  if (h < 48) return Math.round(h) + 'h';
+  return Math.round(h / 24) + 'd';
+}
+
+function missingSopFields(task) {
+  const text = [task.title, task.description, task.notes].filter(Boolean).join('\\n');
+  return SOP_KEYS.filter((k) => !SOP_RE[k].test(text));
+}
+
+function renderAgentChip(taskId) {
+  const a = assignments[taskId];
+  if (!a || !a.agent) return '';
+  const color = agentColor(a.agent);
+  const cls = a.status === 'queued' ? 'queued' : 'running';
+  const solidBg = 'background:' + color + '22;color:' + color + ';border-color:' + color + ';';
+  const dashedBg = 'background:transparent;color:' + color + ';border-color:' + color + ';';
+  const style = cls === 'queued' ? dashedBg : solidBg;
+  const title = a.agent + ' \u00b7 ' + a.status + (a.mission_id ? ' \u00b7 ' + a.mission_id : '');
+  return '<span class="agent-chip ' + cls + '" style="' + style + '" title="' + escapeHtml(title) + '">' + escapeHtml(a.agent) + '</span>';
+}
+
+function renderCard(task) {
+  const missing = missingSopFields(task);
+  const warn = missing.length === 0 ? '' :
+    missing.length >= 3 ? '<span class="warn warn-red" title="' + missing.join(', ') + ' missing">&#9888;</span>' :
+    '<span class="warn warn-grey" title="' + missing.join(', ') + ' missing">&#9888;</span>';
+  const pr = String(task.priority || 'unknown').toLowerCase();
+  const h = ageHours(task);
+  const chip = renderAgentChip(task.id);
+  return (
+    '<div class="card" onclick="openEditModal(\\'' + task.id + '\\')">' +
+      chip +
+      '<div class="card-title">' + escapeHtml(task.title || '(untitled)') + '</div>' +
+      '<div class="card-meta">' +
+        '<span class="badge ' + priorityClass(pr) + '">' + escapeHtml(pr) + '</span>' +
+        '<span class="age">' + ageLabel(h) + '</span>' +
+        warn +
+      '</div>' +
+    '</div>'
+  );
+}
+
+async function loadBoard() {
+  const [tasksRes, assignRes] = await Promise.all([
+    fetch('/api/kanban/tasks' + Q),
+    fetch('/api/kanban/assignments' + Q),
+  ]);
+  if (!tasksRes.ok) {
+    document.getElementById('status-line').textContent = 'Load failed: HTTP ' + tasksRes.status;
+    return;
+  }
+  const data = await tasksRes.json();
+  allTasks = Array.isArray(data.tasks) ? data.tasks : [];
+  // Assignments are best-effort: if the call fails, cards still render.
+  if (assignRes.ok) {
+    const a = await assignRes.json().catch(() => ({}));
+    assignments = (a && typeof a === 'object') ? a : {};
+  } else {
+    assignments = {};
+  }
+  const byCol = { todo: [], inprogress: [], blocked: [], done: [] };
+  for (const t of allTasks) {
+    let c = String(t.column_id || 'todo').toLowerCase();
+    if (c === 'in_progress') c = 'inprogress';
+    if (!byCol[c]) c = 'todo';
+    byCol[c].push(t);
+  }
+  for (const c of COLS) {
+    byCol[c].sort((a, b) => priorityRank(a.priority) - priorityRank(b.priority) || Number(b.updated_at || 0) - Number(a.updated_at || 0));
+    const el = document.getElementById('col-' + c);
+    document.getElementById('count-' + c).textContent = byCol[c].length;
+    el.innerHTML = byCol[c].length ? byCol[c].map(renderCard).join('') : '<div class="empty">No tasks</div>';
+  }
+  document.getElementById('status-line').textContent =
+    allTasks.length + ' tasks \u00b7 ' + byCol.todo.length + ' todo / ' + byCol.inprogress.length + ' in-progress / ' + byCol.blocked.length + ' blocked / ' + byCol.done.length + ' done';
+}
+
+function openNewModal() {
+  editingId = null;
+  document.getElementById('modal-title').textContent = 'New task';
+  document.getElementById('f-title').value = '';
+  document.getElementById('f-priority').value = 'medium';
+  document.getElementById('f-column').value = 'todo';
+  document.getElementById('f-description').value =
+    'OBJECTIVE: \\nDESIRED OUTCOME: \\nBLOCKER: none\\nNEXT STEP: ';
+  document.getElementById('delete-btn').style.display = 'none';
+  document.getElementById('err').style.display = 'none';
+  updateMissingNote();
+  showModal();
+  document.getElementById('f-title').focus();
+}
+
+function openEditModal(id) {
+  const task = allTasks.find((t) => t.id === id);
+  if (!task) return;
+  editingId = id;
+  document.getElementById('modal-title').textContent = 'Edit task';
+  document.getElementById('f-title').value = task.title || '';
+  const p = String(task.priority || 'medium').toLowerCase();
+  document.getElementById('f-priority').value = ['low','medium','high','critical'].includes(p) ? p : 'medium';
+  let c = String(task.column_id || 'todo').toLowerCase();
+  if (c === 'in_progress') c = 'inprogress';
+  document.getElementById('f-column').value = COLS.includes(c) ? c : 'todo';
+  document.getElementById('f-description').value = task.description || '';
+  document.getElementById('delete-btn').style.display = '';
+  document.getElementById('err').style.display = 'none';
+  updateMissingNote();
+  showModal();
+}
+
+function updateMissingNote() {
+  const fake = {
+    title: document.getElementById('f-title').value,
+    description: document.getElementById('f-description').value,
+    notes: null,
+  };
+  const missing = missingSopFields(fake);
+  const el = document.getElementById('missing-note');
+  if (missing.length === 0) {
+    el.style.color = '#6ee7b7';
+    el.textContent = 'All 4 SOP sections present \u2713';
+  } else {
+    el.style.color = '#fbbf24';
+    el.textContent = 'Missing: ' + missing.join(', ');
+  }
+}
+
+document.addEventListener('input', (e) => {
+  if (e.target && (e.target.id === 'f-title' || e.target.id === 'f-description')) updateMissingNote();
+});
+
+function showModal() {
+  document.getElementById('overlay').classList.add('open');
+  document.getElementById('modal').classList.add('open');
+}
+function closeModal() {
+  document.getElementById('overlay').classList.remove('open');
+  document.getElementById('modal').classList.remove('open');
+  editingId = null;
+}
+
+async function saveTask() {
+  const btn = document.getElementById('save-btn');
+  const err = document.getElementById('err');
+  err.style.display = 'none';
+  const payload = {
+    title: document.getElementById('f-title').value.trim(),
+    priority: document.getElementById('f-priority').value,
+    column_id: document.getElementById('f-column').value,
+    description: document.getElementById('f-description').value,
+  };
+  if (!payload.title) {
+    err.textContent = 'Title is required';
+    err.style.display = '';
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = 'Saving…';
+  try {
+    let res;
+    if (editingId) {
+      res = await fetch('/api/kanban/tasks/' + encodeURIComponent(editingId) + Q, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+    } else {
+      res = await fetch('/api/kanban/tasks' + Q, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+    }
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}));
+      err.textContent = j.error || ('HTTP ' + res.status);
+      err.style.display = '';
+      return;
+    }
+    closeModal();
+    await loadBoard();
+  } catch (e) {
+    err.textContent = String(e && e.message ? e.message : e);
+    err.style.display = '';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Save';
+  }
+}
+
+async function deleteTask() {
+  if (!editingId) return;
+  if (!confirm('Delete this task? This cannot be undone.')) return;
+  const res = await fetch('/api/kanban/tasks/' + encodeURIComponent(editingId) + Q, { method: 'DELETE' });
+  if (!res.ok) {
+    const j = await res.json().catch(() => ({}));
+    const err = document.getElementById('err');
+    err.textContent = j.error || ('HTTP ' + res.status);
+    err.style.display = '';
+    return;
+  }
+  closeModal();
+  await loadBoard();
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeModal();
+});
+
+loadBoard();
+setInterval(loadBoard, 30000);
+</script>
 
 </body>
 </html>`;
