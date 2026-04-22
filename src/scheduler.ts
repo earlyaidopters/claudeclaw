@@ -20,6 +20,7 @@ import { formatForTelegram } from './bot.js';
 import { emitChatEvent } from './state.js';
 import { sendAlert } from './alert-router.js';
 import { notifyMissionCompletion } from './mission-autopush.js';
+import { maybeAdvanceCallPipeline } from './call-pipeline/chain-hook.js';
 
 type Sender = (text: string) => Promise<void>;
 
@@ -35,6 +36,32 @@ let sender: Sender;
  * Acts as a fast-path guard alongside the DB-level lock in markTaskRunning.
  */
 const runningTaskIds = new Set<string>();
+
+/**
+ * Fire-and-forget call-pipeline chain hook. The hook itself is a silent
+ * no-op for any non-pipeline mission, but we still wrap it so an
+ * unexpected bug in chain advancement never crashes the scheduler or
+ * prevents the next mission from being claimed.
+ */
+function advanceCallPipelineSafely(missionId: string): void {
+  try {
+    const r = maybeAdvanceCallPipeline(missionId);
+    if (r.fired) {
+      logger.info(
+        {
+          missionId,
+          stage: r.stage,
+          callMsgId: r.callMsgId,
+          reason: r.reason,
+          nextStageMissionId: r.nextStage?.missionId ?? null,
+        },
+        'call-pipeline: advanced',
+      );
+    }
+  } catch (err) {
+    logger.error({ err, missionId }, 'call-pipeline: chain hook threw');
+  }
+}
 
 /**
  * Initialise the scheduler. Call once after the Telegram bot is ready.
@@ -198,6 +225,7 @@ async function runDueMissionTasks(): Promise<void> {
         const mins = Math.round(TASK_TIMEOUT_MS / 60000);
         completeMissionTask(mission.id, null, 'failed', `Timed out after ${mins} minutes`);
         notifyMissionCompletion(mission.id);
+        advanceCallPipelineSafely(mission.id);
         logger.warn({ missionId: mission.id, timeoutMs: TASK_TIMEOUT_MS }, 'Mission task timed out');
         try {
           await sendAlert({
@@ -231,6 +259,7 @@ async function runDueMissionTasks(): Promise<void> {
         if (finalStatus === 'completed') {
           completeMissionTask(mission.id, text, 'completed');
           notifyMissionCompletion(mission.id);
+          advanceCallPipelineSafely(mission.id);
           logger.info({ missionId: mission.id, acceptance: hasAcceptance ? 'pass' : 'n/a' }, 'Mission task completed');
           await sendAlert({
             agentId: mission.assigned_agent || schedulerAgentId,
@@ -242,6 +271,7 @@ async function runDueMissionTasks(): Promise<void> {
         } else {
           completeMissionTask(mission.id, text, 'failed', failureReason?.slice(0, 500));
           notifyMissionCompletion(mission.id);
+          advanceCallPipelineSafely(mission.id);
           logger.warn({ missionId: mission.id, reason: failureReason }, 'Mission task failed acceptance');
           await sendAlert({
             agentId: mission.assigned_agent || schedulerAgentId,
@@ -274,6 +304,7 @@ async function runDueMissionTasks(): Promise<void> {
       const errMsg = err instanceof Error ? err.message : String(err);
       completeMissionTask(mission.id, null, 'failed', errMsg.slice(0, 500));
       notifyMissionCompletion(mission.id);
+      advanceCallPipelineSafely(mission.id);
       logger.error({ err, missionId: mission.id }, 'Mission task failed');
     } finally {
       runningTaskIds.delete(missionKey);
