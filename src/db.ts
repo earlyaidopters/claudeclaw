@@ -229,7 +229,8 @@ function createSchema(database: Database.Database): void {
       created_at          INTEGER NOT NULL,
       started_at          INTEGER,
       completed_at        INTEGER,
-      acceptance_criteria TEXT
+      acceptance_criteria TEXT,
+      autopushed_at       INTEGER
     );
 
     CREATE INDEX IF NOT EXISTS idx_mission_status
@@ -563,6 +564,17 @@ function runMigrations(database: Database.Database): void {
   if (!missionColsPost.some((c) => c.name === 'acceptance_criteria')) {
     database.exec(`ALTER TABLE mission_tasks ADD COLUMN acceptance_criteria TEXT`);
     logger.info('Migration: added acceptance_criteria column to mission_tasks');
+  }
+
+  // Mission Control: add autopushed_at column for Telegram auto-notification
+  // idempotency. When a mission completes or fails and was created_by='main'
+  // (i.e. Rudy queued it on Aditya's behalf), mission-autopush claims the row
+  // by CAS-stamping this column — guaranteeing exactly-once notification even
+  // if the completion hook is re-entered. NULL = not yet pushed.
+  // See src/mission-autopush.ts.
+  if (!missionColsPost.some((c) => c.name === 'autopushed_at')) {
+    database.exec(`ALTER TABLE mission_tasks ADD COLUMN autopushed_at INTEGER`);
+    logger.info('Migration: added autopushed_at column to mission_tasks');
   }
 
   // Call Pipeline: ensure call_pipeline_runs exists on legacy DBs. createSchema
@@ -1866,6 +1878,9 @@ export interface MissionTask {
   started_at: number | null;
   completed_at: number | null;
   acceptance_criteria: string | null;
+  /** Unix ts when the mission-autopush hook fired Telegram notification.
+   *  NULL = not yet pushed. Used as an atomic CAS claim so we never double-fire. */
+  autopushed_at: number | null;
 }
 
 export function createMissionTask(
@@ -2005,6 +2020,30 @@ export function resetStuckMissionTasks(agentId: string): number {
   ).run(agentId);
   return result.changes;
 }
+
+/**
+ * Atomically claim a mission for Telegram autopush notification.
+ *
+ * Stamps autopushed_at with the current unix timestamp IFF it's currently NULL.
+ * Returns true on the first claim, false on every subsequent call for the same
+ * mission — this is how the mission-autopush hook guarantees exactly-once
+ * notification even if the scheduler completion path is re-entered.
+ *
+ * Idempotent by design: safe to call on any mission id, including non-existent
+ * ones (returns false) and already-pushed ones (returns false).
+ */
+export function markMissionAutopushed(id: string): boolean {
+  const result = db.prepare(
+    `UPDATE mission_tasks SET autopushed_at = ? WHERE id = ? AND autopushed_at IS NULL`,
+  ).run(Math.floor(Date.now() / 1000), id);
+  return result.changes > 0;
+}
+
+/**
+ * Reason tag for an auto-retry, surfaced in the Telegram ping + hive_mind log
+ * so Aditya can see WHY the watchdog reran something without reading source.
+ */
+export type RetryReason = 'turn_cap' | 'timeout';
 
 // ── Call Pipeline Runs ───────────────────────────────────────────────
 // Durability layer for the 4-stage post-call pipeline (Extract → RAG →

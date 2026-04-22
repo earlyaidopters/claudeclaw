@@ -19,6 +19,7 @@ import { runAgent } from './agent.js';
 import { formatForTelegram } from './bot.js';
 import { emitChatEvent } from './state.js';
 import { sendAlert } from './alert-router.js';
+import { notifyMissionCompletion } from './mission-autopush.js';
 
 type Sender = (text: string) => Promise<void>;
 
@@ -196,6 +197,7 @@ async function runDueMissionTasks(): Promise<void> {
       if (result.aborted) {
         const mins = Math.round(TASK_TIMEOUT_MS / 60000);
         completeMissionTask(mission.id, null, 'failed', `Timed out after ${mins} minutes`);
+        notifyMissionCompletion(mission.id);
         logger.warn({ missionId: mission.id, timeoutMs: TASK_TIMEOUT_MS }, 'Mission task timed out');
         try {
           await sendAlert({
@@ -228,6 +230,7 @@ async function runDueMissionTasks(): Promise<void> {
 
         if (finalStatus === 'completed') {
           completeMissionTask(mission.id, text, 'completed');
+          notifyMissionCompletion(mission.id);
           logger.info({ missionId: mission.id, acceptance: hasAcceptance ? 'pass' : 'n/a' }, 'Mission task completed');
           await sendAlert({
             agentId: mission.assigned_agent || schedulerAgentId,
@@ -238,6 +241,7 @@ async function runDueMissionTasks(): Promise<void> {
           });
         } else {
           completeMissionTask(mission.id, text, 'failed', failureReason?.slice(0, 500));
+          notifyMissionCompletion(mission.id);
           logger.warn({ missionId: mission.id, reason: failureReason }, 'Mission task failed acceptance');
           await sendAlert({
             agentId: mission.assigned_agent || schedulerAgentId,
@@ -269,6 +273,7 @@ async function runDueMissionTasks(): Promise<void> {
       clearTimeout(timeout);
       const errMsg = err instanceof Error ? err.message : String(err);
       completeMissionTask(mission.id, null, 'failed', errMsg.slice(0, 500));
+      notifyMissionCompletion(mission.id);
       logger.error({ err, missionId: mission.id }, 'Mission task failed');
     } finally {
       runningTaskIds.delete(missionKey);
