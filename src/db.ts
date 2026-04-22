@@ -1823,6 +1823,9 @@ export interface MissionTask {
   /** Unix ts when the mission-autopush hook fired Telegram notification.
    *  NULL = not yet pushed. Used as an atomic CAS claim so we never double-fire. */
   autopushed_at: number | null;
+  /** Optional acceptance criteria string. When set, the scheduler parses the
+   *  agent output for an ACCEPTANCE: PASS/FAIL verdict line. */
+  acceptance_criteria: string | null;
 }
 
 export function createMissionTask(
