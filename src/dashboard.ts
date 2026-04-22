@@ -40,6 +40,13 @@ import {
   getAuditLog,
   getAuditLogCount,
   getRecentBlockedActions,
+  getKanbanTasks,
+  getKanbanTaskById,
+  createKanbanTask,
+  updateKanbanTask,
+  deleteKanbanTask,
+  kanbanSopMissing,
+  getKanbanAssignments,
 } from './db.js';
 import { generateContent, parseJsonResponse } from './gemini.js';
 import { getSecurityStatus } from './security.js';
@@ -56,7 +63,7 @@ import {
   isAgentRunning,
 } from './agent-create.js';
 import { processMessageFromDashboard } from './bot.js';
-import { getDashboardHtml } from './dashboard-html.js';
+import { getDashboardHtml, getKanbanHtml } from './dashboard-html.js';
 import { logger } from './logger.js';
 import { getTelegramConnected, getBotInfo, chatEvents, getIsProcessing, abortActiveQuery, ChatEvent } from './state.js';
 
@@ -128,6 +135,11 @@ export function startDashboard(botApi?: Api<RawApi>): void {
   app.get('/', (c) => {
     const chatId = c.req.query('chatId') || '';
     return c.html(getDashboardHtml(DASHBOARD_TOKEN, chatId));
+  });
+
+  // Serve Kanban board HTML
+  app.get('/kanban', (c) => {
+    return c.html(getKanbanHtml(DASHBOARD_TOKEN));
   });
 
   // Scheduled tasks
@@ -260,6 +272,102 @@ export function startDashboard(botApi?: Api<RawApi>): void {
     const limit = parseInt(c.req.query('limit') || '30', 10);
     const offset = parseInt(c.req.query('offset') || '0', 10);
     return c.json(getMissionTaskHistory(limit, offset));
+  });
+
+  // ── Kanban board endpoints ─────────────────────────────────────────
+  // Auth is already enforced globally via the token middleware above.
+
+  const VALID_COLUMNS = new Set(['todo', 'inprogress', 'blocked', 'done']);
+  const VALID_PRIORITIES = new Set(['low', 'medium', 'high', 'critical']);
+
+  app.get('/api/kanban/tasks', (c) => {
+    const column = c.req.query('column') || undefined;
+    const priority = c.req.query('priority') || undefined;
+    const limit = c.req.query('limit') ? parseInt(c.req.query('limit')!, 10) : undefined;
+    const tasks = getKanbanTasks({ column, priority, limit });
+    return c.json({ tasks });
+  });
+
+  app.get('/api/kanban/tasks/:id', (c) => {
+    const id = c.req.param('id');
+    const task = getKanbanTaskById(id);
+    if (!task) return c.json({ error: 'Not found' }, 404);
+    return c.json({ task });
+  });
+
+  app.post('/api/kanban/tasks', async (c) => {
+    const body = await c.req.json<{
+      title?: string;
+      description?: string;
+      priority?: string;
+      column_id?: string;
+    }>();
+    const title = body?.title?.trim();
+    if (!title || title.length > 300) return c.json({ error: 'title required (max 300 chars)' }, 400);
+    const priority = body?.priority?.trim() || 'medium';
+    if (!VALID_PRIORITIES.has(priority)) return c.json({ error: 'invalid priority' }, 400);
+    const column_id = body?.column_id?.trim() || 'todo';
+    if (!VALID_COLUMNS.has(column_id)) return c.json({ error: 'invalid column_id' }, 400);
+    const task = createKanbanTask({
+      title,
+      description: body?.description ?? null,
+      priority,
+      column_id,
+    });
+    return c.json({ task }, 201);
+  });
+
+  app.put('/api/kanban/tasks/:id', async (c) => {
+    const id = c.req.param('id');
+    const existing = getKanbanTaskById(id);
+    if (!existing) return c.json({ error: 'Not found' }, 404);
+    const body = await c.req.json<{
+      title?: string;
+      description?: string | null;
+      priority?: string;
+      column_id?: string;
+      notes?: string | null;
+    }>();
+    const patch: Record<string, unknown> = {};
+    if (body?.title !== undefined) {
+      const t = String(body.title).trim();
+      if (!t || t.length > 300) return c.json({ error: 'invalid title' }, 400);
+      patch.title = t;
+    }
+    if (body?.description !== undefined) patch.description = body.description;
+    if (body?.priority !== undefined) {
+      if (!VALID_PRIORITIES.has(body.priority)) return c.json({ error: 'invalid priority' }, 400);
+      patch.priority = body.priority;
+    }
+    if (body?.column_id !== undefined) {
+      if (!VALID_COLUMNS.has(body.column_id)) return c.json({ error: 'invalid column_id' }, 400);
+      patch.column_id = body.column_id;
+    }
+    if (body?.notes !== undefined) patch.notes = body.notes;
+    const task = updateKanbanTask(id, patch);
+    return c.json({ task });
+  });
+
+  app.delete('/api/kanban/tasks/:id', (c) => {
+    const id = c.req.param('id');
+    const ok = deleteKanbanTask(id);
+    if (!ok) return c.json({ error: 'Not found' }, 404);
+    return c.json({ ok: true });
+  });
+
+  // Active agent assignment per kanban task (derived from
+  // anti_idle_sessions + mission_tasks). Tasks with no active assignment
+  // are omitted. Shape: { [kanban_task_id]: { agent, mission_id, status, since } }
+  app.get('/api/kanban/assignments', (c) => {
+    const assignments = getKanbanAssignments();
+    return c.json(assignments);
+  });
+
+  app.get('/api/kanban/sop-check/:id', (c) => {
+    const id = c.req.param('id');
+    const task = getKanbanTaskById(id);
+    if (!task) return c.json({ error: 'Not found' }, 404);
+    return c.json({ missing_fields: kanbanSopMissing(task) });
   });
 
   // Memory stats

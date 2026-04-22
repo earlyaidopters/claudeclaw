@@ -1,6 +1,7 @@
 import { CronExpressionParser } from 'cron-parser';
 
 import { AGENT_ID, ALLOWED_CHAT_ID, agentMcpAllowlist } from './config.js';
+import { resolveModelAlias } from './model-aliases.js';
 import {
   getDueTasks,
   getSession,
@@ -15,13 +16,18 @@ import {
 import { logger } from './logger.js';
 import { messageQueue } from './message-queue.js';
 import { runAgent } from './agent.js';
-import { formatForTelegram, splitMessage } from './bot.js';
+import { formatForTelegram } from './bot.js';
 import { emitChatEvent } from './state.js';
+import { sendAlert } from './alert-router.js';
+import { notifyMissionCompletion } from './mission-autopush.js';
+import { maybeAdvanceCallPipeline } from './call-pipeline/chain-hook.js';
 
 type Sender = (text: string) => Promise<void>;
 
-/** Max time (ms) a scheduled task can run before being killed. */
-const TASK_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+/** Max time (ms) a scheduled task can run before being killed.
+ *  Configurable via SCHEDULED_TASK_TIMEOUT_MS in .env.
+ *  Default: 30 minutes (DION storyboard pipelines need 12–25 min). */
+const TASK_TIMEOUT_MS = parseInt(process.env.SCHEDULED_TASK_TIMEOUT_MS || '1800000', 10);
 
 let sender: Sender;
 
@@ -30,6 +36,32 @@ let sender: Sender;
  * Acts as a fast-path guard alongside the DB-level lock in markTaskRunning.
  */
 const runningTaskIds = new Set<string>();
+
+/**
+ * Fire-and-forget call-pipeline chain hook. The hook itself is a silent
+ * no-op for any non-pipeline mission, but we still wrap it so an
+ * unexpected bug in chain advancement never crashes the scheduler or
+ * prevents the next mission from being claimed.
+ */
+function advanceCallPipelineSafely(missionId: string): void {
+  try {
+    const r = maybeAdvanceCallPipeline(missionId);
+    if (r.fired) {
+      logger.info(
+        {
+          missionId,
+          stage: r.stage,
+          callMsgId: r.callMsgId,
+          reason: r.reason,
+          nextStageMissionId: r.nextStage?.missionId ?? null,
+        },
+        'call-pipeline: advanced',
+      );
+    }
+  } catch (err) {
+    logger.error({ err, missionId }, 'call-pipeline: chain hook threw');
+  }
+}
 
 /**
  * Initialise the scheduler. Call once after the Telegram bot is ready.
@@ -89,23 +121,37 @@ async function runDueTasks(): Promise<void> {
       const timeout = setTimeout(() => abortController.abort(), TASK_TIMEOUT_MS);
 
       try {
-        await sender(`Scheduled task running: "${task.prompt.slice(0, 80)}${task.prompt.length > 80 ? '...' : ''}"`);
+        // Pre-run "Scheduled task running: ..." ping intentionally removed —
+        // alert-router would drop it anyway. Silence the spam.
 
         // Run as a fresh agent call (no session — scheduled tasks are autonomous)
-        const result = await runAgent(task.prompt, undefined, () => {}, undefined, undefined, abortController, undefined, agentMcpAllowlist);
+        const result = await runAgent(task.prompt, undefined, () => {}, undefined, resolveModelAlias(task.model), abortController, undefined, agentMcpAllowlist);
         clearTimeout(timeout);
 
         if (result.aborted) {
-          updateTaskAfterRun(task.id, nextRun, 'Timed out after 10 minutes', 'timeout');
-          await sender(`⏱ Task timed out after 10m: "${task.prompt.slice(0, 60)}..." — killed.`);
-          logger.warn({ taskId: task.id }, 'Task timed out');
+          const mins = Math.round(TASK_TIMEOUT_MS / 60000);
+          updateTaskAfterRun(task.id, nextRun, `Timed out after ${mins} minutes`, 'timeout');
+          await sendAlert({
+            agentId: task.agent_id || schedulerAgentId,
+            chatId,
+            content: `⏱ Task timed out after ${mins}m: "${task.prompt.slice(0, 60)}..." — killed.`,
+            category: 'failure',
+            meta: { taskId: task.id },
+          });
+          logger.warn({ taskId: task.id, timeoutMs: TASK_TIMEOUT_MS }, 'Task timed out');
           return;
         }
 
         const text = result.text?.trim() || 'Task completed with no output.';
-        for (const chunk of splitMessage(formatForTelegram(text))) {
-          await sender(chunk);
-        }
+        // Route through alert-router. For realtime/legacy behaviour it chunks
+        // internally; for digest it queues the full payload.
+        await sendAlert({
+          agentId: task.agent_id || schedulerAgentId,
+          chatId,
+          content: formatForTelegram(text),
+          category: 'task_result',
+          meta: { taskId: task.id, prompt: task.prompt.slice(0, 80) },
+        });
 
         // Inject task output into the active chat session so user replies have context
         if (ALLOWED_CHAT_ID) {
@@ -124,7 +170,13 @@ async function runDueTasks(): Promise<void> {
 
         logger.error({ err, taskId: task.id }, 'Scheduled task failed');
         try {
-          await sender(`❌ Task failed: "${task.prompt.slice(0, 60)}..." — ${errMsg.slice(0, 200)}`);
+          await sendAlert({
+            agentId: task.agent_id || schedulerAgentId,
+            chatId,
+            content: `❌ Task failed: "${task.prompt.slice(0, 60)}..." — ${errMsg.slice(0, 200)}`,
+            category: 'error',
+            meta: { taskId: task.id },
+          });
         } catch {
           // ignore send failure
         }
@@ -149,26 +201,85 @@ async function runDueMissionTasks(): Promise<void> {
   logger.info({ missionId: mission.id, title: mission.title }, 'Running mission task');
 
   const chatId = ALLOWED_CHAT_ID || 'mission';
+  // If acceptance_criteria is set, wrap the prompt with a verification contract.
+  // The runner will parse the agent's final output for ACCEPTANCE: PASS / FAIL: <reason>.
+  const hasAcceptance = typeof mission.acceptance_criteria === 'string' && mission.acceptance_criteria.trim().length > 0;
+  const effectivePrompt = hasAcceptance
+    ? (
+        mission.prompt +
+        '\n\n# Acceptance criteria\n' +
+        mission.acceptance_criteria +
+        '\n\nAfter your work, verify each criterion. End your response with exactly: ACCEPTANCE: PASS  OR  ACCEPTANCE: FAIL: <reason>'
+      )
+    : mission.prompt;
+
   messageQueue.enqueue(chatId, async () => {
     const abortController = new AbortController();
     const timeout = setTimeout(() => abortController.abort(), TASK_TIMEOUT_MS);
 
     try {
-      const result = await runAgent(mission.prompt, undefined, () => {}, undefined, undefined, abortController, undefined, agentMcpAllowlist);
+      const result = await runAgent(effectivePrompt, undefined, () => {}, undefined, undefined, abortController, undefined, agentMcpAllowlist);
       clearTimeout(timeout);
 
       if (result.aborted) {
-        completeMissionTask(mission.id, null, 'failed', 'Timed out after 10 minutes');
-        logger.warn({ missionId: mission.id }, 'Mission task timed out');
-        try { await sender('Mission task timed out: "' + mission.title + '"'); } catch {}
+        const mins = Math.round(TASK_TIMEOUT_MS / 60000);
+        completeMissionTask(mission.id, null, 'failed', `Timed out after ${mins} minutes`);
+        notifyMissionCompletion(mission.id);
+        advanceCallPipelineSafely(mission.id);
+        logger.warn({ missionId: mission.id, timeoutMs: TASK_TIMEOUT_MS }, 'Mission task timed out');
+        try {
+          await sendAlert({
+            agentId: mission.assigned_agent || schedulerAgentId,
+            chatId,
+            content: 'Mission task timed out: "' + mission.title + '"',
+            category: 'failure',
+            meta: { missionId: mission.id },
+          });
+        } catch {}
       } else {
         const text = result.text?.trim() || 'Task completed with no output.';
-        completeMissionTask(mission.id, text, 'completed');
-        logger.info({ missionId: mission.id }, 'Mission task completed');
 
-        // Send result to Telegram
-        for (const chunk of splitMessage(formatForTelegram(text))) {
-          await sender(chunk);
+        // Acceptance criteria enforcement: parse final ACCEPTANCE: line from output.
+        // Accept both PASS and FAIL: <reason>. If criteria set but no verdict found, fail explicitly.
+        let finalStatus: 'completed' | 'failed' = 'completed';
+        let failureReason: string | undefined;
+        if (hasAcceptance) {
+          const verdict = parseAcceptanceVerdict(text);
+          if (verdict.kind === 'pass') {
+            finalStatus = 'completed';
+          } else if (verdict.kind === 'fail') {
+            finalStatus = 'failed';
+            failureReason = 'ACCEPTANCE FAIL: ' + verdict.reason;
+          } else {
+            finalStatus = 'failed';
+            failureReason = 'ACCEPTANCE: verdict line missing from final output';
+          }
+        }
+
+        if (finalStatus === 'completed') {
+          completeMissionTask(mission.id, text, 'completed');
+          notifyMissionCompletion(mission.id);
+          advanceCallPipelineSafely(mission.id);
+          logger.info({ missionId: mission.id, acceptance: hasAcceptance ? 'pass' : 'n/a' }, 'Mission task completed');
+          await sendAlert({
+            agentId: mission.assigned_agent || schedulerAgentId,
+            chatId,
+            content: formatForTelegram(text),
+            category: 'mission_result',
+            meta: { missionId: mission.id, title: mission.title },
+          });
+        } else {
+          completeMissionTask(mission.id, text, 'failed', failureReason?.slice(0, 500));
+          notifyMissionCompletion(mission.id);
+          advanceCallPipelineSafely(mission.id);
+          logger.warn({ missionId: mission.id, reason: failureReason }, 'Mission task failed acceptance');
+          await sendAlert({
+            agentId: mission.assigned_agent || schedulerAgentId,
+            chatId,
+            content: 'Mission failed acceptance: "' + mission.title + '"\n' + (failureReason ?? '') + '\n\n' + formatForTelegram(text),
+            category: 'failure',
+            meta: { missionId: mission.id, title: mission.title },
+          });
         }
 
         // Inject into conversation context so agent can reference it
@@ -192,11 +303,41 @@ async function runDueMissionTasks(): Promise<void> {
       clearTimeout(timeout);
       const errMsg = err instanceof Error ? err.message : String(err);
       completeMissionTask(mission.id, null, 'failed', errMsg.slice(0, 500));
+      notifyMissionCompletion(mission.id);
+      advanceCallPipelineSafely(mission.id);
       logger.error({ err, missionId: mission.id }, 'Mission task failed');
     } finally {
       runningTaskIds.delete(missionKey);
     }
   });
+}
+
+/**
+ * Parse the final ACCEPTANCE: verdict line from an agent's output.
+ * Scans from the end so earlier mentions (e.g. in reasoning) don't override the final verdict.
+ * Returns:
+ *   { kind: 'pass' }                     if a PASS verdict is found
+ *   { kind: 'fail', reason: string }     if a FAIL: <reason> verdict is found
+ *   { kind: 'missing' }                  if no ACCEPTANCE: line is present
+ */
+function parseAcceptanceVerdict(
+  text: string,
+): { kind: 'pass' } | { kind: 'fail'; reason: string } | { kind: 'missing' } {
+  if (!text) return { kind: 'missing' };
+  const lines = text.split(/\r?\n/);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const raw = lines[i];
+    if (!raw) continue;
+    // Strip leading/trailing whitespace and common markdown decoration (backticks, bold, quotes)
+    const line = raw.trim().replace(/^[`*>_\s"']+|[`*_\s"']+$/g, '');
+    const m = /^ACCEPTANCE\s*:\s*(PASS|FAIL(?:\s*:\s*(.*))?)\s*$/i.exec(line);
+    if (!m) continue;
+    const verdict = m[1].toUpperCase();
+    if (verdict.startsWith('PASS')) return { kind: 'pass' };
+    const reason = (m[2] || '').trim() || 'no reason provided';
+    return { kind: 'fail', reason };
+  }
+  return { kind: 'missing' };
 }
 
 export function computeNextRun(cronExpression: string): number {

@@ -11,15 +11,75 @@ import { logger } from './logger.js';
 // The Agent SDK's settingSources loads CLAUDE.md and permissions from
 // project/user settings, but does NOT load mcpServers from those files.
 // We read them ourselves and pass them via the `mcpServers` option.
+//
+// Two transports supported:
+//   - stdio: { command, args, env }       — default, spawns a subprocess
+//   - http:  { url, headers, type:'http' } — talks to a remote MCP server
+// Any `${VAR}` tokens in env values or header values are resolved against
+// process.env so we can keep secrets out of .claude/settings.json.
 
-interface McpStdioConfig {
+export interface McpStdioConfig {
+  type?: 'stdio';
   command: string;
   args?: string[];
   env?: Record<string, string>;
 }
 
-function loadMcpServers(allowlist?: string[]): Record<string, McpStdioConfig> {
-  const merged: Record<string, McpStdioConfig> = {};
+export interface McpHttpConfig {
+  type: 'http' | 'sse';
+  url: string;
+  headers?: Record<string, string>;
+}
+
+export type McpConfig = McpStdioConfig | McpHttpConfig;
+
+const ENV_VAR_PATTERN = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
+
+/**
+ * Expand ${VAR} placeholders in a string using the supplied lookup map.
+ * Unknown variables are left as-is so the MCP server can surface a clear
+ * error instead of silently getting an empty value.
+ */
+function expandEnvVars(value: string, lookup: Record<string, string | undefined>): string {
+  return value.replace(ENV_VAR_PATTERN, (full, name) => {
+    const resolved = lookup[name];
+    return resolved !== undefined && resolved !== '' ? resolved : full;
+  });
+}
+
+function expandRecord(
+  rec: Record<string, string> | undefined,
+  lookup: Record<string, string | undefined>,
+): Record<string, string> | undefined {
+  if (!rec) return undefined;
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(rec)) {
+    out[k] = typeof v === 'string' ? expandEnvVars(v, lookup) : v;
+  }
+  return out;
+}
+
+/**
+ * Scan a JSON value recursively and collect every `${VAR}` name referenced.
+ * Used so we can load the matching keys from .env without pulling the whole
+ * file into process.env.
+ */
+function collectEnvVarRefs(value: unknown, out: Set<string>): void {
+  if (typeof value === 'string') {
+    for (const match of value.matchAll(ENV_VAR_PATTERN)) out.add(match[1]);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const v of value) collectEnvVarRefs(v, out);
+    return;
+  }
+  if (value && typeof value === 'object') {
+    for (const v of Object.values(value)) collectEnvVarRefs(v, out);
+  }
+}
+
+function loadMcpServers(allowlist?: string[]): Record<string, McpConfig> {
+  const merged: Record<string, McpConfig> = {};
 
   // Load from project settings (.claude/settings.json in cwd)
   const projectSettings = path.join(agentCwd ?? PROJECT_ROOT, '.claude', 'settings.json');
@@ -30,24 +90,66 @@ function loadMcpServers(allowlist?: string[]): Record<string, McpStdioConfig> {
     'settings.json',
   );
 
+  // First pass: parse both files and collect every ${VAR} name referenced so
+  // we can pull just those keys from .env (readEnvFile is opt-in per key).
+  const parsed: Array<Record<string, unknown>> = [];
+  const referenced = new Set<string>();
   for (const file of [userSettings, projectSettings]) {
     try {
       const raw = JSON.parse(fs.readFileSync(file, 'utf-8'));
       const servers = raw?.mcpServers;
       if (servers && typeof servers === 'object') {
-        for (const [name, config] of Object.entries(servers)) {
-          const cfg = config as Record<string, unknown>;
-          if (cfg.command && typeof cfg.command === 'string') {
-            merged[name] = {
-              command: cfg.command,
-              ...(cfg.args ? { args: cfg.args as string[] } : {}),
-              ...(cfg.env ? { env: cfg.env as Record<string, string> } : {}),
-            };
-          }
-        }
+        parsed.push(servers as Record<string, unknown>);
+        collectEnvVarRefs(servers, referenced);
       }
     } catch {
       // File doesn't exist or is invalid — skip
+    }
+  }
+
+  // Build a lookup that prefers process.env then falls back to .env. This
+  // mirrors how the CLI resolves variables: ambient env wins, .env is the
+  // safety net for values that intentionally aren't exported.
+  const fromEnvFile = referenced.size > 0 ? readEnvFile([...referenced]) : {};
+  const lookup: Record<string, string | undefined> = { ...fromEnvFile };
+  for (const name of referenced) {
+    const fromProcess = process.env[name];
+    if (fromProcess !== undefined && fromProcess !== '') lookup[name] = fromProcess;
+  }
+
+  for (const servers of parsed) {
+    for (const [name, config] of Object.entries(servers)) {
+      const cfg = config as Record<string, unknown>;
+
+      // HTTP/SSE transport: url-based, no subprocess
+      if (typeof cfg.url === 'string') {
+        const transport = cfg.type === 'sse' ? 'sse' : 'http';
+        const headers = expandRecord(
+          cfg.headers as Record<string, string> | undefined,
+          lookup,
+        );
+        merged[name] = {
+          type: transport,
+          url: expandEnvVars(cfg.url, lookup),
+          ...(headers ? { headers } : {}),
+        };
+        continue;
+      }
+
+      // Stdio transport: command-based (default)
+      if (typeof cfg.command === 'string') {
+        const env = expandRecord(
+          cfg.env as Record<string, string> | undefined,
+          lookup,
+        );
+        merged[name] = {
+          command: expandEnvVars(cfg.command, lookup),
+          ...(cfg.args
+            ? { args: (cfg.args as string[]).map((a) => expandEnvVars(a, lookup)) }
+            : {}),
+          ...(env ? { env } : {}),
+        };
+      }
     }
   }
 
@@ -172,16 +274,25 @@ export async function runAgent(
   // Read secrets from .env without polluting process.env.
   // CLAUDE_CODE_OAUTH_TOKEN is optional — the subprocess finds auth via ~/.claude/
   // automatically. Only needed if you want to override which account is used.
-  const secrets = readEnvFile(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY']);
+  const secrets = readEnvFile(['CLAUDE_CODE_OAUTH_TOKEN']);
 
   const sdkEnv: Record<string, string | undefined> = { ...process.env };
   if (secrets.CLAUDE_CODE_OAUTH_TOKEN) {
     sdkEnv.CLAUDE_CODE_OAUTH_TOKEN = secrets.CLAUDE_CODE_OAUTH_TOKEN;
   }
-  if (secrets.ANTHROPIC_API_KEY) {
-    sdkEnv.ANTHROPIC_API_KEY = secrets.ANTHROPIC_API_KEY;
-  }
 
+  // CRITICAL: Scrub ANTHROPIC_API_KEY from the subprocess env so the CLI is
+  // forced to use the Claude Max OAuth session (~/.claude/) instead of
+  // falling back to pay-per-token API billing. Even if the key appears in
+  // the parent shell (e.g. sourced from another project's .env), we don't
+  // let it reach the child. Set CLAUDE_CODE_OAUTH_TOKEN in .env if you want
+  // to pin a specific OAuth account.
+  delete sdkEnv.ANTHROPIC_API_KEY;
+
+  // Force model via env var — more reliable than SDK options.model
+  if (model) {
+    sdkEnv.ANTHROPIC_MODEL = model;
+  }
   let newSessionId: string | undefined;
   let resultText: string | null = null;
   let usage: UsageInfo | null = null;
@@ -248,7 +359,15 @@ export async function runAgent(
 
       if (ev['type'] === 'system' && ev['subtype'] === 'init') {
         newSessionId = ev['session_id'] as string;
-        logger.info({ newSessionId }, 'Session initialized');
+        logger.info(
+          {
+            newSessionId,
+            model: ev['model'],
+            apiKeySource: ev['apiKeySource'],
+            permissionMode: ev['permissionMode'],
+          },
+          'Session initialized',
+        );
       }
 
       // Detect auto-compaction (context window was getting full)

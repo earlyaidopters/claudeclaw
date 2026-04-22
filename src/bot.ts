@@ -19,11 +19,17 @@ import {
   TYPING_REFRESH_MS,
   AGENT_TIMEOUT_MS,
   STREAM_STRATEGY,
+  SMART_ROUTING_ENABLED,
+  SMART_ROUTING_CHEAP_MODEL,
+  EXFILTRATION_GUARD_ENABLED,
+  PROTECTED_ENV_VARS,
 } from './config.js';
 import { clearSession, getRecentConversation, getRecentMemories, getRecentTaskOutputs, getSession, getSessionConversation, logToHiveMind, pinMemory, unpinMemory, setSession, lookupWaChatId, saveWaMessageMap, saveTokenUsage } from './db.js';
 import { logger } from './logger.js';
 import { downloadMedia, buildPhotoMessage, buildDocumentMessage, buildVideoMessage } from './media.js';
-import { buildMemoryContext, evaluateMemoryRelevance, saveConversationTurn } from './memory.js';
+import { buildMemoryContext, evaluateMemoryRelevance, saveConversationTurn, shouldNudgeMemory, MEMORY_NUDGE_TEXT } from './memory.js';
+import { classifyMessageComplexity } from './message-classifier.js';
+import { scanForSecrets, redactSecrets } from './exfiltration-guard.js';
 import { setHighImportanceCallback } from './memory-ingest.js';
 import { messageQueue } from './message-queue.js';
 import { parseDelegation, delegateToAgent, getAvailableAgents } from './orchestrator.js';
@@ -108,10 +114,13 @@ const voiceEnabledChats = new Set<string>();
 // When not set, uses CLI default (Opus via Max/OAuth)
 const chatModelOverride = new Map<string, string>();
 
+// Use CLI aliases instead of pinned version IDs so we always get the latest
+// of each tier. The CLI resolves 'opus' -> latest Opus, 'sonnet' -> latest
+// Sonnet, 'haiku' -> latest Haiku. No more chasing -4-6 vs -4-7 strings.
 const AVAILABLE_MODELS: Record<string, string> = {
-  opus: 'claude-opus-4-6',
-  sonnet: 'claude-sonnet-4-5',
-  haiku: 'claude-haiku-4-5',
+  opus: 'opus',
+  sonnet: 'sonnet',
+  haiku: 'haiku',
 };
 const DEFAULT_MODEL_LABEL = 'opus';
 
@@ -451,8 +460,21 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
     parts.push(`[Recent scheduled task context — the user may be replying to this]\n${taskLines.join('\n\n')}\n[End task context]`);
   }
 
+  // Memory nudge: remind the agent to persist knowledge if it has been a while
+  if (shouldNudgeMemory(chatIdStr, AGENT_ID)) {
+    parts.push(MEMORY_NUDGE_TEXT);
+  }
+
   parts.push(message);
   const fullMessage = parts.join('\n\n');
+
+  // Smart model routing: simple acknowledgements ("ok", "thanks") route to the
+  // cheap model unless the user has set an explicit override. Default off.
+  const userModel = chatModelOverride.get(chatIdStr) ?? agentDefaultModel;
+  const effectiveModel =
+    SMART_ROUTING_ENABLED && !userModel && classifyMessageComplexity(message) === 'simple'
+      ? SMART_ROUTING_CHEAP_MODEL
+      : userModel;
 
   // Start typing immediately, then refresh on interval
   await sendTyping(ctx.api, chatId);
@@ -536,7 +558,7 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
       sessionId,
       () => void sendTyping(ctx.api, chatId),
       onProgress,
-      chatModelOverride.get(chatIdStr) ?? agentDefaultModel,
+      effectiveModel,
       abortCtrl,
       onStreamText,
       agentMcpAllowlist,
@@ -567,7 +589,24 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
       logger.info({ newSessionId: result.newSessionId }, 'Session saved');
     }
 
-    const rawResponse = result.text?.trim() || 'Done.';
+    let rawResponse = result.text?.trim() || 'Done.';
+
+    // Exfiltration guard: scan for leaked secrets before the response leaves
+    // the process. Redacts API keys, tokens, and any PROTECTED_ENV_VARS value
+    // (including base64/url-encoded variants) that slip into the reply.
+    if (EXFILTRATION_GUARD_ENABLED) {
+      const protectedValues = PROTECTED_ENV_VARS
+        .map((key) => process.env[key])
+        .filter((v): v is string => !!v && v.length > 8);
+      const secretMatches = scanForSecrets(rawResponse, protectedValues);
+      if (secretMatches.length > 0) {
+        rawResponse = redactSecrets(rawResponse, secretMatches);
+        logger.warn(
+          { matchCount: secretMatches.length, types: secretMatches.map((m) => m.type) },
+          'Exfiltration guard: redacted secrets from response',
+        );
+      }
+    }
 
     // Extract file markers before any formatting
     const { text: responseText, files: fileMarkers } = extractFileMarkers(rawResponse);
@@ -940,13 +979,19 @@ export function createBot(): Bot {
         ? Object.entries(AVAILABLE_MODELS).find(([, v]) => v === current)?.[0] ?? current
         : DEFAULT_MODEL_LABEL + ' (default)';
       const models = Object.keys(AVAILABLE_MODELS).join(', ');
-      await ctx.reply(`Current model: ${currentLabel}\nAvailable: ${models}\n\nUsage: /model haiku`);
+      await ctx.reply(
+        `Current model: ${currentLabel}\n` +
+        `Available: ${models}\n\n` +
+        `To switch, send: /model <name>  (e.g. /model sonnet)`,
+      );
       return;
     }
 
-    if (arg === 'reset' || arg === 'default' || arg === 'opus') {
+    if (arg === 'reset' || arg === 'default') {
+      // Drop the per-chat override so the agent default (from index.ts /
+      // agent.yaml) takes over again.
       chatModelOverride.delete(chatIdStr);
-      await ctx.reply('Model reset to default (opus)');
+      await ctx.reply(`Model reset to default (${DEFAULT_MODEL_LABEL}).`);
       return;
     }
 

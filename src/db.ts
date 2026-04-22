@@ -217,22 +217,47 @@ function createSchema(database: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_inter_agent_tasks_status ON inter_agent_tasks(status, created_at DESC);
 
     CREATE TABLE IF NOT EXISTS mission_tasks (
-      id              TEXT PRIMARY KEY,
-      title           TEXT NOT NULL,
-      prompt          TEXT NOT NULL,
-      assigned_agent  TEXT,
-      status          TEXT NOT NULL DEFAULT 'queued',
-      result          TEXT,
-      error           TEXT,
-      created_by      TEXT NOT NULL DEFAULT 'dashboard',
-      priority        INTEGER NOT NULL DEFAULT 0,
-      created_at      INTEGER NOT NULL,
-      started_at      INTEGER,
-      completed_at    INTEGER
+      id                  TEXT PRIMARY KEY,
+      title               TEXT NOT NULL,
+      prompt              TEXT NOT NULL,
+      assigned_agent      TEXT,
+      status              TEXT NOT NULL DEFAULT 'queued',
+      result              TEXT,
+      error               TEXT,
+      created_by          TEXT NOT NULL DEFAULT 'dashboard',
+      priority            INTEGER NOT NULL DEFAULT 0,
+      created_at          INTEGER NOT NULL,
+      started_at          INTEGER,
+      completed_at        INTEGER,
+      acceptance_criteria TEXT,
+      autopushed_at       INTEGER
     );
 
     CREATE INDEX IF NOT EXISTS idx_mission_status
       ON mission_tasks(assigned_agent, status, priority DESC, created_at ASC);
+
+    -- Call pipeline durability: one row per (call_msg_id, stage) so each
+    -- of the 4 stages (A→D) in the post-call pipeline has independent
+    -- lifecycle tracking. Unique index enforces idempotency — the
+    -- orchestrator refuses to create a duplicate stage mission for the
+    -- same call.
+    CREATE TABLE IF NOT EXISTS call_pipeline_runs (
+      call_msg_id     TEXT NOT NULL,
+      contact_id      TEXT NOT NULL,
+      ghl_conv_id     TEXT,
+      stage           TEXT NOT NULL,
+      status          TEXT NOT NULL DEFAULT 'pending',
+      started_at      INTEGER,
+      completed_at    INTEGER,
+      last_mission_id TEXT,
+      PRIMARY KEY (call_msg_id, stage)
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_call_pipeline_msg_stage
+      ON call_pipeline_runs(call_msg_id, stage);
+
+    CREATE INDEX IF NOT EXISTS idx_call_pipeline_contact
+      ON call_pipeline_runs(contact_id, stage);
 
     CREATE TABLE IF NOT EXISTS audit_log (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -283,6 +308,9 @@ export function initDatabase(): void {
 
   db = new Database(dbPath);
   db.pragma('journal_mode = WAL');
+  // Wait up to 5s for a lock instead of throwing SQLITE_BUSY immediately.
+  // Multiple agent daemons share this DB; without this, contention crashes workers.
+  db.pragma('busy_timeout = 5000');
   createSchema(db);
   runMigrations(db);
 
@@ -348,6 +376,9 @@ function runMigrations(database: Database.Database): void {
   }
   if (!taskColNames.includes('last_status')) {
     database.exec(`ALTER TABLE scheduled_tasks ADD COLUMN last_status TEXT`);
+  }
+  if (!taskColNames.includes('model')) {
+    database.exec(`ALTER TABLE scheduled_tasks ADD COLUMN model TEXT`);
   }
 
   // ── Memory V2 migration ──────────────────────────────────────────────
@@ -526,6 +557,51 @@ function runMigrations(database: Database.Database): void {
         ON mission_tasks(assigned_agent, status, priority DESC, created_at ASC);
     `);
     logger.info('Migration: made mission_tasks.assigned_agent nullable');
+  }
+
+  // Mission Control: add acceptance_criteria column for verifiable outcomes (Watchdog B)
+  const missionColsPost = database.prepare(`PRAGMA table_info(mission_tasks)`).all() as Array<{ name: string }>;
+  if (!missionColsPost.some((c) => c.name === 'acceptance_criteria')) {
+    database.exec(`ALTER TABLE mission_tasks ADD COLUMN acceptance_criteria TEXT`);
+    logger.info('Migration: added acceptance_criteria column to mission_tasks');
+  }
+
+  // Mission Control: add autopushed_at column for Telegram auto-notification
+  // idempotency. When a mission completes or fails and was created_by='main'
+  // (i.e. Rudy queued it on Aditya's behalf), mission-autopush claims the row
+  // by CAS-stamping this column — guaranteeing exactly-once notification even
+  // if the completion hook is re-entered. NULL = not yet pushed.
+  // See src/mission-autopush.ts.
+  if (!missionColsPost.some((c) => c.name === 'autopushed_at')) {
+    database.exec(`ALTER TABLE mission_tasks ADD COLUMN autopushed_at INTEGER`);
+    logger.info('Migration: added autopushed_at column to mission_tasks');
+  }
+
+  // Call Pipeline: ensure call_pipeline_runs exists on legacy DBs. createSchema
+  // covers fresh installs; this branch is for DBs created before this feature
+  // shipped. Idempotent — IF NOT EXISTS.
+  const pipelineTbl = database.prepare(
+    `SELECT name FROM sqlite_master WHERE type='table' AND name='call_pipeline_runs'`,
+  ).get() as { name: string } | undefined;
+  if (!pipelineTbl) {
+    database.exec(`
+      CREATE TABLE call_pipeline_runs (
+        call_msg_id     TEXT NOT NULL,
+        contact_id      TEXT NOT NULL,
+        ghl_conv_id     TEXT,
+        stage           TEXT NOT NULL,
+        status          TEXT NOT NULL DEFAULT 'pending',
+        started_at      INTEGER,
+        completed_at    INTEGER,
+        last_mission_id TEXT,
+        PRIMARY KEY (call_msg_id, stage)
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_call_pipeline_msg_stage
+        ON call_pipeline_runs(call_msg_id, stage);
+      CREATE INDEX IF NOT EXISTS idx_call_pipeline_contact
+        ON call_pipeline_runs(contact_id, stage);
+    `);
+    logger.info('Migration: created call_pipeline_runs table');
   }
 }
 
@@ -756,6 +832,41 @@ export function getRecentMemories(chatId: string, limit = 5): Memory[] {
     .all(chatId, limit) as Memory[];
 }
 
+/**
+ * Return the unix-seconds timestamp of the most recent memory saved for this
+ * chat+agent, or null if no memories exist yet. Used by the memory nudge to
+ * detect gaps in long-term memory capture.
+ */
+export function getLastMemorySaveTime(chatId: string, agentId = 'main'): number | null {
+  const row = db
+    .prepare(
+      `SELECT MAX(created_at) AS ts FROM memories WHERE chat_id = ? AND agent_id = ?`,
+    )
+    .get(chatId, agentId) as { ts: number | null } | undefined;
+  return row?.ts ?? null;
+}
+
+/**
+ * Count user turns in conversation_log for this chat+agent strictly after
+ * `sinceTs` (unix seconds). Used alongside getLastMemorySaveTime to decide
+ * whether to fire a memory nudge based on elapsed turns.
+ */
+export function getTurnCountSinceTimestamp(
+  chatId: string,
+  sinceTs: number,
+  agentId = 'main',
+): number {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS c FROM conversation_log
+       WHERE chat_id = ? AND role = 'user' AND created_at > ?
+         AND (session_id IS NULL OR session_id != '')
+         AND (agent_id = ? OR agent_id IS NULL)`,
+    )
+    .get(chatId, sinceTs, agentId) as { c: number } | undefined;
+  return row?.c ?? 0;
+}
+
 export function touchMemory(id: number): void {
   const now = Math.floor(Date.now() / 1000);
   db.prepare(
@@ -917,6 +1028,7 @@ export interface ScheduledTask {
   agent_id: string;
   started_at: number | null;
   last_status: 'success' | 'failed' | 'timeout' | null;
+  model: string | null;
 }
 
 export function createScheduledTask(
@@ -925,12 +1037,13 @@ export function createScheduledTask(
   schedule: string,
   nextRun: number,
   agentId = 'main',
+  model?: string | null,
 ): void {
   const now = Math.floor(Date.now() / 1000);
   db.prepare(
-    `INSERT INTO scheduled_tasks (id, prompt, schedule, next_run, status, created_at, agent_id)
-     VALUES (?, ?, ?, ?, 'active', ?, ?)`,
-  ).run(id, prompt, schedule, nextRun, now, agentId);
+    `INSERT INTO scheduled_tasks (id, prompt, schedule, next_run, status, created_at, agent_id, model)
+     VALUES (?, ?, ?, ?, 'active', ?, ?, ?)`,
+  ).run(id, prompt, schedule, nextRun, now, agentId, model ?? null);
 }
 
 export function getDueTasks(agentId = 'main'): ScheduledTask[] {
@@ -1764,6 +1877,10 @@ export interface MissionTask {
   created_at: number;
   started_at: number | null;
   completed_at: number | null;
+  acceptance_criteria: string | null;
+  /** Unix ts when the mission-autopush hook fired Telegram notification.
+   *  NULL = not yet pushed. Used as an atomic CAS claim so we never double-fire. */
+  autopushed_at: number | null;
 }
 
 export function createMissionTask(
@@ -1773,12 +1890,13 @@ export function createMissionTask(
   assignedAgent: string | null = null,
   createdBy = 'dashboard',
   priority = 0,
+  acceptanceCriteria: string | null = null,
 ): void {
   const now = Math.floor(Date.now() / 1000);
   db.prepare(
-    `INSERT INTO mission_tasks (id, title, prompt, assigned_agent, status, created_by, priority, created_at)
-     VALUES (?, ?, ?, ?, 'queued', ?, ?, ?)`,
-  ).run(id, title, prompt, assignedAgent, createdBy, priority, now);
+    `INSERT INTO mission_tasks (id, title, prompt, assigned_agent, status, created_by, priority, created_at, acceptance_criteria)
+     VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?)`,
+  ).run(id, title, prompt, assignedAgent, createdBy, priority, now, acceptanceCriteria);
 }
 
 export function getUnassignedMissionTasks(): MissionTask[] {
@@ -1903,6 +2021,106 @@ export function resetStuckMissionTasks(agentId: string): number {
   return result.changes;
 }
 
+/**
+ * Atomically claim a mission for Telegram autopush notification.
+ *
+ * Stamps autopushed_at with the current unix timestamp IFF it's currently NULL.
+ * Returns true on the first claim, false on every subsequent call for the same
+ * mission — this is how the mission-autopush hook guarantees exactly-once
+ * notification even if the scheduler completion path is re-entered.
+ *
+ * Idempotent by design: safe to call on any mission id, including non-existent
+ * ones (returns false) and already-pushed ones (returns false).
+ */
+export function markMissionAutopushed(id: string): boolean {
+  const result = db.prepare(
+    `UPDATE mission_tasks SET autopushed_at = ? WHERE id = ? AND autopushed_at IS NULL`,
+  ).run(Math.floor(Date.now() / 1000), id);
+  return result.changes > 0;
+}
+
+/**
+ * Reason tag for an auto-retry, surfaced in the Telegram ping + hive_mind log
+ * so Aditya can see WHY the watchdog reran something without reading source.
+ */
+export type RetryReason = 'turn_cap' | 'timeout';
+
+// ── Call Pipeline Runs ───────────────────────────────────────────────
+// Durability layer for the 4-stage post-call pipeline (Extract → RAG →
+// Borrower draft → AE draft). One row per (call_msg_id, stage). The
+// orchestrator uses these rows to know which stage to launch next and
+// to stay idempotent across crashes/retries.
+
+export type CallPipelineStage = 'A' | 'B' | 'C' | 'D';
+export type CallPipelineStatus = 'pending' | 'running' | 'completed' | 'failed';
+
+export interface CallPipelineRun {
+  call_msg_id: string;
+  contact_id: string;
+  ghl_conv_id: string | null;
+  stage: CallPipelineStage;
+  status: CallPipelineStatus;
+  started_at: number | null;
+  completed_at: number | null;
+  last_mission_id: string | null;
+}
+
+/** Insert a pipeline row (idempotent via INSERT OR IGNORE on the composite PK). */
+export function upsertCallPipelineRun(row: {
+  callMsgId: string;
+  contactId: string;
+  ghlConvId: string | null;
+  stage: CallPipelineStage;
+  status: CallPipelineStatus;
+  missionId: string | null;
+}): void {
+  const now = Math.floor(Date.now() / 1000);
+  db.prepare(
+    `INSERT INTO call_pipeline_runs
+      (call_msg_id, contact_id, ghl_conv_id, stage, status, started_at, last_mission_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(call_msg_id, stage) DO UPDATE SET
+       status          = excluded.status,
+       last_mission_id = excluded.last_mission_id,
+       started_at      = COALESCE(call_pipeline_runs.started_at, excluded.started_at)`,
+  ).run(
+    row.callMsgId,
+    row.contactId,
+    row.ghlConvId,
+    row.stage,
+    row.status,
+    now,
+    row.missionId,
+  );
+}
+
+export function markCallPipelineStageCompleted(
+  callMsgId: string,
+  stage: CallPipelineStage,
+  status: 'completed' | 'failed' = 'completed',
+): void {
+  const now = Math.floor(Date.now() / 1000);
+  db.prepare(
+    `UPDATE call_pipeline_runs SET status = ?, completed_at = ?
+      WHERE call_msg_id = ? AND stage = ?`,
+  ).run(status, now, callMsgId, stage);
+}
+
+export function getCallPipelineRun(
+  callMsgId: string,
+  stage: CallPipelineStage,
+): CallPipelineRun | null {
+  return (db.prepare(
+    `SELECT * FROM call_pipeline_runs WHERE call_msg_id = ? AND stage = ?`,
+  ).get(callMsgId, stage) as CallPipelineRun) ?? null;
+}
+
+export function listCallPipelineRuns(callMsgId: string): CallPipelineRun[] {
+  return db.prepare(
+    `SELECT * FROM call_pipeline_runs WHERE call_msg_id = ? ORDER BY stage ASC`,
+  ).all(callMsgId) as CallPipelineRun[];
+}
+
 // ── Audit Log ────────────────────────────────────────────────────────
 
 export function insertAuditLog(
@@ -1949,4 +2167,283 @@ export function getRecentBlockedActions(limit = 10): AuditLogEntry[] {
   return db.prepare(
     `SELECT * FROM audit_log WHERE blocked = 1 ORDER BY created_at DESC LIMIT ?`,
   ).all(limit) as AuditLogEntry[];
+}
+
+// ── DION Slide Cache ──────────────────────────────────────────────────────────
+
+export interface CachedSlide {
+  id: number;
+  fragrance_id: string;
+  slide_type: string;
+  content_hash: string;
+  asset_path: string;
+  metadata: string | null;
+  passed_qc_at: number;
+  created_at: number;
+  expires_at: number | null;
+  invalidated: number;
+}
+
+export function getCachedSlide(
+  fragranceId: string,
+  slideType: string,
+  contentHash: string,
+): CachedSlide | null {
+  const now = Math.floor(Date.now() / 1000);
+  return db.prepare(
+    `SELECT * FROM dion_slide_cache
+     WHERE fragrance_id = ? AND slide_type = ? AND content_hash = ?
+       AND invalidated = 0
+       AND (expires_at IS NULL OR expires_at > ?)
+     ORDER BY passed_qc_at DESC
+     LIMIT 1`,
+  ).get(fragranceId, slideType, contentHash, now) as CachedSlide | null;
+}
+
+export function cacheSlide(
+  fragranceId: string,
+  slideType: string,
+  contentHash: string,
+  assetPath: string,
+  metadata?: string | null,
+  expiresAt?: number | null,
+): number {
+  const now = Math.floor(Date.now() / 1000);
+  const result = db.prepare(
+    `INSERT INTO dion_slide_cache
+       (fragrance_id, slide_type, content_hash, asset_path, metadata, passed_qc_at, created_at, expires_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(fragranceId, slideType, contentHash, assetPath, metadata ?? null, now, now, expiresAt ?? null);
+  return result.lastInsertRowid as number;
+}
+
+export function invalidateSlide(fragranceId: string, slideType?: string): void {
+  if (slideType) {
+    db.prepare(
+      `UPDATE dion_slide_cache SET invalidated = 1
+       WHERE fragrance_id = ? AND slide_type = ?`,
+    ).run(fragranceId, slideType);
+  } else {
+    db.prepare(
+      `UPDATE dion_slide_cache SET invalidated = 1 WHERE fragrance_id = ?`,
+    ).run(fragranceId);
+  }
+}
+
+// ── Kanban Tasks (ported from Supabase 2026-04-19) ─────────────────
+// Table created by migration v1.2.0/port-supabase-operational-tables.ts.
+// priority: 'low' | 'medium' | 'high' | 'critical'
+// column_id: 'todo' | 'inprogress' | 'blocked' | 'done'
+
+export interface KanbanTask {
+  id: string;
+  title: string;
+  description: string | null;
+  priority: string | null;
+  due_date: string | null;
+  tags: string; // JSON array (string in DB)
+  column_id: string | null;
+  notes: string | null;
+  created_at: number;
+  updated_at: number;
+  created_by: string | null;
+}
+
+export function getKanbanTasks(opts?: {
+  column?: string;
+  priority?: string;
+  limit?: number;
+}): KanbanTask[] {
+  const conditions: string[] = [];
+  const params: unknown[] = [];
+  if (opts?.column) {
+    conditions.push('column_id = ?');
+    params.push(opts.column);
+  }
+  if (opts?.priority) {
+    conditions.push('priority = ?');
+    params.push(opts.priority);
+  }
+  const where = conditions.length ? ' WHERE ' + conditions.join(' AND ') : '';
+  // Priority DESC: sort critical > high > medium > low > (others)
+  const orderExpr = `
+    column_id,
+    CASE LOWER(COALESCE(priority, ''))
+      WHEN 'critical' THEN 0
+      WHEN 'high'     THEN 1
+      WHEN 'medium'   THEN 2
+      WHEN 'low'      THEN 3
+      ELSE 4
+    END,
+    updated_at DESC
+  `;
+  const limitClause = opts?.limit && Number.isFinite(opts.limit) ? ' LIMIT ' + Math.floor(opts.limit) : '';
+  return db
+    .prepare(`SELECT * FROM kanban_tasks${where} ORDER BY ${orderExpr}${limitClause}`)
+    .all(...params) as KanbanTask[];
+}
+
+export function getKanbanTaskById(id: string): KanbanTask | null {
+  return (db.prepare('SELECT * FROM kanban_tasks WHERE id = ?').get(id) as KanbanTask) ?? null;
+}
+
+export function createKanbanTask(input: {
+  title: string;
+  description?: string | null;
+  priority?: string | null;
+  column_id?: string | null;
+}): KanbanTask | null {
+  const id = crypto.randomUUID();
+  const now = Math.floor(Date.now() / 1000);
+  db.prepare(
+    `INSERT INTO kanban_tasks (id, title, description, priority, tags, column_id, created_at, updated_at, created_by)
+     VALUES (?, ?, ?, ?, '[]', ?, ?, ?, 'dashboard')`,
+  ).run(
+    id,
+    input.title,
+    input.description ?? null,
+    input.priority ?? 'medium',
+    input.column_id ?? 'todo',
+    now,
+    now,
+  );
+  return getKanbanTaskById(id);
+}
+
+export function updateKanbanTask(
+  id: string,
+  patch: {
+    title?: string;
+    description?: string | null;
+    priority?: string | null;
+    column_id?: string | null;
+    notes?: string | null;
+  },
+): KanbanTask | null {
+  const sets: string[] = [];
+  const params: unknown[] = [];
+  if (patch.title !== undefined) { sets.push('title = ?'); params.push(patch.title); }
+  if (patch.description !== undefined) { sets.push('description = ?'); params.push(patch.description); }
+  if (patch.priority !== undefined) { sets.push('priority = ?'); params.push(patch.priority); }
+  if (patch.column_id !== undefined) { sets.push('column_id = ?'); params.push(patch.column_id); }
+  if (patch.notes !== undefined) { sets.push('notes = ?'); params.push(patch.notes); }
+  if (sets.length === 0) return getKanbanTaskById(id);
+  sets.push(`updated_at = strftime('%s','now')`);
+  params.push(id);
+  db.prepare(`UPDATE kanban_tasks SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+  return getKanbanTaskById(id);
+}
+
+export function deleteKanbanTask(id: string): boolean {
+  const result = db.prepare('DELETE FROM kanban_tasks WHERE id = ?').run(id);
+  return result.changes > 0;
+}
+
+// ── Kanban assignments (derived, read-only) ─────────────────────────
+// Surfaces which agent is actively working on each kanban task by
+// joining two pre-existing sources (no schema changes):
+//   1. anti_idle_sessions (status='running')   — authoritative
+//   2. mission_tasks (ANTI-IDLE DISPATCH prompt, status in queued|running) — fallback
+// Returns a map keyed by kanban_task_id. Tasks with no active assignment
+// are omitted entirely.
+export type KanbanAssignment = {
+  agent: string;
+  mission_id: string | null;
+  status: 'running' | 'queued';
+  since: number;
+};
+
+export function getKanbanAssignments(): Record<string, KanbanAssignment> {
+  const out: Record<string, KanbanAssignment> = {};
+
+  // Source 2 first (lower priority). Extracts kanban_task_id from the
+  // dispatch prompt via a LIKE-filter on the database side; parsing is
+  // done in JS for clarity. Most recent per task_id wins (ORDER BY DESC +
+  // first-write wins).
+  const missionRows = db
+    .prepare(
+      `SELECT id, assigned_agent, status, prompt, created_at
+         FROM mission_tasks
+        WHERE status IN ('queued', 'running')
+          AND prompt LIKE 'ANTI-IDLE DISPATCH%kanban_task_id: %'
+        ORDER BY created_at DESC`,
+    )
+    .all() as Array<{
+      id: string;
+      assigned_agent: string | null;
+      status: string;
+      prompt: string;
+      created_at: number;
+    }>;
+
+  for (const row of missionRows) {
+    const m = row.prompt.match(/^kanban_task_id:\s*(\S+)/m);
+    if (!m) continue;
+    const taskId = m[1];
+    if (out[taskId]) continue; // most recent already taken
+    const status: 'running' | 'queued' = row.status === 'running' ? 'running' : 'queued';
+    out[taskId] = {
+      agent: row.assigned_agent || 'unknown',
+      mission_id: row.id,
+      status,
+      since: row.created_at,
+    };
+  }
+
+  // Source 1 unconditionally overrides Source 2. ORDER BY started_at DESC
+  // + first-write-wins ensures most recent session wins within the source.
+  const sessionRows = db
+    .prepare(
+      `SELECT task_id, routing_target, mission_task_id, started_at
+         FROM anti_idle_sessions
+        WHERE status = 'running'
+        ORDER BY started_at DESC`,
+    )
+    .all() as Array<{
+      task_id: string;
+      routing_target: string;
+      mission_task_id: string | null;
+      started_at: number;
+    }>;
+
+  const sessionOwned = new Set<string>();
+  for (const row of sessionRows) {
+    if (sessionOwned.has(row.task_id)) continue; // keep most recent session
+    sessionOwned.add(row.task_id);
+    out[row.task_id] = {
+      agent: row.routing_target,
+      mission_id: row.mission_task_id,
+      status: 'running',
+      since: row.started_at,
+    };
+  }
+
+  return out;
+}
+
+// Mirrors dispatcher anti-idle-check.mjs heading detection.
+// Returns which of the 4 required SOP sections are missing from a task description.
+// Headings checked (case-insensitive, alias groups):
+//   - objective       → OBJECTIVE | GOAL
+//   - desired_outcome → DESIRED OUTCOME | OUTCOME | SUCCESS CRITERIA
+//   - blocker         → BLOCKER | BLOCKED BY
+//   - next_step       → NEXT STEP | NEXT ACTION
+export function kanbanSopMissing(task: KanbanTask): string[] {
+  const text = [task.title, task.description, task.notes].filter(Boolean).join('\n');
+  const groups: Array<{ key: string; labels: string[] }> = [
+    { key: 'objective', labels: ['OBJECTIVE', 'GOAL'] },
+    { key: 'desired_outcome', labels: ['DESIRED OUTCOME', 'OUTCOME', 'SUCCESS CRITERIA'] },
+    { key: 'blocker', labels: ['BLOCKER', 'BLOCKED BY'] },
+    { key: 'next_step', labels: ['NEXT STEP', 'NEXT ACTION'] },
+  ];
+  const missing: string[] = [];
+  for (const g of groups) {
+    const hit = g.labels.some((label) => {
+      const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const re = new RegExp(`(?:^|\\n)\\s*${escaped}\\s*:`, 'i');
+      return re.test(text);
+    });
+    if (!hit) missing.push(g.key);
+  }
+  return missing;
 }
