@@ -228,7 +228,8 @@ function createSchema(database: Database.Database): void {
       priority        INTEGER NOT NULL DEFAULT 0,
       created_at      INTEGER NOT NULL,
       started_at      INTEGER,
-      completed_at    INTEGER
+      completed_at    INTEGER,
+      autopushed_at   INTEGER
     );
 
     CREATE INDEX IF NOT EXISTS idx_mission_status
@@ -526,6 +527,11 @@ function runMigrations(database: Database.Database): void {
         ON mission_tasks(assigned_agent, status, priority DESC, created_at ASC);
     `);
     logger.info('Migration: made mission_tasks.assigned_agent nullable');
+  }
+  const missionColsPost = database.prepare(`PRAGMA table_info(mission_tasks)`).all() as Array<{ name: string }>;
+  if (!missionColsPost.some((c) => c.name === 'autopushed_at')) {
+    database.exec(`ALTER TABLE mission_tasks ADD COLUMN autopushed_at INTEGER`);
+    logger.info('Migration: added autopushed_at column to mission_tasks');
   }
 }
 
@@ -1764,6 +1770,9 @@ export interface MissionTask {
   created_at: number;
   started_at: number | null;
   completed_at: number | null;
+  /** Unix ts when the mission-autopush hook fired Telegram notification.
+   *  NULL = not yet pushed. Used as an atomic CAS claim so we never double-fire. */
+  autopushed_at: number | null;
 }
 
 export function createMissionTask(
@@ -1773,6 +1782,7 @@ export function createMissionTask(
   assignedAgent: string | null = null,
   createdBy = 'dashboard',
   priority = 0,
+  _acceptanceCriteria: string | null = null,
 ): void {
   const now = Math.floor(Date.now() / 1000);
   db.prepare(
@@ -1903,6 +1913,29 @@ export function resetStuckMissionTasks(agentId: string): number {
   return result.changes;
 }
 
+/**
+ * Atomically claim a mission for Telegram autopush notification.
+ *
+ * Stamps autopushed_at with the current unix timestamp IFF it's currently NULL.
+ * Returns true on the first claim, false on every subsequent call for the same
+ * mission — this is how the mission-autopush hook guarantees exactly-once
+ * notification even if the scheduler completion path is re-entered.
+ *
+ * Idempotent by design: safe to call on any mission id, including non-existent
+ * ones (returns false) and already-pushed ones (returns false).
+ */
+export function markMissionAutopushed(id: string): boolean {
+  const result = db.prepare(
+    `UPDATE mission_tasks SET autopushed_at = ? WHERE id = ? AND autopushed_at IS NULL`,
+  ).run(Math.floor(Date.now() / 1000), id);
+  return result.changes > 0;
+}
+
+/**
+ * Reason tag for an auto-retry, surfaced in the Telegram ping + hive_mind log
+ * so Aditya can see WHY the watchdog reran something without reading source.
+ */
+export type RetryReason = 'turn_cap' | 'timeout';
 // ── Audit Log ────────────────────────────────────────────────────────
 
 export function insertAuditLog(
