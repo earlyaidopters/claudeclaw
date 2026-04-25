@@ -2,9 +2,9 @@ import fs from 'fs';
 import path from 'path';
 
 import { loadAgentConfig, resolveAgentDir, resolveAgentClaudeMd } from './agent-config.js';
-import { createBot } from './bot.js';
+import { createBot, notifyWhatsAppIncoming } from './bot.js';
 import { checkPendingMigrations } from './migrations.js';
-import { ALLOWED_CHAT_ID, activeBotToken, STORE_DIR, PROJECT_ROOT, CLAUDECLAW_CONFIG, GOOGLE_API_KEY, setAgentOverrides, SECURITY_PIN_HASH, IDLE_LOCK_MINUTES, EMERGENCY_KILL_PHRASE } from './config.js';
+import { ALLOWED_CHAT_ID, activeBotToken, STORE_DIR, PROJECT_ROOT, CLAUDECLAW_CONFIG, GOOGLE_API_KEY, WHATSAPP_ENABLED, setAgentOverrides, SECURITY_PIN_HASH, IDLE_LOCK_MINUTES, EMERGENCY_KILL_PHRASE } from './config.js';
 import { startDashboard } from './dashboard.js';
 import { initDatabase, cleanupOldMissionTasks, insertAuditLog } from './db.js';
 import { initSecurity, setAuditCallback } from './security.js';
@@ -16,6 +16,7 @@ import { initOAuthHealthCheck } from './oauth-health.js';
 import { initOrchestrator } from './orchestrator.js';
 import { initScheduler } from './scheduler.js';
 import { setTelegramConnected, setBotInfo } from './state.js';
+import { initWhatsApp } from './whatsapp.js';
 
 // Parse --agent flag
 const agentFlagIndex = process.argv.indexOf('--agent');
@@ -172,6 +173,22 @@ async function main(): Promise<void> {
   // Dashboard only runs in the main bot process
   if (AGENT_ID === 'main') {
     startDashboard(bot.api);
+
+    // WhatsApp bridge: only main bot, only when explicitly enabled.
+    // Failure here must not block the bot from starting.
+    if (WHATSAPP_ENABLED) {
+      initWhatsApp((contactName, isGroup, groupName) => {
+        notifyWhatsAppIncoming(bot.api, contactName, isGroup, groupName).catch((err) =>
+          logger.error({ err }, 'WhatsApp notification dispatch failed'),
+        );
+      }).then(() => {
+        logger.info('WhatsApp bridge initialized');
+      }).catch((err) => {
+        logger.error({ err }, 'WhatsApp bridge failed to initialize — /wa will be unavailable');
+      });
+    } else {
+      logger.info('WhatsApp bridge disabled (WHATSAPP_ENABLED is not true)');
+    }
   }
 
   if (ALLOWED_CHAT_ID) {
