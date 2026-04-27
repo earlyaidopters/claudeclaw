@@ -265,6 +265,27 @@ async function pollReviewTasks(): Promise<void> {
         } else if (existing.last_status === 'timeout' || existing.last_status === 'failed') {
           deleteScheduledTask(taskId);
           // Fall through to create new wake
+        } else if (existing.last_status === 'completed_empty') {
+          // Agent produced no output on verification -- do not retry unless re-submitted.
+          // Mirror the success branch's freshness check: if the MC task was updated
+          // after Jarvis last ran, treat as a legitimate re-review and re-dispatch.
+          const lastRun = existing.last_run || 0;
+          const taskUpdatedAt = task.updated_at
+            ? Math.floor(new Date(task.updated_at).getTime() / 1000)
+            : 0;
+
+          if (taskUpdatedAt <= lastRun) {
+            // Not re-submitted -- keep the scheduled task as a dedup guard.
+            logger.warn(
+              { taskId, taskNumber: task.task_number },
+              'MC poller: verify task completed with no output -- not retrying (completed_empty)',
+            );
+            continue;
+          }
+
+          // Task was re-submitted after empty output -- legitimate re-review
+          deleteScheduledTask(taskId);
+          // Fall through to create new wake
         } else if (existing.status === 'active' || existing.status === 'running') {
           continue;
         }
@@ -540,7 +561,7 @@ async function pollMCAssignments(opts: { startup?: boolean } = {}): Promise<void
       const existing = getScheduledTask(taskId);
       let previousSessionId: string | undefined;
       if (existing) {
-        if (existing.last_status === 'timeout' || existing.last_status === 'failed' || existing.last_status === 'success') {
+        if (['timeout', 'failed', 'success', 'completed_empty'].includes(existing.last_status ?? '')) {
           previousSessionId = existing.resume_session_id ?? undefined;
           deleteScheduledTask(taskId);
           // Fall through to create new wake

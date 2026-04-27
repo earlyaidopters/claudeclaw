@@ -934,7 +934,7 @@ export interface ScheduledTask {
   created_at: number;
   agent_id: string;
   started_at: number | null;
-  last_status: 'success' | 'failed' | 'timeout' | null;
+  last_status: 'success' | 'failed' | 'timeout' | 'completed_empty' | null;
   /** Claude Code session ID from the previous run, for resumption on re-dispatch. */
   resume_session_id: string | null;
 }
@@ -1006,7 +1006,7 @@ export function updateTaskAfterRun(
   id: string,
   nextRun: number,
   result: string,
-  lastStatus: 'success' | 'failed' | 'timeout' = 'success',
+  lastStatus: 'success' | 'failed' | 'timeout' | 'completed_empty' = 'success',
 ): void {
   const now = Math.floor(Date.now() / 1000);
   db.prepare(

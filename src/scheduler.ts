@@ -26,6 +26,31 @@ import { loadAgentConfig } from './agent-config.js';
 
 type Sender = (text: string) => Promise<void>;
 
+/**
+ * Task ID prefixes for poller-managed tasks where empty output is EXPECTED.
+ * These tasks tell the agent "do nothing if there's nothing to do."
+ * Empty output = agent had no work. Mark success, no warning.
+ */
+const SILENT_TASK_PREFIXES = ['mc-wake-'];
+
+/**
+ * All task ID prefixes managed by the MC poller.
+ * These get deleted and recreated each cycle. Using 'failed' status on these
+ * causes infinite retry loops because the poller treats 'failed' as retriable.
+ * Empty output on non-silent poller tasks uses 'completed_empty' instead.
+ */
+const POLLER_MANAGED_PREFIXES = ['mc-wake-', 'verify-'];
+
+/** Task where empty output is expected behavior (agent had nothing to do). */
+function isExpectedSilent(taskId: string): boolean {
+  return SILENT_TASK_PREFIXES.some(prefix => taskId.startsWith(prefix));
+}
+
+/** Task managed by MC poller -- do NOT mark 'failed' on empty output. */
+function isPollerManaged(taskId: string): boolean {
+  return POLLER_MANAGED_PREFIXES.some(prefix => taskId.startsWith(prefix));
+}
+
 /** Default timeout (ms) for tasks when no agent-specific override exists. */
 const DEFAULT_TASK_TIMEOUT_MS = 120 * 60 * 1000; // 120 minutes
 
@@ -149,17 +174,22 @@ async function checkInterAgentMessages(): Promise<void> {
       completeInterAgentTask(message.id, 'failed', `Timed out after ${taskTimeoutLabel}`);
       logger.warn({ id: message.id, timeoutMs: taskTimeoutMs }, 'Inter-agent task timed out');
     } else {
-      const text = result.text?.trim() || 'Task completed with no output.';
-      completeInterAgentTask(message.id, 'completed', text);
+      const rawText = result.text?.trim();
 
-      // Inject into conversation context so the agent can reference it
-      if (ALLOWED_CHAT_ID) {
-        const activeSession = getSession(ALLOWED_CHAT_ID, schedulerAgentId);
-        logConversationTurn(ALLOWED_CHAT_ID, 'user', `[Inter-agent task from ${message.from_agent}]: ${message.prompt}`, activeSession ?? undefined, schedulerAgentId);
-        logConversationTurn(ALLOWED_CHAT_ID, 'assistant', text, activeSession ?? undefined, schedulerAgentId);
+      if (!rawText) {
+        completeInterAgentTask(message.id, 'failed', 'Agent produced no output');
+        logger.warn({ id: message.id, fromAgent: message.from_agent }, 'Inter-agent task produced no output -- marked failed');
+      } else {
+        completeInterAgentTask(message.id, 'completed', rawText);
+
+        if (ALLOWED_CHAT_ID) {
+          const activeSession = getSession(ALLOWED_CHAT_ID, schedulerAgentId);
+          logConversationTurn(ALLOWED_CHAT_ID, 'user', `[Inter-agent task from ${message.from_agent}]: ${message.prompt}`, activeSession ?? undefined, schedulerAgentId);
+          logConversationTurn(ALLOWED_CHAT_ID, 'assistant', rawText, activeSession ?? undefined, schedulerAgentId);
+        }
+
+        logger.info({ id: message.id, fromAgent: message.from_agent }, 'Inter-agent task completed');
       }
-
-      logger.info({ id: message.id, fromAgent: message.from_agent }, 'Inter-agent task completed');
     }
   } catch (err) {
     clearTimeout(timeout);
@@ -233,19 +263,45 @@ async function runDueTasks(): Promise<void> {
           return;
         }
 
-        const text = result.text?.trim() || 'Task completed with no output.';
-        for (const chunk of splitMessage(formatForTelegram(text))) {
-          await sender(chunk);
-        }
+        const rawText = result.text?.trim();
 
-        // Inject task output into the active chat session so user replies have context
-        if (ALLOWED_CHAT_ID) {
-          const activeSession = getSession(ALLOWED_CHAT_ID, schedulerAgentId);
-          logConversationTurn(ALLOWED_CHAT_ID, 'user', `[Scheduled task]: ${task.prompt}`, activeSession ?? undefined, schedulerAgentId);
-          logConversationTurn(ALLOWED_CHAT_ID, 'assistant', text, activeSession ?? undefined, schedulerAgentId);
-        }
+        if (!rawText && isExpectedSilent(task.id)) {
+          // Wake prompt with no output = agent had no tasks. Expected behavior.
+          // Mark success so poller treats it as a normal completed cycle.
+          updateTaskAfterRun(task.id, nextRun, '[no-op: agent had no assigned tasks]', 'success');
+          logger.info({ taskId: task.id }, 'Wake prompt completed with no output (expected)');
+        } else if (!rawText && isPollerManaged(task.id)) {
+          // Poller-managed task (e.g., verify-*) with no output = unexpected.
+          // Use 'completed_empty' -- NOT 'failed' which triggers poller retry loops.
+          updateTaskAfterRun(task.id, nextRun, '[completed with no output]', 'completed_empty');
+          logger.warn({ taskId: task.id }, 'Poller-managed task produced no output -- marked completed_empty (no retry)');
+          try {
+            await sender(`⚠️ Poller task produced no output (not retrying): "${task.prompt.slice(0, 80)}..."`);
+          } catch (sendErr) {
+            logger.warn({ sendErr, taskId: task.id }, 'Failed to send empty-output warning to Telegram');
+          }
+        } else if (!rawText) {
+          // Non-poller task with empty output = genuine failure.
+          updateTaskAfterRun(task.id, nextRun, 'Agent produced no output', 'failed');
+          logger.warn({ taskId: task.id }, 'Scheduled task produced no output -- marked failed');
+          try {
+            await sender(`⚠️ Scheduled task produced no output: "${task.prompt.slice(0, 80)}..."`);
+          } catch (sendErr) {
+            logger.warn({ sendErr, taskId: task.id }, 'Failed to send empty-output warning to Telegram');
+          }
+        } else {
+          for (const chunk of splitMessage(formatForTelegram(rawText))) {
+            await sender(chunk);
+          }
 
-        updateTaskAfterRun(task.id, nextRun, text, 'success');
+          if (ALLOWED_CHAT_ID) {
+            const activeSession = getSession(ALLOWED_CHAT_ID, schedulerAgentId);
+            logConversationTurn(ALLOWED_CHAT_ID, 'user', `[Scheduled task]: ${task.prompt}`, activeSession ?? undefined, schedulerAgentId);
+            logConversationTurn(ALLOWED_CHAT_ID, 'assistant', rawText, activeSession ?? undefined, schedulerAgentId);
+          }
+
+          updateTaskAfterRun(task.id, nextRun, rawText, 'success');
+        }
 
         logger.info({ taskId: task.id, nextRun, hasResumedSession: !!resumeSessionId }, 'Task complete, next run scheduled');
       } catch (err) {
@@ -298,20 +354,29 @@ async function runDueMissionTasks(): Promise<void> {
         logger.warn({ missionId: mission.id, timeoutMs: missionTimeoutMs }, 'Mission task timed out');
         try { await sender('Mission task timed out: "' + mission.title + '"'); } catch {}
       } else {
-        const text = result.text?.trim() || 'Task completed with no output.';
-        completeMissionTask(mission.id, text, 'completed');
-        logger.info({ missionId: mission.id }, 'Mission task completed');
+        const rawText = result.text?.trim();
 
-        // Send result to Telegram
-        for (const chunk of splitMessage(formatForTelegram(text))) {
-          await sender(chunk);
-        }
+        if (!rawText) {
+          completeMissionTask(mission.id, null, 'failed', 'Agent produced no output');
+          logger.warn({ missionId: mission.id }, 'Mission task produced no output -- marked failed');
+          try {
+            await sender(`⚠️ Mission task produced no output: "${mission.title}"`);
+          } catch (sendErr) {
+            logger.warn({ sendErr, missionId: mission.id }, 'Failed to send empty-output warning to Telegram');
+          }
+        } else {
+          completeMissionTask(mission.id, rawText, 'completed');
+          logger.info({ missionId: mission.id }, 'Mission task completed');
 
-        // Inject into conversation context so agent can reference it
-        if (ALLOWED_CHAT_ID) {
-          const activeSession = getSession(ALLOWED_CHAT_ID, schedulerAgentId);
-          logConversationTurn(ALLOWED_CHAT_ID, 'user', '[Mission task: ' + mission.title + ']: ' + mission.prompt, activeSession ?? undefined, schedulerAgentId);
-          logConversationTurn(ALLOWED_CHAT_ID, 'assistant', text, activeSession ?? undefined, schedulerAgentId);
+          for (const chunk of splitMessage(formatForTelegram(rawText))) {
+            await sender(chunk);
+          }
+
+          if (ALLOWED_CHAT_ID) {
+            const activeSession = getSession(ALLOWED_CHAT_ID, schedulerAgentId);
+            logConversationTurn(ALLOWED_CHAT_ID, 'user', '[Mission task: ' + mission.title + ']: ' + mission.prompt, activeSession ?? undefined, schedulerAgentId);
+            logConversationTurn(ALLOWED_CHAT_ID, 'assistant', rawText, activeSession ?? undefined, schedulerAgentId);
+          }
         }
       }
 
@@ -320,7 +385,7 @@ async function runDueMissionTasks(): Promise<void> {
         chatId,
         content: JSON.stringify({
           id: mission.id,
-          status: result.aborted ? 'failed' : 'completed',
+          status: (result.aborted || !result.text?.trim()) ? 'failed' : 'completed',
           title: mission.title,
         }),
       });
