@@ -1060,8 +1060,14 @@ export function deleteScheduledTask(id: string): void {
   db.prepare('DELETE FROM scheduled_tasks WHERE id = ?').run(id);
 }
 
-export function pauseScheduledTask(id: string): void {
-  db.prepare(`UPDATE scheduled_tasks SET status = 'paused' WHERE id = ?`).run(id);
+export function pauseScheduledTask(id: string, reason?: string): void {
+  if (reason) {
+    db.prepare(
+      `UPDATE scheduled_tasks SET status = 'paused', last_result = ? WHERE id = ?`,
+    ).run(reason, id);
+  } else {
+    db.prepare(`UPDATE scheduled_tasks SET status = 'paused' WHERE id = ?`).run(id);
+  }
 }
 
 export function resumeScheduledTask(id: string): void {

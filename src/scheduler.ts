@@ -8,6 +8,7 @@ import {
   markTaskRunning,
   updateTaskAfterRun,
   resetStuckTasks,
+  pauseScheduledTask,
   claimNextMissionTask,
   completeMissionTask,
   resetStuckMissionTasks,
@@ -222,7 +223,18 @@ async function runDueTasks(): Promise<void> {
 
     // Compute next occurrence BEFORE executing so we can lock the task
     // in the DB immediately, preventing re-fire on subsequent ticks.
-    const nextRun = computeNextRun(task.schedule);
+    let nextRun: number;
+    try {
+      nextRun = computeNextRun(task.schedule);
+    } catch (err) {
+      logger.error(
+        { taskId: task.id, schedule: task.schedule, err },
+        'Invalid cron expression -- pausing task to prevent infinite retry',
+      );
+      pauseScheduledTask(task.id, `Invalid cron expression: ${task.schedule}`);
+      continue;
+    }
+
     const claimed = markTaskRunning(task.id, nextRun);
     if (!claimed) {
       logger.warn({ taskId: task.id }, 'Task already claimed by another tick, skipping');

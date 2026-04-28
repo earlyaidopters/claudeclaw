@@ -433,6 +433,47 @@ describe('task state machine', () => {
     });
   });
 
+  // ── pauseScheduledTask with reason (EP1) ────────────────────────────
+
+  describe('pauseScheduledTask with reason', () => {
+    it('stores reason in last_result when provided', () => {
+      const future = Math.floor(Date.now() / 1000) + 3600;
+      createScheduledTask('t1', 'task', '0 9 * * *', future, 'main');
+
+      pauseScheduledTask('t1', 'Invalid cron expression: bad-cron');
+
+      const tasks = getAllScheduledTasks('main');
+      expect(tasks[0].status).toBe('paused');
+      expect(tasks[0].last_result).toBe('Invalid cron expression: bad-cron');
+    });
+
+    it('is backward-compatible without reason', () => {
+      const future = Math.floor(Date.now() / 1000) + 3600;
+      createScheduledTask('t1', 'task', '0 9 * * *', future, 'main');
+
+      pauseScheduledTask('t1');
+
+      const tasks = getAllScheduledTasks('main');
+      expect(tasks[0].status).toBe('paused');
+      expect(tasks[0].last_result).toBeNull();
+    });
+
+    it('preserves existing last_result when no reason given', () => {
+      const past = Math.floor(Date.now() / 1000) - 60;
+      const futureNextRun = Math.floor(Date.now() / 1000) + 86400;
+      createScheduledTask('t1', 'task', '0 9 * * *', past, 'main');
+      markTaskRunning('t1');
+      updateTaskAfterRun('t1', futureNextRun, 'Previous result', 'success');
+
+      // Pause without reason should not overwrite last_result
+      pauseScheduledTask('t1');
+
+      const tasks = getAllScheduledTasks('main');
+      expect(tasks[0].status).toBe('paused');
+      expect(tasks[0].last_result).toBe('Previous result');
+    });
+  });
+
   // ── Delete ────────────────────────────────────────────────────────
 
   describe('deleteScheduledTask', () => {
