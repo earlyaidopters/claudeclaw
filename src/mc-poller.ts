@@ -10,6 +10,10 @@
  * Only runs in the main Janet process (AGENT_ID === 'main').
  */
 
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+
 import { createScheduledTask, deleteScheduledTask, getAllScheduledTasks, type ScheduledTask } from './db.js';
 import { readEnvFile } from './env.js';
 
@@ -29,6 +33,51 @@ const LOOK_BACK_MS = 2 * 60 * 1000;  // Look for tasks assigned in last 2 minute
 
 // Agents that don't need a wake (main Janet is always active)
 const SKIP_AGENTS = new Set(['main', 'janet']);
+
+/**
+ * Resolve the Codex CLI path by finding the latest installed plugin version.
+ * Returns the full path to codex-companion.mjs, or null if not installed.
+ */
+function resolveCodexCliPath(): string | null {
+  try {
+    const pluginBase = path.join(
+      os.homedir(),
+      '.claude',
+      'plugins',
+      'cache',
+      'codex-plugin-cc',
+      'codex',
+    );
+
+    if (!fs.existsSync(pluginBase)) return null;
+
+    const versions = fs.readdirSync(pluginBase)
+      .filter(d => fs.statSync(path.join(pluginBase, d)).isDirectory())
+      .sort((a, b) => {
+        // Semver sort: split on '.', compare numerically, highest first
+        const pa = a.split('.').map(Number);
+        const pb = b.split('.').map(Number);
+        for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+          const diff = (pb[i] || 0) - (pa[i] || 0);
+          if (diff !== 0) return diff;
+        }
+        return 0;
+      });
+
+    if (versions.length === 0) return null;
+
+    // Iterate all sorted versions until one has the companion script
+    for (const ver of versions) {
+      const scriptPath = path.join(pluginBase, ver, 'scripts', 'codex-companion.mjs');
+      if (fs.existsSync(scriptPath)) return scriptPath;
+    }
+
+    return null;
+  } catch (err) {
+    logger.warn({ err }, 'resolveCodexCliPath: fs error while resolving Codex CLI -- returning null');
+    return null;
+  }
+}
 
 // Map MC agent names (mc_agents.name in Supabase) to ClaudeClaw agent directory IDs.
 // Complete mapping -- explicit for auditability, no fallback reliance.
@@ -300,6 +349,16 @@ async function pollReviewTasks(): Promise<void> {
         ? agentMap.get(task.assignee_agent_id) || 'Unknown builder'
         : 'Unknown builder';
 
+      // Resolve Codex CLI path dynamically -- skip task if not found
+      const codexCliPath = resolveCodexCliPath();
+      if (!codexCliPath) {
+        logger.error(
+          { taskNumber: task.task_number },
+          'Codex CLI not found -- cannot create verification task. Install or update the Codex plugin.',
+        );
+        continue;
+      }
+
       const verifyPrompt = [
         `CODEX REVIEW REQUIRED -- Task #${task.task_number}: ${task.title || 'Untitled'}.`,
         `Builder: ${builderName}.`,
@@ -309,7 +368,7 @@ async function pollReviewTasks(): Promise<void> {
         '',
         '1. Query MC for this task\'s latest comment to understand what was changed.',
         '2. Run the Codex CLI directly via Bash:',
-        '   node "/Users/janetsvoid/.claude/plugins/cache/codex-plugin-cc/codex/1.0.4/scripts/codex-companion.mjs" task --fresh "Review the latest commit(s) for MC task #' + task.task_number + '. Check for correctness issues, error handling gaps, and deviations from the fix brief. Report CLEAN if no discrete correctness issues found, or list each finding with severity (P1=blocking, P2=non-blocking)."',
+        '   node "' + codexCliPath + '" task --fresh "Review the latest commit(s) for MC task #' + task.task_number + '. Check for correctness issues, error handling gaps, and deviations from the fix brief. Report CLEAN if no discrete correctness issues found, or list each finding with severity (P1=blocking, P2=non-blocking)."',
         '3. Read the Codex output and evaluate:',
         '   - CLEAN (no discrete correctness issues):',
         '     Add a CODEX PASS comment to MC, then IMMEDIATELY update MC task status:',
@@ -922,6 +981,18 @@ export function initMCPoller(send?: Sender, sendStatus?: Sender): void {
 
   if (send) notifySender = send;
   if (sendStatus) statusSender = sendStatus;
+
+  // Codex CLI health check at startup (non-fatal -- transient fs errors must not block the poller)
+  try {
+    const codexPath = resolveCodexCliPath();
+    if (codexPath) {
+      logger.info({ codexCliPath: codexPath }, 'Codex CLI resolved');
+    } else {
+      logger.warn('Codex CLI not found at startup -- verification tasks will fail until plugin is installed');
+    }
+  } catch (err) {
+    logger.warn({ err }, 'Codex CLI health check failed -- poller continuing without Codex');
+  }
 
   // Startup sequence: recover orphans first, then run full catch-up poll.
   // Recovery resets in_progress tasks for dead agents back to assigned,
