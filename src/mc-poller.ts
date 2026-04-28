@@ -126,7 +126,7 @@ type Sender = (text: string) => Promise<void>;
 let notifySender: Sender | null = null;   // Janet's direct chat (escalations only)
 let statusSender: Sender | null = null;   // Status channel (routine notifications)
 
-interface MCTask {
+export interface MCTask {
   id: string;
   task_number: number;
   title: string;
@@ -205,7 +205,7 @@ async function fetchVerificationContext(taskUuid: string): Promise<string | null
 }
 
 /**
- * Poll for build tasks in 'review' status and route to Janet for Codex verification.
+ * Handle build tasks in 'review' status -- routes to Janet for Codex verification.
  *
  * When a builder marks a task as 'review', Janet picks it up and runs a Codex
  * review via the Codex CLI. On clean result, Janet marks done and notifies Denver.
@@ -213,17 +213,291 @@ async function fetchVerificationContext(taskUuid: string): Promise<string | null
  * MC comment; P2 gets documented and task moves to done.
  *
  * Flow: Builder -> review -> Janet (Codex review) -> done / back to builder
- *
- * Runs every 30s alongside the assignment poller. ~30s worst-case latency is
- * fine for build verification.
  */
-async function pollReviewTasks(): Promise<void> {
+export async function handleBuildReviewTasks(tasks: MCTask[], agentMap: Map<string, string>): Promise<void> {
+  for (const task of tasks) {
+    const taskId = `verify-${task.task_number}-poll`;
+
+    // Guard nullable assignee_agent_id
+    const builderName = task.assignee_agent_id
+      ? (agentMap.get(task.assignee_agent_id) || 'Unknown builder')
+      : 'Unknown builder';
+
+    // Dedup: skip if Codex review wake is currently running or hasn't executed yet.
+    // When a previous review PASSED, check if this is a genuine re-review
+    // (task re-submitted after fixes) or a stale poll cycle. If Codex already
+    // passed this task and the MC status hasn't changed, close the loop -- don't
+    // re-dispatch. This prevents redundant review cycles that burn tokens
+    // when the MC status update to 'done' failed or is still being processed.
+    const existing = getScheduledTask(taskId);
+    if (existing) {
+      if (existing.last_status === 'success') {
+        // Codex review already passed this. Check if it was re-submitted (updated_at changed)
+        // or if we're just cycling on a stale review status.
+        const lastRun = existing.last_run || 0;
+        const taskUpdatedAt = task.updated_at
+          ? Math.floor(new Date(task.updated_at).getTime() / 1000)
+          : 0;
+
+        if (taskUpdatedAt <= lastRun) {
+          // Task hasn't been re-submitted since Codex last passed it.
+          // Close the loop: try to update MC to 'done' directly and stop cycling.
+          logger.info(
+            { taskNumber: task.task_number, taskId },
+            'MC poller: verification already passed, closing loop (no re-dispatch)',
+          );
+
+          // Attempt to move MC task to 'done' since Codex review already passed
+          try {
+            const patchUrl = `${SUPABASE_URL}/rest/v1/mc_tasks?task_number=eq.${task.task_number}`;
+            const patchRes = await fetch(patchUrl, {
+              method: 'PATCH',
+              headers: {
+                apikey: SUPABASE_ANON_KEY,
+                Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+                'Content-Type': 'application/json',
+                Prefer: 'return=minimal',
+              },
+              body: JSON.stringify({
+                status: 'done',
+                completed_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+              }),
+            });
+
+            if (patchRes.ok) {
+              logger.info({ taskNumber: task.task_number }, 'MC poller: auto-closed verified task to done');
+              deleteScheduledTask(taskId);
+            } else {
+              logger.warn(
+                { taskNumber: task.task_number, status: patchRes.status },
+                'MC poller: failed to auto-close verified task -- keeping dedup guard to prevent re-dispatch',
+              );
+              // DO NOT delete the scheduled task -- keep it as a dedup guard.
+              // Next poll cycle will retry auto-close. This prevents the
+              // re-verification loop where the review gets triggered 12+ times.
+            }
+          } catch (err) {
+            logger.warn({ err, taskNumber: task.task_number }, 'MC poller: error auto-closing verified task -- keeping dedup guard');
+            // Same: keep scheduled task for dedup to prevent re-dispatch loop
+          }
+          continue;
+        }
+
+        // Task was re-submitted after Codex passed -- legitimate re-review
+        deleteScheduledTask(taskId);
+        // Fall through to create new wake
+      } else if (existing.last_status === 'timeout' || existing.last_status === 'failed') {
+        deleteScheduledTask(taskId);
+        // Fall through to create new wake
+      } else if (existing.last_status === 'completed_empty') {
+        // Agent produced no output on verification -- do not retry unless re-submitted.
+        // Mirror the success branch's freshness check: if the MC task was updated
+        // after Codex last ran, treat as a legitimate re-review and re-dispatch.
+        const lastRun = existing.last_run || 0;
+        const taskUpdatedAt = task.updated_at
+          ? Math.floor(new Date(task.updated_at).getTime() / 1000)
+          : 0;
+
+        if (taskUpdatedAt <= lastRun) {
+          // Not re-submitted -- keep the scheduled task as a dedup guard.
+          logger.warn(
+            { taskId, taskNumber: task.task_number },
+            'MC poller: verify task completed with no output -- not retrying (completed_empty)',
+          );
+          continue;
+        }
+
+        // Task was re-submitted after empty output -- legitimate re-review
+        deleteScheduledTask(taskId);
+        // Fall through to create new wake
+      } else if (existing.status === 'active' || existing.status === 'running') {
+        continue;
+      }
+    }
+
+    // Extract deploy URL from description
+    const description = task.description || '';
+    const urlMatch = description.match(/https?:\/\/[^\s"']+/);
+    const deployUrl = urlMatch ? urlMatch[0] : '';
+
+    // Resolve Codex CLI path dynamically -- skip task if not found
+    const codexCliPath = resolveCodexCliPath();
+    if (!codexCliPath) {
+      logger.error(
+        { taskNumber: task.task_number },
+        'Codex CLI not found -- cannot create verification task. Install or update the Codex plugin.',
+      );
+      continue;
+    }
+
+    const verifyPrompt = [
+      `CODEX REVIEW REQUIRED -- Task #${task.task_number}: ${task.title || 'Untitled'}.`,
+      `Builder: ${builderName}.`,
+      deployUrl ? `Deploy URL: ${deployUrl}.` : '',
+      '',
+      'Run Codex verification per the Codex Integration Protocol (ops/protocols/codex-integration-protocol.md).',
+      '',
+      '1. Query MC for this task\'s latest comment to understand what was changed.',
+      '2. Run the Codex CLI directly via Bash:',
+      '   node "' + codexCliPath + '" task --fresh "Review the latest commit(s) for MC task #' + task.task_number + '. Check for correctness issues, error handling gaps, and deviations from the fix brief. Report CLEAN if no discrete correctness issues found, or list each finding with severity (P1=blocking, P2=non-blocking)."',
+      '3. Read the Codex output and evaluate:',
+      '   - CLEAN (no discrete correctness issues):',
+      '     Add a CODEX PASS comment to MC, then IMMEDIATELY update MC task status:',
+      '     UPDATE mc_tasks SET status = \'done\', completed_at = now(), updated_at = now() WHERE task_number = ' + task.task_number + ';',
+      '     This status update is MANDATORY -- without it, the poller re-dispatches in an infinite loop.',
+      '     Log to HiveMind as verification_pass. Notify Denver that the task is verified and done.',
+      '   - P1 FINDING (blocking correctness issue):',
+      '     Add an MC comment with the Codex finding translated into an actionable fix instruction.',
+      '     IMMEDIATELY update MC task status:',
+      '     UPDATE mc_tasks SET status = \'assigned\', updated_at = now() WHERE task_number = ' + task.task_number + ';',
+      '     Log to HiveMind as verification_fail.',
+      '   - P2 FINDING (non-blocking, cosmetic, or minor):',
+      '     Document the finding in an MC comment. Mark task done. Proceed.',
+      '4. If this is the 2nd consecutive failure on the same finding, escalate to Denver.',
+      '5. Do NOT skip the MC status update. The poller uses it to close the loop.',
+    ].filter(Boolean).join('\n');
+
+    const now = Math.floor(Date.now() / 1000);
+
+    try {
+      createScheduledTask(taskId, verifyPrompt, '0 0 1 1 *', now, 'main');
+
+      // Send SIGUSR1 for near-instant wake
+      const nudged = nudgeAgent('main');
+
+      logger.info(
+        { taskNumber: task.task_number, taskId, deployUrl, builderName, nudged },
+        'MC poller: Codex review task created for Janet',
+      );
+
+      // Status channel notification: verification triggered
+      const verifyNotify = statusSender || notifySender;
+      if (verifyNotify) {
+        void verifyNotify(
+          `\u{1F50D} Codex review triggered for Task #${task.task_number}: ${task.title || 'Untitled'} (builder: ${builderName}) -- routed to Janet`,
+        ).catch(() => {});
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.includes('UNIQUE')) {
+        logger.warn({ err, taskNumber: task.task_number }, 'MC poller: failed to create verification wake');
+      }
+    }
+  }
+}
+
+/**
+ * Handle non-build tasks in 'review' status (including department=null).
+ * Routes to Janet (main process) for quality review.
+ */
+export async function handleContentReviewTasks(tasks: MCTask[], agentMap: Map<string, string>): Promise<void> {
+  for (const task of tasks) {
+    const taskId = `content-review-${task.id.slice(0, 8)}`;
+    const now = Math.floor(Date.now() / 1000);
+
+    // Dedup: mirrors handleBuildReviewTasks() branch order.
+    // updateTaskAfterRun() always resets status to 'active' -- outcome lives in last_status.
+    // Checking status alone would silently skip all completed reviews forever.
+    const existing = getScheduledTask(taskId);
+    if (existing) {
+      if (existing.last_status === 'success') {
+        // Janet already reviewed this task. Check freshness:
+        // if MC task was re-submitted (updated_at > last_run), re-dispatch.
+        // Otherwise keep the dedup guard -- the review is done.
+        const lastRun = existing.last_run || 0;
+        const taskUpdatedAt = task.updated_at
+          ? Math.floor(new Date(task.updated_at).getTime() / 1000)
+          : 0;
+        if (taskUpdatedAt <= lastRun) {
+          // Janet already reviewed and task hasn't changed. Keep dedup guard.
+          continue;
+        }
+        deleteScheduledTask(taskId);
+        // Fall through to create new review wake
+      } else if (existing.last_status === 'completed_empty') {
+        // Janet produced no output on review -- same freshness check.
+        const lastRun = existing.last_run || 0;
+        const taskUpdatedAt = task.updated_at
+          ? Math.floor(new Date(task.updated_at).getTime() / 1000)
+          : 0;
+        if (taskUpdatedAt <= lastRun) {
+          logger.warn(
+            { taskId, taskNumber: task.task_number },
+            'MC poller: content review completed with no output -- not retrying (completed_empty)',
+          );
+          continue;
+        }
+        deleteScheduledTask(taskId);
+        // Fall through to create new review wake
+      } else if (existing.last_status === 'timeout' || existing.last_status === 'failed') {
+        // Review failed or timed out -- delete and re-dispatch
+        deleteScheduledTask(taskId);
+        // Fall through to create new review wake
+      } else if (existing.status === 'active' || existing.status === 'running') {
+        // Task is queued or currently executing -- skip
+        continue;
+      }
+    }
+
+    // Per-task error isolation: one failed create should not abort remaining tasks
+    try {
+      // Guard nullable assignee_agent_id
+      const builderName = task.assignee_agent_id
+        ? (agentMap.get(task.assignee_agent_id) ?? 'unknown agent')
+        : 'unknown agent';
+
+      const reviewPrompt =
+        `Non-build task #${task.task_number} is ready for quality review.\n\n` +
+        `Title: ${task.title}\n` +
+        `Department: ${task.department ?? '(unset)'}\n` +
+        `Builder: ${builderName}\n` +
+        `Description: ${task.description ?? '(none)'}\n\n` +
+        `Review this deliverable for quality, completeness, and alignment with Denver's standards.\n\n` +
+        `1. Read the task description and any attached deliverables (query mc_task_deliverables for task_number ${task.task_number}).\n` +
+        `2. Read the latest mc_task_comments for context.\n` +
+        `3. If the deliverable meets quality standards:\n` +
+        `   - Add an approval comment to the task\n` +
+        `   - Mark the task done: UPDATE mc_tasks SET status = 'done', completed_at = now(), updated_at = now() WHERE task_number = ${task.task_number};\n` +
+        `   - Notify Denver that the deliverable is approved\n` +
+        `4. If the deliverable needs revision:\n` +
+        `   - Add a detailed comment explaining what needs to change\n` +
+        `   - Set status back to assigned: UPDATE mc_tasks SET status = 'assigned', updated_at = now() WHERE task_number = ${task.task_number};\n` +
+        `   - The original builder will be re-woken with the feedback\n\n` +
+        `Do NOT auto-approve. Read the actual deliverable content before deciding.`;
+
+      // Route to main (Janet) for quality review
+      createScheduledTask(taskId, reviewPrompt, '0 0 1 1 *', now, 'main');
+      logger.info(
+        { taskNumber: task.task_number, department: task.department, builder: builderName },
+        'Non-build review task routed to Janet',
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.includes('UNIQUE')) {
+        logger.warn({ err, taskNumber: task.task_number }, 'MC poller: failed to create content review wake');
+      }
+    }
+  }
+}
+
+/**
+ * Poll for ALL tasks in 'review' status and route by department.
+ *
+ * Single fetch with no department filter -- avoids the PostgREST three-valued
+ * logic gap where department=null rows are missed by both eq.build and neq.build.
+ * Build tasks route to Codex review, everything else (including null department)
+ * routes to Janet for quality review.
+ *
+ * Replaces the former pollReviewTasks() + pollContentReviewTasks() pair.
+ */
+export async function pollAllReviewTasks(): Promise<void> {
   try {
     const params = new URLSearchParams({
       select: 'id,task_number,title,description,updated_at,assignee_agent_id,department,status',
       status: 'eq.review',
-      department: 'eq.build',
     });
+    // NOTE: No 'department' param -- fetches ALL review tasks regardless of department
 
     const url = `${SUPABASE_URL}/rest/v1/mc_tasks?${params.toString()}`;
     const res = await fetch(url, {
@@ -241,310 +515,34 @@ async function pollReviewTasks(): Promise<void> {
     const tasks = (await res.json()) as MCTask[];
     if (tasks.length === 0) return;
 
-    const agentMap = await fetchAgentMap();
+    // Partition: build tasks -> Codex review, everything else -> Janet quality review
+    // department=null falls to nonBuildTasks (correct -- null !== 'build')
+    const buildTasks = tasks.filter(t => t.department === 'build');
+    const nonBuildTasks = tasks.filter(t => t.department !== 'build');
 
-    for (const task of tasks) {
-      const taskId = `verify-${task.task_number}-poll`;
-
-      // Dedup: skip if Codex review wake is currently running or hasn't executed yet.
-      // When a previous review PASSED, check if this is a genuine re-review
-      // (task re-submitted after fixes) or a stale poll cycle. If Codex already
-      // passed this task and the MC status hasn't changed, close the loop -- don't
-      // re-dispatch. This prevents redundant review cycles that burn tokens
-      // when the MC status update to 'done' failed or is still being processed.
-      const existing = getScheduledTask(taskId);
-      if (existing) {
-        if (existing.last_status === 'success') {
-          // Codex review already passed this. Check if it was re-submitted (updated_at changed)
-          // or if we're just cycling on a stale review status.
-          const lastRun = existing.last_run || 0;
-          const taskUpdatedAt = task.updated_at
-            ? Math.floor(new Date(task.updated_at).getTime() / 1000)
-            : 0;
-
-          if (taskUpdatedAt <= lastRun) {
-            // Task hasn't been re-submitted since Codex last passed it.
-            // Close the loop: try to update MC to 'done' directly and stop cycling.
-            logger.info(
-              { taskNumber: task.task_number, taskId },
-              'MC poller: verification already passed, closing loop (no re-dispatch)',
-            );
-
-            // Attempt to move MC task to 'done' since Codex review already passed
-            try {
-              const patchUrl = `${SUPABASE_URL}/rest/v1/mc_tasks?task_number=eq.${task.task_number}`;
-              const patchRes = await fetch(patchUrl, {
-                method: 'PATCH',
-                headers: {
-                  apikey: SUPABASE_ANON_KEY,
-                  Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-                  'Content-Type': 'application/json',
-                  Prefer: 'return=minimal',
-                },
-                body: JSON.stringify({
-                  status: 'done',
-                  completed_at: new Date().toISOString(),
-                  updated_at: new Date().toISOString(),
-                }),
-              });
-
-              if (patchRes.ok) {
-                logger.info({ taskNumber: task.task_number }, 'MC poller: auto-closed verified task to done');
-                deleteScheduledTask(taskId);
-              } else {
-                logger.warn(
-                  { taskNumber: task.task_number, status: patchRes.status },
-                  'MC poller: failed to auto-close verified task -- keeping dedup guard to prevent re-dispatch',
-                );
-                // DO NOT delete the scheduled task -- keep it as a dedup guard.
-                // Next poll cycle will retry auto-close. This prevents the
-                // re-verification loop where the review gets triggered 12+ times.
-              }
-            } catch (err) {
-              logger.warn({ err, taskNumber: task.task_number }, 'MC poller: error auto-closing verified task -- keeping dedup guard');
-              // Same: keep scheduled task for dedup to prevent re-dispatch loop
-            }
-            continue;
-          }
-
-          // Task was re-submitted after Codex passed -- legitimate re-review
-          deleteScheduledTask(taskId);
-          // Fall through to create new wake
-        } else if (existing.last_status === 'timeout' || existing.last_status === 'failed') {
-          deleteScheduledTask(taskId);
-          // Fall through to create new wake
-        } else if (existing.last_status === 'completed_empty') {
-          // Agent produced no output on verification -- do not retry unless re-submitted.
-          // Mirror the success branch's freshness check: if the MC task was updated
-          // after Codex last ran, treat as a legitimate re-review and re-dispatch.
-          const lastRun = existing.last_run || 0;
-          const taskUpdatedAt = task.updated_at
-            ? Math.floor(new Date(task.updated_at).getTime() / 1000)
-            : 0;
-
-          if (taskUpdatedAt <= lastRun) {
-            // Not re-submitted -- keep the scheduled task as a dedup guard.
-            logger.warn(
-              { taskId, taskNumber: task.task_number },
-              'MC poller: verify task completed with no output -- not retrying (completed_empty)',
-            );
-            continue;
-          }
-
-          // Task was re-submitted after empty output -- legitimate re-review
-          deleteScheduledTask(taskId);
-          // Fall through to create new wake
-        } else if (existing.status === 'active' || existing.status === 'running') {
-          continue;
-        }
-      }
-
-      // Extract deploy URL from description
-      const description = task.description || '';
-      const urlMatch = description.match(/https?:\/\/[^\s"']+/);
-      const deployUrl = urlMatch ? urlMatch[0] : '';
-
-      // Resolve builder name
-      const builderName = task.assignee_agent_id
-        ? agentMap.get(task.assignee_agent_id) || 'Unknown builder'
-        : 'Unknown builder';
-
-      // Resolve Codex CLI path dynamically -- skip task if not found
-      const codexCliPath = resolveCodexCliPath();
-      if (!codexCliPath) {
-        logger.error(
-          { taskNumber: task.task_number },
-          'Codex CLI not found -- cannot create verification task. Install or update the Codex plugin.',
+    // Log null-department tasks for visibility
+    for (const task of nonBuildTasks) {
+      if (task.department === null || task.department === undefined) {
+        logger.warn(
+          { taskNumber: task.task_number, title: task.title },
+          'Review task has null department -- routing to Janet quality review as fallback',
         );
-        continue;
       }
+    }
 
-      const verifyPrompt = [
-        `CODEX REVIEW REQUIRED -- Task #${task.task_number}: ${task.title || 'Untitled'}.`,
-        `Builder: ${builderName}.`,
-        deployUrl ? `Deploy URL: ${deployUrl}.` : '',
-        '',
-        'Run Codex verification per the Codex Integration Protocol (ops/protocols/codex-integration-protocol.md).',
-        '',
-        '1. Query MC for this task\'s latest comment to understand what was changed.',
-        '2. Run the Codex CLI directly via Bash:',
-        '   node "' + codexCliPath + '" task --fresh "Review the latest commit(s) for MC task #' + task.task_number + '. Check for correctness issues, error handling gaps, and deviations from the fix brief. Report CLEAN if no discrete correctness issues found, or list each finding with severity (P1=blocking, P2=non-blocking)."',
-        '3. Read the Codex output and evaluate:',
-        '   - CLEAN (no discrete correctness issues):',
-        '     Add a CODEX PASS comment to MC, then IMMEDIATELY update MC task status:',
-        '     UPDATE mc_tasks SET status = \'done\', completed_at = now(), updated_at = now() WHERE task_number = ' + task.task_number + ';',
-        '     This status update is MANDATORY -- without it, the poller re-dispatches in an infinite loop.',
-        '     Log to HiveMind as verification_pass. Notify Denver that the task is verified and done.',
-        '   - P1 FINDING (blocking correctness issue):',
-        '     Add an MC comment with the Codex finding translated into an actionable fix instruction.',
-        '     IMMEDIATELY update MC task status:',
-        '     UPDATE mc_tasks SET status = \'assigned\', updated_at = now() WHERE task_number = ' + task.task_number + ';',
-        '     Log to HiveMind as verification_fail.',
-        '   - P2 FINDING (non-blocking, cosmetic, or minor):',
-        '     Document the finding in an MC comment. Mark task done. Proceed.',
-        '4. If this is the 2nd consecutive failure on the same finding, escalate to Denver.',
-        '5. Do NOT skip the MC status update. The poller uses it to close the loop.',
-      ].filter(Boolean).join('\n');
+    // Route build tasks through Codex review logic
+    if (buildTasks.length > 0) {
+      const agentMap = await fetchAgentMap();
+      await handleBuildReviewTasks(buildTasks, agentMap);
+    }
 
-      const now = Math.floor(Date.now() / 1000);
-
-      try {
-        createScheduledTask(taskId, verifyPrompt, '0 0 1 1 *', now, 'main');
-
-        // Send SIGUSR1 for near-instant wake
-        const nudged = nudgeAgent('main');
-
-        logger.info(
-          { taskNumber: task.task_number, taskId, deployUrl, builderName, nudged },
-          'MC poller: Codex review task created for Janet',
-        );
-
-        // Status channel notification: verification triggered
-        const verifyNotify = statusSender || notifySender;
-        if (verifyNotify) {
-          void verifyNotify(
-            `\u{1F50D} Codex review triggered for Task #${task.task_number}: ${task.title || 'Untitled'} (builder: ${builderName}) -- routed to Janet`,
-          ).catch(() => {});
-        }
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (!msg.includes('UNIQUE')) {
-          logger.warn({ err, taskNumber: task.task_number }, 'MC poller: failed to create verification wake');
-        }
-      }
+    // Route non-build tasks (including department=null) through quality review
+    if (nonBuildTasks.length > 0) {
+      const agentMap = await fetchAgentMap();
+      await handleContentReviewTasks(nonBuildTasks, agentMap);
     }
   } catch (err) {
-    logger.error({ err }, 'MC poller: review poll error');
-  }
-}
-
-/**
- * Poll for non-build tasks in 'review' status.
- * Routes to Janet (main process) for quality review.
- * Build tasks route through pollReviewTasks() -> Janet (Codex review).
- */
-async function pollContentReviewTasks(): Promise<void> {
-  try {
-    const params = new URLSearchParams({
-      select: 'id,task_number,title,description,updated_at,assignee_agent_id,department,status',
-      status: 'eq.review',
-      department: 'neq.build',
-    });
-
-    const url = `${SUPABASE_URL}/rest/v1/mc_tasks?${params}`;
-    const res = await fetch(url, {
-      headers: {
-        apikey: SUPABASE_ANON_KEY,
-        Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
-      },
-    });
-
-    if (!res.ok) {
-      logger.error({ status: res.status }, 'Failed to poll non-build review tasks');
-      return;
-    }
-
-    const tasks = (await res.json()) as Array<{
-      id: string;
-      task_number: number;
-      title: string;
-      description: string | null;
-      updated_at: string;
-      assignee_agent_id: string;
-      department: string;
-    }>;
-
-    if (tasks.length === 0) return;
-
-    // Fetch agent map once outside the loop (not per-task)
-    const agentMap = await fetchAgentMap();
-
-    for (const task of tasks) {
-      const taskId = `content-review-${task.id.slice(0, 8)}`;
-      const now = Math.floor(Date.now() / 1000);
-
-      // Dedup: mirrors pollReviewTasks() branch order.
-      // updateTaskAfterRun() always resets status to 'active' -- outcome lives in last_status.
-      // Checking status alone would silently skip all completed reviews forever.
-      const existing = getScheduledTask(taskId);
-      if (existing) {
-        if (existing.last_status === 'success') {
-          // Janet already reviewed this task. Check freshness:
-          // if MC task was re-submitted (updated_at > last_run), re-dispatch.
-          // Otherwise keep the dedup guard -- the review is done.
-          const lastRun = existing.last_run || 0;
-          const taskUpdatedAt = task.updated_at
-            ? Math.floor(new Date(task.updated_at).getTime() / 1000)
-            : 0;
-          if (taskUpdatedAt <= lastRun) {
-            // Janet already reviewed and task hasn't changed. Keep dedup guard.
-            continue;
-          }
-          deleteScheduledTask(taskId);
-          // Fall through to create new review wake
-        } else if (existing.last_status === 'completed_empty') {
-          // Janet produced no output on review -- same freshness check.
-          const lastRun = existing.last_run || 0;
-          const taskUpdatedAt = task.updated_at
-            ? Math.floor(new Date(task.updated_at).getTime() / 1000)
-            : 0;
-          if (taskUpdatedAt <= lastRun) {
-            logger.warn(
-              { taskId, taskNumber: task.task_number },
-              'MC poller: content review completed with no output -- not retrying (completed_empty)',
-            );
-            continue;
-          }
-          deleteScheduledTask(taskId);
-          // Fall through to create new review wake
-        } else if (existing.last_status === 'timeout' || existing.last_status === 'failed') {
-          // Review failed or timed out -- delete and re-dispatch
-          deleteScheduledTask(taskId);
-          // Fall through to create new review wake
-        } else if (existing.status === 'active' || existing.status === 'running') {
-          // Task is queued or currently executing -- skip
-          continue;
-        }
-      }
-
-      // Per-task error isolation: one failed create should not abort remaining tasks
-      try {
-        const builderName = agentMap.get(task.assignee_agent_id) ?? 'unknown agent';
-
-        const reviewPrompt =
-          `Non-build task #${task.task_number} is ready for quality review.\n\n` +
-          `Title: ${task.title}\n` +
-          `Department: ${task.department}\n` +
-          `Builder: ${builderName}\n` +
-          `Description: ${task.description ?? '(none)'}\n\n` +
-          `Review this deliverable for quality, completeness, and alignment with Denver's standards.\n\n` +
-          `1. Read the task description and any attached deliverables (query mc_task_deliverables for task_number ${task.task_number}).\n` +
-          `2. Read the latest mc_task_comments for context.\n` +
-          `3. If the deliverable meets quality standards:\n` +
-          `   - Add an approval comment to the task\n` +
-          `   - Mark the task done: UPDATE mc_tasks SET status = 'done', completed_at = now(), updated_at = now() WHERE task_number = ${task.task_number};\n` +
-          `   - Notify Denver that the deliverable is approved\n` +
-          `4. If the deliverable needs revision:\n` +
-          `   - Add a detailed comment explaining what needs to change\n` +
-          `   - Set status back to assigned: UPDATE mc_tasks SET status = 'assigned', updated_at = now() WHERE task_number = ${task.task_number};\n` +
-          `   - The original builder will be re-woken with the feedback\n\n` +
-          `Do NOT auto-approve. Read the actual deliverable content before deciding.`;
-
-        // Route to main (Janet) for quality review
-        createScheduledTask(taskId, reviewPrompt, '0 0 1 1 *', now, 'main');
-        logger.info(
-          { taskNumber: task.task_number, department: task.department, builder: builderName },
-          'Non-build review task routed to Janet',
-        );
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        if (!msg.includes('UNIQUE')) {
-          logger.warn({ err, taskNumber: task.task_number }, 'MC poller: failed to create content review wake');
-        }
-      }
-    }
-  } catch (err) {
-    logger.error({ err }, 'Error polling non-build review tasks');
+    logger.error({ err }, 'MC poller: review task poll error');
   }
 }
 
@@ -1002,13 +1000,10 @@ export function initMCPoller(send?: Sender, sendStatus?: Sender): void {
   // Subsequent polls use the 2-min rolling window (avoids full-table scans every 30s).
   setInterval(() => void pollMCAssignments(), POLL_INTERVAL_MS);
 
-  // Poll for build tasks in 'review' status -- routes to Janet for Codex verification
-  void pollReviewTasks();
-  setInterval(() => void pollReviewTasks(), POLL_INTERVAL_MS);
-
-  // Poll for non-build tasks in 'review' status -- routes to Janet for quality review
-  void pollContentReviewTasks();
-  setInterval(() => void pollContentReviewTasks(), POLL_INTERVAL_MS);
+  // Poll for ALL tasks in 'review' status -- single fetch, routes by department in code.
+  // Replaces separate pollReviewTasks() + pollContentReviewTasks() to fix the null-department gap.
+  void pollAllReviewTasks();
+  setInterval(() => void pollAllReviewTasks(), POLL_INTERVAL_MS);
 
   // Poll for escalation comments -- nudge agents immediately on scope changes
   setInterval(() => void pollEscalationComments(), POLL_INTERVAL_MS);
