@@ -169,6 +169,19 @@ async function main(): Promise<void> {
 
   const bot = createBot();
 
+  // Global error handler — catches errors thrown inside message handlers
+  // so the process doesn't crash on a single bad update.
+  bot.catch((err) => {
+    logger.error(
+      {
+        err: err.error,
+        update: err.ctx?.update,
+        chatId: err.ctx?.chat?.id,
+      },
+      'Bot error caught (non-fatal)',
+    );
+  });
+
   // Dashboard only runs in the main bot process
   if (AGENT_ID === 'main') {
     startDashboard(bot.api);
@@ -215,22 +228,47 @@ async function main(): Promise<void> {
 
   logger.info({ agentId: AGENT_ID }, 'Starting ClaudeClaw...');
 
-  await bot.start({
-    onStart: (botInfo) => {
-      setTelegramConnected(true);
-      setBotInfo(botInfo.username ?? '', botInfo.first_name ?? 'ClaudeClaw');
-      logger.info({ username: botInfo.username }, 'ClaudeClaw is running');
-      if (AGENT_ID === 'main') {
-        console.log(`\n  ClaudeClaw online: @${botInfo.username}`);
-        if (!ALLOWED_CHAT_ID) {
-          console.log(`  Send /chatid to get your chat ID for ALLOWED_CHAT_ID`);
-        }
-        console.log();
-      } else {
-        console.log(`\n  ClaudeClaw agent [${AGENT_ID}] online: @${botInfo.username}\n`);
+  // Retry bot.start() on Telegram 409 Conflict (another getUpdates poller
+   // briefly held the long-poll). Re-throw all other errors so real bugs
+   // still surface. Backoff resets on a clean start.
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  let backoffMs = 5000;
+  const MAX_BACKOFF = 60000;
+  while (true) {
+    try {
+      await bot.start({
+        onStart: (botInfo) => {
+          backoffMs = 5000; // reset backoff on successful start
+          setTelegramConnected(true);
+          setBotInfo(botInfo.username ?? '', botInfo.first_name ?? 'ClaudeClaw');
+          logger.info({ username: botInfo.username }, 'ClaudeClaw is running');
+          if (AGENT_ID === 'main') {
+            console.log(`\n  ClaudeClaw online: @${botInfo.username}`);
+            if (!ALLOWED_CHAT_ID) {
+              console.log(`  Send /chatid to get your chat ID for ALLOWED_CHAT_ID`);
+            }
+            console.log();
+          } else {
+            console.log(`\n  ClaudeClaw agent [${AGENT_ID}] online: @${botInfo.username}\n`);
+          }
+        },
+      });
+      break; // bot.start() only resolves on graceful shutdown
+    } catch (err: unknown) {
+      const e = err as { error_code?: number; message?: string } | undefined;
+      const is409 = e?.error_code === 409 || /409.*Conflict/.test(String(e?.message ?? ''));
+      if (is409) {
+        logger.warn(
+          { err, backoffMs },
+          '409 Conflict from Telegram getUpdates — retrying after backoff',
+        );
+        await sleep(backoffMs);
+        backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF);
+        continue;
       }
-    },
-  });
+      throw err;
+    }
+  }
 }
 
 main().catch((err: unknown) => {
