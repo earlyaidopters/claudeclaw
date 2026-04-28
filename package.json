@@ -12,6 +12,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
     "migrate": "tsx scripts/migrate.ts",
     "setup": "tsx scripts/setup.ts",
     "status": "tsx scripts/status.ts",
@@ -21,6 +22,7 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.34",
     "@google/genai": "^1.44.0",
+    "@higgsfield/client": "^0.2.1",
     "@hono/node-server": "^1.19.9",
     "@slack/web-api": "^7.14.1",
     "better-sqlite3": "^11.8.1",
@@ -28,28 +30,24 @@
     "grammy": "^1.34.0",
     "hono": "^4.12.3",
     "js-yaml": "^4.1.1",
+    "pg": "^8.20.0",
     "pino": "^9.6.0",
     "pino-pretty": "^13.0.0",
     "qrcode-terminal": "^0.12.0",
     "whatsapp-web.js": "^1.34.6"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.12",
+    "@types/better-sqlite3": "^7.6.13",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.10.0",
     "@types/qrcode-terminal": "^0.12.2",
     "@vitest/coverage-v8": "^2.0.0",
+    "playwright": "^1.58.2",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",
     "vitest": "^2.0.0"
   },
   "engines": {
     "node": ">=20"
-  },
-  "vitest": {
-    "environment": "node",
-    "include": [
-      "src/**/*.test.ts"
-    ]
   }
 }
