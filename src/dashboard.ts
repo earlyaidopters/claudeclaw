@@ -5,7 +5,7 @@ import { serve } from '@hono/node-server';
 
 import fs from 'fs';
 import path from 'path';
-import { AGENT_ID, ALLOWED_CHAT_ID, DASHBOARD_PORT, DASHBOARD_TOKEN, PROJECT_ROOT, STORE_DIR, WHATSAPP_ENABLED, SLACK_USER_TOKEN, CONTEXT_LIMIT, agentDefaultModel } from './config.js';
+import { AGENT_ID, ALLOWED_CHAT_ID, DASHBOARD_PORT, DASHBOARD_TOKEN, DASHBOARD_URL, PROJECT_ROOT, STORE_DIR, WHATSAPP_ENABLED, SLACK_USER_TOKEN, CONTEXT_LIMIT, agentDefaultModel } from './config.js';
 import crypto from 'crypto';
 import {
   getAllScheduledTasks,
@@ -197,14 +197,15 @@ export function startDashboard(botApi?: Api<RawApi>): void {
     const sessionId = crypto.randomBytes(32).toString('hex');
     addActiveSession(sessionId);
 
-    c.header('Set-Cookie', `claw_session=${sessionId}; HttpOnly; SameSite=Lax; Path=/; Max-Age=86400`);
+    const secure = DASHBOARD_URL.startsWith('https') ? '; Secure' : '';
+    c.header('Set-Cookie', `claw_session=${sessionId}; HttpOnly; SameSite=Lax; Path=/; Max-Age=86400${secure}`);
     return c.json({ ok: true, chatId: session.chatId });
   });
 
   // Auth middleware -- cookie sessions only
   app.use('*', async (c, next) => {
     const cookieHeader = c.req.header('cookie') || '';
-    const sessionMatch = cookieHeader.match(/claw_session=([a-f0-9]+)/);
+    const sessionMatch = cookieHeader.match(/(?:^|;\s*)claw_session=([a-f0-9]+)/);
     if (sessionMatch && isSessionValid(sessionMatch[1])) {
       await next();
       return;

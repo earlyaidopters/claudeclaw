@@ -1,5 +1,4 @@
 export function getDashboardHtml(chatId: string, code?: string): string {
-  const token = ''; // S1: token no longer passed to browser; S2 will remove this global entirely
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -534,9 +533,45 @@ export function getDashboardHtml(chatId: string, code?: string): string {
 </div>
 
 <script>
-const TOKEN = ${JSON.stringify(token)};
+const SESSION_CODE = ${JSON.stringify(code || '')};
 const CHAT_ID = ${JSON.stringify(chatId)};
 const BASE = location.origin;
+let authenticated = false;
+
+async function initAuth() {
+  if (authenticated) return true;
+
+  // If we have a code, exchange it (sets cookie server-side)
+  if (SESSION_CODE) {
+    try {
+      const res = await fetch(BASE + '/auth/exchange?code=' + SESSION_CODE, { credentials: 'include' });
+      const data = await res.json();
+      if (!data.ok) {
+        document.body.innerHTML = '<div style="color:#ef4444;padding:2rem;font-family:sans-serif;">Invalid or expired link. Use /dashboard in Telegram to get a new link.</div>';
+        return false;
+      }
+      authenticated = true;
+      // Remove code from URL bar and browser history
+      history.replaceState(null, '', '/');
+      return true;
+    } catch (err) {
+      document.body.innerHTML = '<div style="color:#ef4444;padding:2rem;font-family:sans-serif;">Connection error. Is ClaudeClaw running?</div>';
+      return false;
+    }
+  }
+
+  // No code -- check if we have an existing session cookie by making a test request
+  try {
+    const res = await fetch(BASE + '/api/tasks', { credentials: 'include' });
+    if (res.ok) {
+      authenticated = true;
+      return true;
+    }
+  } catch {}
+
+  document.body.innerHTML = '<div style="color:#ef4444;padding:2rem;font-family:sans-serif;">Session expired. Use /dashboard in Telegram to get a new link.</div>';
+  return false;
+}
 
 // Device detection
 function detectDevice() {
@@ -690,8 +725,11 @@ function closeDrawer() {
 }
 
 function api(path) {
-  const sep = path.includes('?') ? '&' : '?';
-  return fetch(BASE + path + sep + 'token=' + TOKEN).then(r => r.json());
+  return fetch(BASE + path, { credentials: 'include' }).then(r => r.json());
+}
+
+function apiFetch(path, options) {
+  return fetch(BASE + path, { ...options, credentials: 'include' });
 }
 
 let salienceChart, memTimelineChart, costChart;
@@ -737,9 +775,9 @@ function elapsed(ts) {
 async function taskAction(id, action) {
   try {
     if (action === 'delete') {
-      await fetch(BASE + '/api/tasks/' + id + '?token=' + TOKEN, { method: 'DELETE' });
+      await apiFetch('/api/tasks/' + id, { method: 'DELETE' });
     } else {
-      await fetch(BASE + '/api/tasks/' + id + '/' + action + '?token=' + TOKEN, { method: 'POST' });
+      await apiFetch('/api/tasks/' + id + '/' + action, { method: 'POST' });
     }
     await loadTasks();
   } catch(e) { console.error('Task action failed:', e); }
@@ -925,7 +963,7 @@ function escapeHtml(s) {
 
 async function loadInfo() {
   try {
-    const r = await fetch(BASE + '/api/info?token=' + TOKEN + '&chatId=' + CHAT_ID);
+    const r = await fetch(BASE + '/api/info?chatId=' + CHAT_ID, { credentials: 'include' });
     const d = await r.json();
     const el = document.getElementById('bot-info');
     const parts = [];
@@ -1011,7 +1049,7 @@ async function pickModel(optEl) {
   var agentId = picker.dataset.agent;
   picker.querySelector('.model-menu').style.display = 'none';
   try {
-    await fetch(BASE + '/api/agents/' + agentId + '/model?token=' + TOKEN, {
+    await apiFetch('/api/agents/' + agentId + '/model', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: model }),
@@ -1024,7 +1062,7 @@ async function pickGlobalModel(optEl) {
   var model = optEl.dataset.model;
   optEl.closest('.model-menu').style.display = 'none';
   try {
-    await fetch(BASE + '/api/agents/model?token=' + TOKEN, {
+    await apiFetch('/api/agents/model', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: model }),
@@ -1127,7 +1165,7 @@ async function agentModalAction(agentId, action) {
     if (!confirm('Delete agent "' + agentId + '"? This removes all config, the service, and the bot token from .env.')) return;
     status.innerHTML = '<span style="color:#fbbf24">Deleting...</span>';
     try {
-      var res = await fetch(BASE + '/api/agents/' + agentId + '/full?token=' + TOKEN, { method: 'DELETE' });
+      var res = await apiFetch('/api/agents/' + agentId + '/full', { method: 'DELETE' });
       var data = await res.json();
       if (data.ok) {
         status.innerHTML = '<span style="color:#6ee7b7">Deleted</span>';
@@ -1142,7 +1180,7 @@ async function agentModalAction(agentId, action) {
   if (action === 'stop') {
     status.innerHTML = '<span style="color:#fbbf24">Stopping...</span>';
     try {
-      await fetch(BASE + '/api/agents/' + agentId + '/deactivate?token=' + TOKEN, { method: 'POST' });
+      await apiFetch('/api/agents/' + agentId + '/deactivate', { method: 'POST' });
       status.innerHTML = '<span style="color:#6ee7b7">Stopped</span>';
       setTimeout(function() { closeAgentModal(); loadAgents(); }, 800);
     } catch(e) { status.innerHTML = '<span style="color:#f87171">Failed</span>'; }
@@ -1152,7 +1190,7 @@ async function agentModalAction(agentId, action) {
   if (action === 'start') {
     status.innerHTML = '<span style="color:#fbbf24">Starting...</span>';
     try {
-      var res = await fetch(BASE + '/api/agents/' + agentId + '/activate?token=' + TOKEN, { method: 'POST' });
+      var res = await apiFetch('/api/agents/' + agentId + '/activate', { method: 'POST' });
       var data = await res.json();
       if (data.ok) {
         status.innerHTML = '<span style="color:#6ee7b7">Started' + (data.pid ? ' (PID ' + data.pid + ')' : '') + '</span>';
@@ -1335,7 +1373,7 @@ function cawTokenChanged() {
 
   cawTokenDebounce = setTimeout(async function() {
     try {
-      var data = await fetch(BASE + '/api/agents/validate-token?token=' + TOKEN, {
+      var data = await apiFetch('/api/agents/validate-token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ token: token }),
@@ -1369,7 +1407,7 @@ async function cawCreate() {
   errEl.style.display = 'none';
 
   try {
-    var res = await fetch(BASE + '/api/agents/create?token=' + TOKEN, {
+    var res = await apiFetch('/api/agents/create', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1427,7 +1465,7 @@ async function cawActivate() {
   status.innerHTML = '<span style="color:#fbbf24">Installing service and starting agent...</span>';
 
   try {
-    var res = await fetch(BASE + '/api/agents/' + cawCreatedId + '/activate?token=' + TOKEN, { method: 'POST' });
+    var res = await apiFetch('/api/agents/' + cawCreatedId + '/activate', { method: 'POST' });
     var data = await res.json();
     if (data.ok) {
       btn.textContent = 'Running';
@@ -1685,9 +1723,9 @@ function renderMissionCard(t) {
 async function missionAction(id, action) {
   try {
     if (action === 'cancel') {
-      await fetch(BASE + '/api/mission/tasks/' + id + '/cancel?token=' + TOKEN, { method: 'POST' });
+      await apiFetch('/api/mission/tasks/' + id + '/cancel', { method: 'POST' });
     } else if (action === 'delete') {
-      await fetch(BASE + '/api/mission/tasks/' + id + '?token=' + TOKEN, { method: 'DELETE' });
+      await apiFetch('/api/mission/tasks/' + id, { method: 'DELETE' });
     }
     await loadMissionControl();
   } catch(e) { console.error('Mission action failed:', e); }
@@ -1740,7 +1778,7 @@ async function missionDrop(e) {
   if (!missionDragId || !col) return;
   var newAgent = col.dataset.dropAgent;
   try {
-    await fetch(BASE + '/api/mission/tasks/' + missionDragId + '?token=' + TOKEN, {
+    await apiFetch('/api/mission/tasks/' + missionDragId, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ assigned_agent: newAgent }),
@@ -1752,7 +1790,7 @@ async function missionDrop(e) {
 
 async function autoAssignOne(id) {
   try {
-    const res = await fetch(BASE + '/api/mission/tasks/' + id + '/auto-assign?token=' + TOKEN, { method: 'POST' });
+    const res = await apiFetch('/api/mission/tasks/' + id + '/auto-assign', { method: 'POST' });
     const data = await res.json();
     if (data.ok) {
       await loadMissionControl();
@@ -1767,7 +1805,7 @@ async function autoAssignAll() {
   btn.textContent = 'Assigning...';
   btn.disabled = true;
   try {
-    const res = await fetch(BASE + '/api/mission/tasks/auto-assign-all?token=' + TOKEN, { method: 'POST' });
+    const res = await apiFetch('/api/mission/tasks/auto-assign-all', { method: 'POST' });
     const data = await res.json();
     await loadMissionControl();
   } catch(e) { console.error('Auto-assign all error:', e); }
@@ -1810,7 +1848,7 @@ async function createMissionTask() {
   if (!prompt) { errEl.textContent = 'Prompt is required'; errEl.style.display = ''; return; }
 
   try {
-    const res = await fetch(BASE + '/api/mission/tasks?token=' + TOKEN, {
+    const res = await apiFetch('/api/mission/tasks', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ title: title, prompt: prompt, priority: priority }),
@@ -1894,9 +1932,6 @@ function closeTaskHistory() {
   document.body.style.overflow = '';
 }
 
-// Poll mission tasks more frequently (every 15s) for responsiveness
-setInterval(loadMissionControl, 15000);
-
 async function refreshAll() {
   const btn = document.getElementById('refresh-btn').querySelector('svg');
   btn.classList.add('refresh-spin');
@@ -1905,19 +1940,27 @@ async function refreshAll() {
   document.getElementById('last-updated').textContent = new Date().toLocaleTimeString();
 }
 
-// Live countdown tickers
-setInterval(() => {
-  document.querySelectorAll('.countdown').forEach(el => {
-    const ts = parseInt(el.dataset.ts);
-    if (ts) el.textContent = countdown(ts);
-  });
-}, 1000);
+// Initial load with auth gate
+(async () => {
+  const ok = await initAuth();
+  if (!ok) return;
 
-// Auto-refresh every 60s
-setInterval(refreshAll, 60000);
+  // Poll mission tasks more frequently (every 15s) for responsiveness
+  setInterval(loadMissionControl, 15000);
 
-// Initial load
-refreshAll();
+  // Live countdown tickers
+  setInterval(() => {
+    document.querySelectorAll('.countdown').forEach(el => {
+      const ts = parseInt(el.dataset.ts);
+      if (ts) el.textContent = countdown(ts);
+    });
+  }, 1000);
+
+  // Auto-refresh every 60s
+  setInterval(refreshAll, 60000);
+
+  refreshAll();
+})();
 
 // \u2500\u2500 Chat \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 let chatOpen = false;
@@ -2035,8 +2078,10 @@ async function loadChatHistory() {
 
 function connectChatSSE() {
   if (chatSSE) { chatSSE.close(); chatSSE = null; }
-  const url = BASE + '/api/chat/stream?token=' + TOKEN;
-  chatSSE = new EventSource(url);
+  // EventSource sends cookies on same-origin automatically.
+  // For cross-origin (Cloudflare tunnel), use withCredentials.
+  const url = BASE + '/api/chat/stream';
+  chatSSE = new EventSource(url, { withCredentials: true });
 
   chatSSE.addEventListener('user_message', function(e) {
     try {
@@ -2230,7 +2275,7 @@ async function sendChatMessage() {
   // Disable send while processing
   document.getElementById('chat-send-btn').disabled = true;
   try {
-    await fetch(BASE + '/api/chat/send?token=' + TOKEN, {
+    await apiFetch('/api/chat/send', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: text }),
@@ -2250,7 +2295,7 @@ function autoResizeInput() {
 
 async function abortProcessing() {
   try {
-    await fetch(BASE + '/api/chat/abort?token=' + TOKEN, { method: 'POST' });
+    await apiFetch('/api/chat/abort', { method: 'POST' });
   } catch(e) { console.error('Abort error', e); }
 }
 </script>
