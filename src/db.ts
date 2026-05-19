@@ -228,11 +228,35 @@ function createSchema(database: Database.Database): void {
       priority        INTEGER NOT NULL DEFAULT 0,
       created_at      INTEGER NOT NULL,
       started_at      INTEGER,
-      completed_at    INTEGER
+      completed_at    INTEGER,
+      autopushed_at   INTEGER
     );
 
     CREATE INDEX IF NOT EXISTS idx_mission_status
       ON mission_tasks(assigned_agent, status, priority DESC, created_at ASC);
+
+    -- Call pipeline durability: one row per (call_msg_id, stage) so each
+    -- of the 4 stages (A→D) in the post-call pipeline has independent
+    -- lifecycle tracking. Unique index enforces idempotency — the
+    -- orchestrator refuses to create a duplicate stage mission for the
+    -- same call.
+    CREATE TABLE IF NOT EXISTS call_pipeline_runs (
+      call_msg_id     TEXT NOT NULL,
+      contact_id      TEXT NOT NULL,
+      ghl_conv_id     TEXT,
+      stage           TEXT NOT NULL,
+      status          TEXT NOT NULL DEFAULT 'pending',
+      started_at      INTEGER,
+      completed_at    INTEGER,
+      last_mission_id TEXT,
+      PRIMARY KEY (call_msg_id, stage)
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_call_pipeline_msg_stage
+      ON call_pipeline_runs(call_msg_id, stage);
+
+    CREATE INDEX IF NOT EXISTS idx_call_pipeline_contact
+      ON call_pipeline_runs(contact_id, stage);
 
     CREATE TABLE IF NOT EXISTS audit_log (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -526,6 +550,38 @@ function runMigrations(database: Database.Database): void {
         ON mission_tasks(assigned_agent, status, priority DESC, created_at ASC);
     `);
     logger.info('Migration: made mission_tasks.assigned_agent nullable');
+  }
+  const missionColsPost = database.prepare(`PRAGMA table_info(mission_tasks)`).all() as Array<{ name: string }>;
+  if (!missionColsPost.some((c) => c.name === 'autopushed_at')) {
+    database.exec(`ALTER TABLE mission_tasks ADD COLUMN autopushed_at INTEGER`);
+    logger.info('Migration: added autopushed_at column to mission_tasks');
+  }
+
+  // Call Pipeline: ensure call_pipeline_runs exists on legacy DBs. createSchema
+  // covers fresh installs; this branch is for DBs created before this feature
+  // shipped. Idempotent — IF NOT EXISTS.
+  const pipelineTbl = database.prepare(
+    `SELECT name FROM sqlite_master WHERE type='table' AND name='call_pipeline_runs'`,
+  ).get() as { name: string } | undefined;
+  if (!pipelineTbl) {
+    database.exec(`
+      CREATE TABLE call_pipeline_runs (
+        call_msg_id     TEXT NOT NULL,
+        contact_id      TEXT NOT NULL,
+        ghl_conv_id     TEXT,
+        stage           TEXT NOT NULL,
+        status          TEXT NOT NULL DEFAULT 'pending',
+        started_at      INTEGER,
+        completed_at    INTEGER,
+        last_mission_id TEXT,
+        PRIMARY KEY (call_msg_id, stage)
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_call_pipeline_msg_stage
+        ON call_pipeline_runs(call_msg_id, stage);
+      CREATE INDEX IF NOT EXISTS idx_call_pipeline_contact
+        ON call_pipeline_runs(contact_id, stage);
+    `);
+    logger.info('Migration: created call_pipeline_runs table');
   }
 }
 
@@ -1764,6 +1820,12 @@ export interface MissionTask {
   created_at: number;
   started_at: number | null;
   completed_at: number | null;
+  /** Unix ts when the mission-autopush hook fired Telegram notification.
+   *  NULL = not yet pushed. Used as an atomic CAS claim so we never double-fire. */
+  autopushed_at: number | null;
+  /** Optional acceptance criteria string. When set, the scheduler parses the
+   *  agent output for an ACCEPTANCE: PASS/FAIL verdict line. */
+  acceptance_criteria: string | null;
 }
 
 export function createMissionTask(
@@ -1773,6 +1835,7 @@ export function createMissionTask(
   assignedAgent: string | null = null,
   createdBy = 'dashboard',
   priority = 0,
+  _acceptanceCriteria: string | null = null,
 ): void {
   const now = Math.floor(Date.now() / 1000);
   db.prepare(
@@ -1903,6 +1966,105 @@ export function resetStuckMissionTasks(agentId: string): number {
   return result.changes;
 }
 
+/**
+ * Atomically claim a mission for Telegram autopush notification.
+ *
+ * Stamps autopushed_at with the current unix timestamp IFF it's currently NULL.
+ * Returns true on the first claim, false on every subsequent call for the same
+ * mission — this is how the mission-autopush hook guarantees exactly-once
+ * notification even if the scheduler completion path is re-entered.
+ *
+ * Idempotent by design: safe to call on any mission id, including non-existent
+ * ones (returns false) and already-pushed ones (returns false).
+ */
+export function markMissionAutopushed(id: string): boolean {
+  const result = db.prepare(
+    `UPDATE mission_tasks SET autopushed_at = ? WHERE id = ? AND autopushed_at IS NULL`,
+  ).run(Math.floor(Date.now() / 1000), id);
+  return result.changes > 0;
+}
+
+/**
+ * Reason tag for an auto-retry, surfaced in the Telegram ping + hive_mind log
+ * so Aditya can see WHY the watchdog reran something without reading source.
+ */
+export type RetryReason = 'turn_cap' | 'timeout';
+
+// ── Call Pipeline Runs ───────────────────────────────────────────────
+// Durability layer for the 4-stage post-call pipeline (Extract → RAG →
+// Borrower draft → AE draft). One row per (call_msg_id, stage). The
+// orchestrator uses these rows to know which stage to launch next and
+// to stay idempotent across crashes/retries.
+
+export type CallPipelineStage = 'A' | 'B' | 'C' | 'D';
+export type CallPipelineStatus = 'pending' | 'running' | 'completed' | 'failed';
+
+export interface CallPipelineRun {
+  call_msg_id: string;
+  contact_id: string;
+  ghl_conv_id: string | null;
+  stage: CallPipelineStage;
+  status: CallPipelineStatus;
+  started_at: number | null;
+  completed_at: number | null;
+  last_mission_id: string | null;
+}
+
+/** Insert a pipeline row (idempotent via INSERT OR IGNORE on the composite PK). */
+export function upsertCallPipelineRun(row: {
+  callMsgId: string;
+  contactId: string;
+  ghlConvId: string | null;
+  stage: CallPipelineStage;
+  status: CallPipelineStatus;
+  missionId: string | null;
+}): void {
+  const now = Math.floor(Date.now() / 1000);
+  db.prepare(
+    `INSERT INTO call_pipeline_runs
+      (call_msg_id, contact_id, ghl_conv_id, stage, status, started_at, last_mission_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(call_msg_id, stage) DO UPDATE SET
+       status          = excluded.status,
+       last_mission_id = excluded.last_mission_id,
+       started_at      = COALESCE(call_pipeline_runs.started_at, excluded.started_at)`,
+  ).run(
+    row.callMsgId,
+    row.contactId,
+    row.ghlConvId,
+    row.stage,
+    row.status,
+    now,
+    row.missionId,
+  );
+}
+
+export function markCallPipelineStageCompleted(
+  callMsgId: string,
+  stage: CallPipelineStage,
+  status: 'completed' | 'failed' = 'completed',
+): void {
+  const now = Math.floor(Date.now() / 1000);
+  db.prepare(
+    `UPDATE call_pipeline_runs SET status = ?, completed_at = ?
+      WHERE call_msg_id = ? AND stage = ?`,
+  ).run(status, now, callMsgId, stage);
+}
+
+export function getCallPipelineRun(
+  callMsgId: string,
+  stage: CallPipelineStage,
+): CallPipelineRun | null {
+  return (db.prepare(
+    `SELECT * FROM call_pipeline_runs WHERE call_msg_id = ? AND stage = ?`,
+  ).get(callMsgId, stage) as CallPipelineRun) ?? null;
+}
+
+export function listCallPipelineRuns(callMsgId: string): CallPipelineRun[] {
+  return db.prepare(
+    `SELECT * FROM call_pipeline_runs WHERE call_msg_id = ? ORDER BY stage ASC`,
+  ).all(callMsgId) as CallPipelineRun[];
+}
 // ── Audit Log ────────────────────────────────────────────────────────
 
 export function insertAuditLog(
