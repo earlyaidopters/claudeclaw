@@ -122,6 +122,20 @@ function safeTokenEqual(provided: string | null | undefined, expected: string | 
   return crypto.timingSafeEqual(Buffer.from(provided), Buffer.from(expected));
 }
 
+// Inline token check for handlers that USED to rely on the global middleware
+// but now serve the public SPA shell on the same Hono app. Legacy HTML routes
+// that embed DASHBOARD_TOKEN in their response body still require this.
+function requireToken(c: { req: { query: (k: string) => string | undefined } }): Response | null {
+  const token = c.req.query('token');
+  if (!safeTokenEqual(token, DASHBOARD_TOKEN)) {
+    return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+      status: 401,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+  return null;
+}
+
 export function startDashboard(botApi?: Api<RawApi>): void {
   if (!DASHBOARD_TOKEN) {
     logger.info('DASHBOARD_TOKEN not set, dashboard disabled');
@@ -165,8 +179,18 @@ export function startDashboard(botApi?: Api<RawApi>): void {
     return c.json({ error: 'Internal server error' }, 500);
   });
 
-  // Token auth middleware
+  // Token auth middleware — gates ONLY /api/*. The SPA shell at `/` and the
+  // Vite-built static assets under `/assets/*` are served unauthenticated so
+  // a token-stripped URL still loads the app instead of returning raw 401
+  // JSON. The SPA reads ?token= from window.location and includes it in
+  // every API request. Legacy HTML routes that embed DASHBOARD_TOKEN in the
+  // page source call requireToken() inline.
   app.use('*', async (c, next) => {
+    const pathname = new URL(c.req.url).pathname;
+    if (!pathname.startsWith('/api/')) {
+      await next();
+      return;
+    }
     const token = c.req.query('token');
     if (!safeTokenEqual(token, DASHBOARD_TOKEN)) {
       return c.json({ error: 'Unauthorized' }, 401);
@@ -174,14 +198,84 @@ export function startDashboard(botApi?: Api<RawApi>): void {
     await next();
   });
 
-  // Serve dashboard HTML
+  // Serve dashboard.
+  // Default: the new Vite-built Mission Control SPA at dist/web/index.html.
+  // Fallback: set DASHBOARD_LEGACY=true in .env to revert to the legacy
+  // single-file template HTML. Also falls back automatically if the SPA
+  // hasn't been built yet (dist/web/index.html missing).
+  const legacyMode = (process.env.DASHBOARD_LEGACY || '').toLowerCase() === 'true';
+  const newDashboardIndex = path.join(PROJECT_ROOT, 'dist', 'web', 'index.html');
   app.get('/', (c) => {
     const chatId = c.req.query('chatId') || '';
-    return c.html(getDashboardHtml(DASHBOARD_TOKEN, chatId, WARROOM_ENABLED));
+    if (legacyMode || !fs.existsSync(newDashboardIndex)) {
+      // Legacy path interpolates DASHBOARD_TOKEN into the HTML, so it MUST
+      // require the token. SPA path doesn't.
+      const denied = requireToken(c); if (denied) return denied;
+      return c.html(getDashboardHtml(DASHBOARD_TOKEN, chatId, WARROOM_ENABLED));
+    }
+    // SPA shell. Read fresh on each request so dev rebuilds appear without
+    // restart. The frontend reads ?token= and ?chatId= from window.location,
+    // falling back to sessionStorage. Serving this unauthenticated means a
+    // token-stripped URL still loads the app instead of showing raw 401.
+    return c.html(fs.readFileSync(newDashboardIndex, 'utf-8'));
   });
 
-  // War Room page
+  // Static asset serving for the Vite-built frontend.
+  // Vite emits hashed JS/CSS/source-maps under dist/web/assets/.
+  app.get('/assets/*', (c) => {
+    const url = new URL(c.req.url);
+    const rel = url.pathname.replace(/^\//, '');
+    const filePath = path.join(PROJECT_ROOT, 'dist', 'web', rel);
+    // Defense in depth: ensure the resolved path stays inside dist/web/.
+    const root = path.join(PROJECT_ROOT, 'dist', 'web');
+    if (!filePath.startsWith(root + path.sep)) return c.text('', 403);
+    if (!fs.existsSync(filePath)) return c.text('', 404);
+    const data = fs.readFileSync(filePath);
+    const ext = path.extname(filePath).toLowerCase();
+    const ctype = ext === '.js' ? 'application/javascript'
+      : ext === '.css' ? 'text/css'
+      : ext === '.map' ? 'application/json'
+      : ext === '.svg' ? 'image/svg+xml'
+      : ext === '.woff2' ? 'font/woff2'
+      : ext === '.woff' ? 'font/woff'
+      : ext === '.png' ? 'image/png'
+      : ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg'
+      : 'application/octet-stream';
+    return new Response(new Uint8Array(data), {
+      headers: { 'Content-Type': ctype, 'Cache-Control': 'public, max-age=31536000, immutable' },
+    });
+  });
+
+  // Top-level static files copied from web/public/ at Vite build time
+  // (e.g. /brain.glb for the 3D Hive Mind view). Stable filenames so they
+  // sit at the root, not under /assets/.
+  app.get('/:filename{.+\\.(glb|gltf|bin|ktx2|wasm|svg|png|webp|ico)}', (c) => {
+    const filename = c.req.param('filename');
+    const filePath = path.join(PROJECT_ROOT, 'dist', 'web', filename);
+    const root = path.join(PROJECT_ROOT, 'dist', 'web');
+    if (!filePath.startsWith(root + path.sep)) return c.text('', 403);
+    if (!fs.existsSync(filePath)) return c.text('', 404);
+    const data = fs.readFileSync(filePath);
+    const ext = path.extname(filePath).toLowerCase();
+    const ctype = ext === '.glb' ? 'model/gltf-binary'
+      : ext === '.gltf' ? 'model/gltf+json'
+      : ext === '.wasm' ? 'application/wasm'
+      : ext === '.svg' ? 'image/svg+xml'
+      : ext === '.png' ? 'image/png'
+      : ext === '.webp' ? 'image/webp'
+      : ext === '.ico' ? 'image/x-icon'
+      : 'application/octet-stream';
+    return new Response(new Uint8Array(data), {
+      headers: { 'Content-Type': ctype, 'Cache-Control': 'public, max-age=86400' },
+    });
+  });
+
+  // War Room page (legacy voice UI). The SPA has its own WarRoom view under
+  // /warroom in v2 routing, but the original /warroom HTML is preserved for
+  // direct access and for clients that haven't loaded the SPA. This embeds
+  // DASHBOARD_TOKEN in the HTML so it MUST require the token.
   app.get('/warroom', (c) => {
+    const denied = requireToken(c); if (denied) return denied;
     const chatId = c.req.query('chatId') || '';
     return c.html(getWarRoomHtml(DASHBOARD_TOKEN, chatId, WARROOM_PORT));
   });

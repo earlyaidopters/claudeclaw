@@ -1,0 +1,366 @@
+@import "tailwindcss";
+
+/* ── Theme tokens ────────────────────────────────────────────────────
+   Three dark themes: graphite (default), midnight (blue), crimson.
+   Status colors stay constant across all themes for universal recognition.
+   Switch by setting data-theme on <html>. */
+
+:root,
+[data-theme="graphite"] {
+  --color-bg: #0e0e10;
+  --color-sidebar: #141416;
+  --color-card: #1a1a1c;
+  --color-elevated: #222226;
+  --color-border: #26262a;
+  --color-border-strong: #3a3a40;
+  --color-text: #e8e8e6;
+  --color-text-muted: #9a9a98;
+  --color-text-faint: #6a6a68;
+  --color-accent: #8b8af0;
+  --color-accent-hover: #a4a3f5;
+  --color-accent-soft: rgba(139, 138, 240, 0.12);
+}
+
+[data-theme="midnight"] {
+  --color-bg: #0a0e1a;
+  --color-sidebar: #0f1525;
+  --color-card: #141c30;
+  --color-elevated: #1a2540;
+  --color-border: #1f2a45;
+  --color-border-strong: #2d3d5e;
+  --color-text: #e0e6f0;
+  --color-text-muted: #8a96b0;
+  --color-text-faint: #5a6680;
+  --color-accent: #5eb6ff;
+  --color-accent-hover: #82c8ff;
+  --color-accent-soft: rgba(94, 182, 255, 0.12);
+}
+
+[data-theme="crimson"] {
+  --color-bg: #100808;
+  --color-sidebar: #1a0c0c;
+  --color-card: #221010;
+  --color-elevated: #2a1414;
+  --color-border: #3a1a1a;
+  --color-border-strong: #5a2828;
+  --color-text: #f0e8e8;
+  --color-text-muted: #b09a9a;
+  --color-text-faint: #806868;
+  --color-accent: #ff5e6e;
+  --color-accent-hover: #ff8090;
+  --color-accent-soft: rgba(255, 94, 110, 0.12);
+}
+
+/* Status colors are theme-agnostic. */
+:root {
+  --color-status-queued: #9a9a98;
+  --color-status-running: #d97706;
+  --color-status-done: #16a34a;
+  --color-status-failed: #dc2626;
+  --color-priority-high: #ea580c;
+  --color-priority-medium: #ca8a04;
+  --color-priority-low: #737373;
+}
+
+/* Tailwind v4 theme — exposes our CSS vars as utility classes. */
+@theme inline {
+  --color-bg: var(--color-bg);
+  --color-sidebar: var(--color-sidebar);
+  --color-card: var(--color-card);
+  --color-elevated: var(--color-elevated);
+  --color-border: var(--color-border);
+  --color-border-strong: var(--color-border-strong);
+  --color-text: var(--color-text);
+  --color-text-muted: var(--color-text-muted);
+  --color-text-faint: var(--color-text-faint);
+  --color-accent: var(--color-accent);
+  --color-accent-hover: var(--color-accent-hover);
+  --color-accent-soft: var(--color-accent-soft);
+  --color-status-queued: var(--color-status-queued);
+  --color-status-running: var(--color-status-running);
+  --color-status-done: var(--color-status-done);
+  --color-status-failed: var(--color-status-failed);
+  --color-priority-high: var(--color-priority-high);
+  --color-priority-medium: var(--color-priority-medium);
+  --color-priority-low: var(--color-priority-low);
+
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 10px;
+}
+
+/* ── Base resets ─────────────────────────────────────────────────────── */
+
+html, body {
+  height: 100%;
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  margin: 0;
+  user-select: none;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+button {
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+
+input, textarea, select {
+  font: inherit;
+  color: inherit;
+  user-select: text;
+}
+
+/* ── Reusable helpers ────────────────────────────────────────────────── */
+
+.section-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-text-faint);
+  font-weight: 500;
+}
+
+/* Chat bubble markdown rendering */
+.chat-md p { margin: 0; }
+.chat-md p + p { margin-top: 0.5em; }
+.chat-md ul, .chat-md ol { margin: 0.4em 0 0.4em 1.2em; padding: 0; }
+.chat-md li { margin: 0.15em 0; }
+.chat-md code {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  background: var(--color-elevated);
+  border: 1px solid var(--color-border);
+  border-radius: 3px;
+  padding: 0 4px;
+}
+.chat-md pre {
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin: 0.4em 0;
+  overflow-x: auto;
+}
+.chat-md pre code {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.chat-md a { color: var(--color-accent); text-decoration: underline; text-underline-offset: 2px; }
+.chat-md a:hover { color: var(--color-accent-hover); }
+.chat-md blockquote {
+  border-left: 2px solid var(--color-border-strong);
+  padding-left: 0.7em;
+  margin: 0.4em 0;
+  color: var(--color-text-muted);
+}
+.chat-md table {
+  border-collapse: collapse;
+  margin: 0.4em 0;
+  font-size: 11.5px;
+}
+.chat-md th, .chat-md td {
+  border: 1px solid var(--color-border);
+  padding: 4px 6px;
+  text-align: left;
+}
+.chat-md th {
+  background: var(--color-elevated);
+  font-weight: 600;
+}
+.chat-md h1, .chat-md h2, .chat-md h3, .chat-md h4 {
+  font-weight: 600;
+  margin: 0.5em 0 0.25em;
+  font-size: 1em;
+}
+.chat-md hr {
+  border: 0;
+  border-top: 1px solid var(--color-border);
+  margin: 0.5em 0;
+}
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.animate-toast-in { animation: toast-in 160ms ease-out; }
+
+/* Privacy blur — used on Memories + Hive Mind summaries when the user
+   wants the page screenshot-safe. Click-to-reveal per row, hover lightens
+   so you can preview without committing. The .revealed class trumps the
+   blur — applied per-row in a session map. */
+.privacy-blur {
+  filter: blur(6px);
+  cursor: pointer;
+  transition: filter 0.15s;
+  user-select: none;
+}
+.privacy-blur:hover {
+  filter: blur(3px);
+}
+.privacy-blur.revealed {
+  filter: none;
+  cursor: default;
+  user-select: text;
+}
+
+/* ── Brain visualization ────────────────────────────────────────────
+   Animations and effects for the Hive Mind brain graph. Designed to
+   feel like neural activity: the silhouette draws itself in, dots
+   bloom one by one, hovering pulses softly. Tilt slider perspective
+   transitions smoothly so the rotation feels physical. */
+
+@keyframes brain-draw {
+  to { stroke-dashoffset: 0; }
+}
+.brain-outline-anim {
+  stroke-dasharray: 3200;
+  stroke-dashoffset: 3200;
+  animation: brain-draw 1500ms ease-out forwards;
+}
+
+@keyframes brain-dot-bloom {
+  0% { opacity: 0; transform: scale(0); }
+  60% { opacity: 1; transform: scale(1.2); }
+  100% { opacity: 1; transform: scale(1); }
+}
+.brain-dot-bloom {
+  transform-origin: center;
+  transform-box: fill-box;
+  animation: brain-dot-bloom 480ms cubic-bezier(0.34, 1.56, 0.64, 1) backwards;
+}
+
+@keyframes brain-pulse {
+  0%, 100% { opacity: 0.85; r: var(--dot-r, 3.5); }
+  50% { opacity: 1; r: calc(var(--dot-r, 3.5) * 1.18); }
+}
+.brain-dot-pulse {
+  animation: brain-pulse 2400ms ease-in-out infinite;
+}
+
+.brain-stage {
+  perspective: 1600px;
+  perspective-origin: 50% 50%;
+}
+.brain-stage > svg {
+  transition: transform 380ms cubic-bezier(0.22, 1, 0.36, 1);
+  transform-origin: center;
+  will-change: transform;
+}
+
+.brain-lobe-label {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  fill: var(--color-text-faint);
+  opacity: 0.45;
+  pointer-events: none;
+  transition: opacity 200ms, fill 200ms;
+}
+.brain-lobe-label.is-active { opacity: 0.95; }
+.brain-lobe-label.is-dim { opacity: 0.18; }
+
+/* Switch component used in the filter panel. Tiny pill toggle. */
+.brain-switch {
+  position: relative;
+  width: 28px;
+  height: 16px;
+  border-radius: 999px;
+  background: var(--color-elevated);
+  border: 1px solid var(--color-border);
+  cursor: pointer;
+  transition: background 160ms, border-color 160ms;
+  flex-shrink: 0;
+}
+.brain-switch::after {
+  content: '';
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--color-text-muted);
+  transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1), background 160ms;
+}
+.brain-switch.is-on {
+  background: var(--color-accent-soft);
+  border-color: var(--color-accent);
+}
+.brain-switch.is-on::after {
+  transform: translateX(12px);
+  background: var(--color-accent);
+}
+
+/* Slider — minimal range input that picks up the theme accent. */
+.brain-slider {
+  width: 100%;
+  height: 4px;
+  appearance: none;
+  background: var(--color-elevated);
+  border-radius: 999px;
+  outline: none;
+}
+.brain-slider::-webkit-slider-thumb {
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--color-accent);
+  cursor: pointer;
+  box-shadow: 0 0 0 2px var(--color-card);
+  transition: transform 120ms;
+}
+.brain-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.15);
+}
+
+/* Scrollbar polish (WebKit only — fine on macOS) */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-border-strong);
+}
+
+/* Hive Mind tooltip entrance — soft fade + scale-up so the lobe stats
+   card feels intentional instead of popping in. Triggered by adding
+   .brain-tooltip-enter to the tooltip wrapper; the keyframe runs once
+   on mount. Pure CSS so React doesn't need a tween library. */
+@keyframes brainTooltipEnter {
+  from { opacity: 0; transform: scale(0.96) translateY(2px); }
+  to   { opacity: 1; transform: scale(1)    translateY(0);    }
+}
+.brain-tooltip-enter {
+  animation: brainTooltipEnter 160ms cubic-bezier(0.2, 0.7, 0.25, 1) both;
+  transform-origin: top left;
+  will-change: transform, opacity;
+}

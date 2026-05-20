@@ -1,0 +1,14 @@
+Detailed Human Brain Model (3D)
+NIH 3D entry 3DPX-021161, version 1.01
+Source: https://3d.nih.gov/entries/3DPX-021161
+Creator: Johnson J
+License: Creative Commons Attribution 4.0 (CC-BY)
+       https://creativecommons.org/licenses/by/4.0/
+
+Optimization: Compressed with gltfpack -cc (meshopt geometry codec) to
+reduce from 13MB to 1.5MB. Decoded at runtime via Three.js
+MeshoptDecoder. Original mesh and textures unchanged in topology.
+
+This file is included in this open-source project under the terms of
+CC-BY 4.0. Attribution is displayed in the dashboard's Settings page
+under "Acknowledgements".

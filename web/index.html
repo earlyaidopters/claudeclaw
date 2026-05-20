@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en" data-theme="graphite">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Mission Control · ClaudeClaw</title>
+    <script>
+      // Apply theme before render to avoid FOUC.
+      try {
+        const saved = localStorage.getItem('claudeclaw.theme');
+        if (saved === 'midnight' || saved === 'crimson' || saved === 'graphite') {
+          document.documentElement.setAttribute('data-theme', saved);
+        }
+      } catch {}
+    </script>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
