@@ -1,11 +1,8 @@
 import { generateContent, parseJsonResponse } from './gemini.js';
 import {
   getUnconsolidatedMemories,
-  markMemoriesConsolidated,
-  saveConsolidation,
+  saveConsolidationAtomic,
   saveConsolidationEmbedding,
-  supersedeMemory,
-  updateMemoryConnections,
 } from './db.js';
 import { embedText } from './embeddings.js';
 import { logger } from './logger.js';
@@ -99,37 +96,18 @@ export async function runConsolidation(chatId: string): Promise<void> {
 
     const sourceIds = memories.map((m) => m.id);
 
-    // Save the consolidation record
-    const consolidationId = saveConsolidation(chatId, sourceIds, result.summary, result.insight);
-
-    // Generate embedding for semantic retrieval of consolidation insights
-    try {
-      const embeddingText = `${result.summary} ${result.insight}`;
-      const embedding = await embedText(embeddingText);
-      if (embedding.length > 0) {
-        saveConsolidationEmbedding(consolidationId, embedding);
-      }
-    } catch (embErr) {
-      logger.warn({ err: embErr, consolidationId }, 'Failed to embed consolidation');
-    }
-
-    // Wire up connections between memories
+    // Build validated connections list
+    const validConnections: Array<{ from_id: number; to_id: number; relationship: string }> = [];
     if (result.connections && result.connections.length > 0) {
       for (const conn of result.connections) {
         if (!conn.from_id || !conn.to_id) continue;
-        // Verify both IDs are in our source set
         if (!sourceIds.includes(conn.from_id) || !sourceIds.includes(conn.to_id)) continue;
-
-        updateMemoryConnections(conn.from_id, [
-          { linked_to: conn.to_id, relationship: conn.relationship },
-        ]);
-        updateMemoryConnections(conn.to_id, [
-          { linked_to: conn.from_id, relationship: conn.relationship },
-        ]);
+        validConnections.push(conn);
       }
     }
 
-    // Handle contradictions: mark stale memories as superseded
+    // Build validated contradictions list with timestamp correction
+    const validContradictions: Array<{ stale_id: number; superseded_by: number }> = [];
     if (result.contradictions && result.contradictions.length > 0) {
       for (const contra of result.contradictions) {
         if (!sourceIds.includes(contra.stale_id) || !sourceIds.includes(contra.supersedes_id)) {
@@ -139,14 +117,11 @@ export async function runConsolidation(chatId: string): Promise<void> {
           );
           continue;
         }
-        // Verify timestamp order: the newer memory should be the authoritative one.
-        // If the LLM got the direction wrong, swap the IDs.
         const staleMem = memories.find((m) => m.id === contra.stale_id);
         const newMem = memories.find((m) => m.id === contra.supersedes_id);
         let staleId = contra.stale_id;
         let supersededBy = contra.supersedes_id;
         if (staleMem && newMem && staleMem.created_at > newMem.created_at) {
-          // LLM got it backwards: the "stale" one is actually newer
           staleId = contra.supersedes_id;
           supersededBy = contra.stale_id;
           logger.warn(
@@ -154,7 +129,7 @@ export async function runConsolidation(chatId: string): Promise<void> {
             'Corrected contradiction direction (LLM assigned newer memory as stale)',
           );
         }
-        supersedeMemory(staleId, supersededBy);
+        validContradictions.push({ stale_id: staleId, superseded_by: supersededBy });
         logger.info(
           { staleId, supersededBy, reason: contra.reason },
           'Memory superseded (contradiction resolved)',
@@ -162,8 +137,23 @@ export async function runConsolidation(chatId: string): Promise<void> {
       }
     }
 
-    // Mark all source memories as consolidated
-    markMemoriesConsolidated(sourceIds);
+    // Atomically save consolidation, wire connections, handle contradictions,
+    // and mark source memories as consolidated. All or nothing.
+    const consolidationId = saveConsolidationAtomic(
+      chatId, sourceIds, result.summary, result.insight,
+      validConnections, validContradictions,
+    );
+
+    // Generate embedding (non-critical, outside transaction)
+    try {
+      const embeddingText = `${result.summary} ${result.insight}`;
+      const embedding = await embedText(embeddingText);
+      if (embedding.length > 0) {
+        saveConsolidationEmbedding(consolidationId, embedding);
+      }
+    } catch (embErr) {
+      logger.warn({ err: embErr, consolidationId }, 'Failed to embed consolidation');
+    }
 
     logger.info(
       {

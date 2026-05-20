@@ -16,9 +16,9 @@ PROJECT_ROOT = Path(__file__).parent.parent
 load_dotenv(PROJECT_ROOT / ".env")
 
 # ── Mode ──────────────────────────────────────────────────────────────────────
-# "live"   = Gemini Live end-to-end speech-to-speech (default)
-# "legacy" = Deepgram STT + Cartesia TTS (more control, more moving parts)
-MODE: str = os.getenv("WARROOM_MODE", "live")
+# "live"   = Gemini Live end-to-end speech-to-speech (uses GOOGLE_API_KEY)
+# "legacy" = Deepgram STT + ElevenLabs TTS (Nikki's voice — default)
+MODE: str = os.getenv("WARROOM_MODE", "legacy")
 
 # ── Ports ─────────────────────────────────────────────────────────────────────
 WARROOM_PORT: int = int(os.getenv("WARROOM_PORT", "7860"))
@@ -26,7 +26,11 @@ WARROOM_PORT: int = int(os.getenv("WARROOM_PORT", "7860"))
 # ── API keys ──────────────────────────────────────────────────────────────────
 GEMINI_API_KEY: str = os.getenv("GOOGLE_API_KEY", "")
 DEEPGRAM_API_KEY: str = os.getenv("DEEPGRAM_API_KEY", "")
+
 CARTESIA_API_KEY: str = os.getenv("CARTESIA_API_KEY", "")
+GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
+ELEVENLABS_API_KEY: str = os.getenv("ELEVENLABS_API_KEY", "")
+ELEVENLABS_VOICE_ID: str = os.getenv("ELEVENLABS_VOICE_ID", "")
 
 # ── Agent bridge ──────────────────────────────────────────────────────────────
 # Path to the Node.js CLI that spawns Claude Code for a given agent

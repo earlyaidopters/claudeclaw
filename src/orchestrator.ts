@@ -34,6 +34,23 @@ let agentRegistry: AgentInfo[] = [];
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 
 /**
+ * Read the shared responsibility map (AGENTS.md) once per process.
+ * The map tells every agent who does what, what to delegate, and — importantly —
+ * what NOT to delegate. Loaded lazily and cached.
+ */
+let cachedResponsibilityMap: string | null = null;
+function loadSharedResponsibilityMap(): string {
+  if (cachedResponsibilityMap !== null) return cachedResponsibilityMap;
+  try {
+    const p = path.join(PROJECT_ROOT, 'AGENTS.md');
+    cachedResponsibilityMap = fs.readFileSync(p, 'utf-8');
+  } catch {
+    cachedResponsibilityMap = '';
+  }
+  return cachedResponsibilityMap;
+}
+
+/**
  * Initialize the orchestrator by scanning `agents/` for valid configs.
  * Safe to call even if no agents are configured — the registry will be empty.
  */
@@ -171,8 +188,14 @@ export async function delegateToAgent(
     // Build memory context for the delegated agent
     const { contextText: memCtx } = await buildMemoryContext(chatId, prompt, agentId);
 
-    // Build the delegated prompt with agent role context + memory
+    // Build the delegated prompt with agent role context + shared map + memory
     const contextParts: string[] = [];
+    const sharedMap = loadSharedResponsibilityMap();
+    if (sharedMap) {
+      contextParts.push(
+        `[Shared responsibility map — AGENTS.md]\n${sharedMap}\n[End shared map]`,
+      );
+    }
     if (systemPrompt) {
       contextParts.push(`[Agent role — follow these instructions]\n${systemPrompt}\n[End agent role]`);
     }

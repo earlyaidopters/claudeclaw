@@ -1,9 +1,17 @@
 import { CronExpressionParser } from 'cron-parser';
 
-import { AGENT_ID, ALLOWED_CHAT_ID, agentMcpAllowlist } from './config.js';
+import {
+  AGENT_ID,
+  ALLOWED_CHAT_ID,
+  MISSION_TIMEOUT_MS,
+  agentDefaultModel,
+  agentMcpAllowlist,
+  agentSystemPrompt,
+} from './config.js';
 import {
   getDueTasks,
   getSession,
+  setSession,
   logConversationTurn,
   markTaskRunning,
   updateTaskAfterRun,
@@ -16,12 +24,13 @@ import { logger } from './logger.js';
 import { messageQueue } from './message-queue.js';
 import { runAgent } from './agent.js';
 import { formatForTelegram, splitMessage } from './bot.js';
+import { buildMemoryContext } from './memory.js';
 import { emitChatEvent } from './state.js';
 
 type Sender = (text: string) => Promise<void>;
 
-/** Max time (ms) a scheduled task can run before being killed. */
-const TASK_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+/** Max time (ms) a scheduled or mission task can run before being killed. */
+const TASK_TIMEOUT_MS = MISSION_TIMEOUT_MS;
 
 let sender: Sender;
 
@@ -55,7 +64,35 @@ export function initScheduler(send: Sender, agentId = 'main'): void {
   }
 
   setInterval(() => void runDueTasks(), 60_000);
-  logger.info({ agentId }, 'Scheduler started (checking every 60s)');
+  // Mission tasks (especially chat-type) need sub-minute latency. Run a
+  // self-pacing loop: poll every 2s when work is flowing, back off up to
+  // 30s when the queue is idle. Keeps chat latency sub-second under load
+  // and avoids burning ~216k no-op DB reads per agent per day at rest.
+  scheduleNextMissionPoll(2_000);
+  logger.info({ agentId }, 'Scheduler started (scheduled: 60s, mission: 2-30s adaptive)');
+}
+
+const MISSION_POLL_MIN_MS = 2_000;
+const MISSION_POLL_MAX_MS = 30_000;
+let missionPollDelay = MISSION_POLL_MIN_MS;
+
+function scheduleNextMissionPoll(delay: number): void {
+  setTimeout(async () => {
+    try {
+      const claimed = await runDueMissionTasks();
+      // Reset to fast polling on any claim (chat latency is a user-facing
+      // signal). Otherwise widen by ~50% up to the cap.
+      if (claimed) {
+        missionPollDelay = MISSION_POLL_MIN_MS;
+      } else {
+        missionPollDelay = Math.min(MISSION_POLL_MAX_MS, Math.floor(missionPollDelay * 1.5));
+      }
+    } catch (err) {
+      logger.error({ err }, 'Mission poll iteration failed');
+    } finally {
+      scheduleNextMissionPoll(missionPollDelay);
+    }
+  }, delay);
 }
 
 async function runDueTasks(): Promise<void> {
@@ -96,9 +133,10 @@ async function runDueTasks(): Promise<void> {
         clearTimeout(timeout);
 
         if (result.aborted) {
-          updateTaskAfterRun(task.id, nextRun, 'Timed out after 10 minutes', 'timeout');
-          await sender(`⏱ Task timed out after 10m: "${task.prompt.slice(0, 60)}..." — killed.`);
-          logger.warn({ taskId: task.id }, 'Task timed out');
+          const mins = Math.round(TASK_TIMEOUT_MS / 60000);
+          updateTaskAfterRun(task.id, nextRun, `Timed out after ${mins} minutes`, 'timeout');
+          await sender(`⏱ Task timed out after ${mins}m: "${task.prompt.slice(0, 60)}..." — killed.`);
+          logger.warn({ taskId: task.id, timeoutMs: TASK_TIMEOUT_MS }, 'Task timed out');
           return;
         }
 
@@ -134,58 +172,123 @@ async function runDueTasks(): Promise<void> {
     });
   }
 
-  // Also check for queued mission tasks (one-shot async tasks from Mission Control)
-  await runDueMissionTasks();
 }
 
-async function runDueMissionTasks(): Promise<void> {
+async function runDueMissionTasks(): Promise<boolean> {
   const mission = claimNextMissionTask(schedulerAgentId);
-  if (!mission) return;
+  if (!mission) return false;
 
   const missionKey = 'mission-' + mission.id;
-  if (runningTaskIds.has(missionKey)) return;
+  if (runningTaskIds.has(missionKey)) return false;
   runningTaskIds.add(missionKey);
 
-  logger.info({ missionId: mission.id, title: mission.title }, 'Running mission task');
+  const isChat = mission.type === 'chat';
+  const chatScope = isChat && mission.chat_id ? mission.chat_id : (ALLOWED_CHAT_ID || 'mission');
 
-  const chatId = ALLOWED_CHAT_ID || 'mission';
-  messageQueue.enqueue(chatId, async () => {
+  logger.info(
+    { missionId: mission.id, title: mission.title, type: mission.type, chatId: mission.chat_id },
+    'Running mission task',
+  );
+
+  messageQueue.enqueue(chatScope, async () => {
     const abortController = new AbortController();
-    const timeout = setTimeout(() => abortController.abort(), TASK_TIMEOUT_MS);
+    const effectiveTimeout = mission.timeout_ms ?? TASK_TIMEOUT_MS;
+    const timeoutMins = Math.round(effectiveTimeout / 60000);
+    const timeout = setTimeout(() => abortController.abort(), effectiveTimeout);
 
     try {
-      const result = await runAgent(mission.prompt, undefined, () => {}, undefined, undefined, abortController, undefined, agentMcpAllowlist);
+      // Build the prompt. Chat-type tasks get session, memory, and system prompt
+      // so they behave like a proper conversational turn. Async tasks stay
+      // stateless as they were before.
+      let sessionId: string | undefined;
+      let fullPrompt = mission.prompt;
+
+      if (isChat && mission.chat_id) {
+        sessionId = getSession(mission.chat_id, schedulerAgentId);
+        const parts: string[] = [];
+        if (agentSystemPrompt && !sessionId) {
+          parts.push(`[Agent role — follow these instructions]\n${agentSystemPrompt}\n[End agent role]`);
+        }
+        try {
+          const { contextText } = await buildMemoryContext(mission.chat_id, mission.prompt, schedulerAgentId);
+          if (contextText) parts.push(contextText);
+        } catch (memErr) {
+          logger.warn({ err: memErr, chatId: mission.chat_id }, 'Memory context build failed; continuing without it');
+        }
+        parts.push(mission.prompt);
+        fullPrompt = parts.join('\n\n');
+      }
+
+      const result = await runAgent(
+        fullPrompt,
+        sessionId,
+        () => {},
+        undefined,
+        agentDefaultModel,
+        abortController,
+        undefined,
+        agentMcpAllowlist,
+      );
       clearTimeout(timeout);
 
       if (result.aborted) {
-        completeMissionTask(mission.id, null, 'failed', 'Timed out after 10 minutes');
-        logger.warn({ missionId: mission.id }, 'Mission task timed out');
-        try { await sender('Mission task timed out: "' + mission.title + '"'); } catch {}
+        completeMissionTask(mission.id, null, 'failed', `Timed out after ${timeoutMins} minutes`);
+        logger.warn({ missionId: mission.id, timeoutMs: effectiveTimeout, type: mission.type }, 'Mission task timed out');
+        if (isChat && mission.chat_id) {
+          // Chat-type timeouts surface through the SSE error channel so the
+          // dashboard tab can show them inline — no Telegram relay.
+          emitChatEvent({
+            type: 'error',
+            chatId: mission.chat_id,
+            agentId: schedulerAgentId,
+            content: `Agent "${schedulerAgentId}" timed out after ${timeoutMins} minutes.`,
+          });
+        } else {
+          try {
+            await sender('Mission task timed out: "' + mission.title + '"');
+          } catch (sendErr) {
+            // Sender can fail for Telegram API blips or chat-not-found. We
+            // still want to see it so the user isn't silently unnotified.
+            logger.warn({ err: sendErr, missionId: mission.id }, 'Failed to send mission timeout notification');
+          }
+        }
       } else {
         const text = result.text?.trim() || 'Task completed with no output.';
         completeMissionTask(mission.id, text, 'completed');
-        logger.info({ missionId: mission.id }, 'Mission task completed');
+        logger.info({ missionId: mission.id, type: mission.type }, 'Mission task completed');
 
-        // Send result to Telegram
-        for (const chunk of splitMessage(formatForTelegram(text))) {
-          await sender(chunk);
-        }
-
-        // Inject into conversation context so agent can reference it
-        if (ALLOWED_CHAT_ID) {
-          const activeSession = getSession(ALLOWED_CHAT_ID, schedulerAgentId);
-          logConversationTurn(ALLOWED_CHAT_ID, 'user', '[Mission task: ' + mission.title + ']: ' + mission.prompt, activeSession ?? undefined, schedulerAgentId);
-          logConversationTurn(ALLOWED_CHAT_ID, 'assistant', text, activeSession ?? undefined, schedulerAgentId);
+        if (isChat && mission.chat_id) {
+          // Save both turns under this agent's id so history reads correctly
+          // in the Mission Control tab. Skip Telegram relay — chat tasks are
+          // dashboard-scoped.
+          if (result.newSessionId) {
+            setSession(mission.chat_id, result.newSessionId, schedulerAgentId);
+          }
+          const turnSession = result.newSessionId ?? sessionId;
+          logConversationTurn(mission.chat_id, 'user', mission.prompt, turnSession, schedulerAgentId);
+          logConversationTurn(mission.chat_id, 'assistant', text, turnSession, schedulerAgentId);
+        } else {
+          // Async mission: existing behavior — Telegram relay + ALLOWED_CHAT_ID log.
+          for (const chunk of splitMessage(formatForTelegram(text))) {
+            await sender(chunk);
+          }
+          if (ALLOWED_CHAT_ID) {
+            const activeSession = getSession(ALLOWED_CHAT_ID, schedulerAgentId);
+            logConversationTurn(ALLOWED_CHAT_ID, 'user', '[Mission task: ' + mission.title + ']: ' + mission.prompt, activeSession ?? undefined, schedulerAgentId);
+            logConversationTurn(ALLOWED_CHAT_ID, 'assistant', text, activeSession ?? undefined, schedulerAgentId);
+          }
         }
       }
 
       emitChatEvent({
-        type: 'mission_update' as 'progress',
-        chatId,
+        type: 'mission_update',
+        chatId: chatScope,
+        agentId: schedulerAgentId,
         content: JSON.stringify({
           id: mission.id,
           status: result.aborted ? 'failed' : 'completed',
           title: mission.title,
+          type: mission.type,
         }),
       });
     } catch (err) {
@@ -197,6 +300,7 @@ async function runDueMissionTasks(): Promise<void> {
       runningTaskIds.delete(missionKey);
     }
   });
+  return true;
 }
 
 export function computeNextRun(cronExpression: string): number {

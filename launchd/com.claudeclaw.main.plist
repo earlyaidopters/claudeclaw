@@ -6,7 +6,7 @@
   <string>com.claudeclaw.main</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/opt/homebrew/bin/node</string>
+    <string>/usr/local/bin/node</string>
     <string>dist/index.js</string>
   </array>
   <key>WorkingDirectory</key>

@@ -6,7 +6,7 @@
   <string>com.claudeclaw.ops</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/opt/homebrew/bin/node</string>
+    <string>/usr/local/bin/node</string>
     <string>dist/index.js</string>
     <string>--agent</string>
     <string>ops</string>

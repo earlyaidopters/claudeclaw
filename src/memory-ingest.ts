@@ -1,6 +1,6 @@
 import { generateContent, parseJsonResponse } from './gemini.js';
 import { cosineSimilarity, embedText } from './embeddings.js';
-import { getMemoriesWithEmbeddings, saveStructuredMemory, saveMemoryEmbedding } from './db.js';
+import { getMemoriesWithEmbeddings, saveStructuredMemoryAtomic } from './db.js';
 import { logger } from './logger.js';
 
 // Callback for notifying when a high-importance memory is created.
@@ -112,7 +112,7 @@ export async function ingestConversationTurn(
 
     // Duplicate detection: skip if a very similar memory already exists
     if (embedding.length > 0) {
-      const existing = getMemoriesWithEmbeddings(chatId);
+      const existing = getMemoriesWithEmbeddings(chatId, agentId);
       for (const mem of existing) {
         const sim = cosineSimilarity(embedding, mem.embedding);
         if (sim > 0.85) {
@@ -125,21 +125,17 @@ export async function ingestConversationTurn(
       }
     }
 
-    const memoryId = saveStructuredMemory(
+    const memoryId = saveStructuredMemoryAtomic(
       chatId,
       userMessage,
       result.summary,
       result.entities ?? [],
       result.topics ?? [],
       importance,
+      embedding,
       'conversation',
       agentId,
     );
-
-    // Store the embedding we already generated
-    if (embedding.length > 0) {
-      saveMemoryEmbedding(memoryId, embedding);
-    }
 
     // Notify on high-importance memories so the user can pin them
     if (importance >= 0.8 && onHighImportanceMemory) {

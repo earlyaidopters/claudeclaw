@@ -2,7 +2,7 @@
   "main": {
     "cartesia_voice_id": "default",
     "gemini_voice": "Charon",
-    "speaking_rate": 1.0,
+    "speaking_rate": 1,
     "personality": "Hand of the King. Coordinates the realm. Direct, authoritative, no-nonsense."
   },
   "research": {
@@ -14,13 +14,13 @@
   "comms": {
     "cartesia_voice_id": "default",
     "gemini_voice": "Aoede",
-    "speaking_rate": 1.0,
+    "speaking_rate": 1,
     "personality": "Master of Whisperers. Every whisper, every raven. Warm, professional, detail-oriented."
   },
   "content": {
     "cartesia_voice_id": "default",
     "gemini_voice": "Leda",
-    "speaking_rate": 1.0,
+    "speaking_rate": 1,
     "personality": "Royal Bard. Stories shape kingdoms. Creative, articulate, brand-aware."
   },
   "ops": {

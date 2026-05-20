@@ -9,10 +9,35 @@ captures stdout (JSON), and returns the text response.
 import json
 import logging
 import os
+import shutil
 import subprocess
+from pathlib import Path
 from typing import Optional
 
 from warroom.config import AGENT_BRIDGE_PATH, PROJECT_ROOT
+
+# Resolve node at import time so we fail fast if it's missing.
+# When the server runs as a background process the shell PATH may be minimal,
+# so we search the common Homebrew / nvm / system locations explicitly.
+_NODE_SEARCH = [
+    "/usr/local/bin/node",
+    "/opt/homebrew/bin/node",
+    "/usr/bin/node",
+    os.path.expanduser("~/.nvm/versions/node/*/bin/node"),
+]
+
+def _find_node() -> str:
+    # 1. Already on PATH?
+    found = shutil.which("node")
+    if found:
+        return found
+    # 2. Check known locations
+    import glob
+    for pattern in _NODE_SEARCH:
+        matches = glob.glob(pattern)
+        if matches:
+            return sorted(matches)[-1]  # newest if glob
+    raise RuntimeError("Cannot find node binary — add it to PATH")
 
 logger = logging.getLogger(__name__)
 
@@ -31,12 +56,37 @@ _SENSITIVE_PREFIXES = (
 
 
 def _safe_env() -> dict[str, str]:
-    """Return os.environ minus sensitive keys."""
+    """Return os.environ minus sensitive keys, with PATH augmented for background processes."""
+    import glob as _glob
     safe = {}
     for key, val in os.environ.items():
         if any(key.upper().endswith(p) or key.upper().startswith(p.lstrip("_")) for p in _SENSITIVE_PREFIXES):
             continue
         safe[key] = val
+
+    # Resolve node binary and prepend its directory to PATH so the Claude Agent SDK
+    # can spawn 'node' by name even under launchd / nohup environments.
+    # Also expose the absolute path as CLAUDECLAW_NODE_BIN for agent-voice-bridge.js
+    # to pass as `executable` to the SDK, bypassing any PATH resolution entirely.
+    try:
+        node_bin = _find_node()
+        node_dir = str(Path(node_bin).parent)
+        safe["CLAUDECLAW_NODE_BIN"] = node_bin
+    except RuntimeError:
+        node_dir = None
+
+    # Augment PATH: actual found node dir first, then common fallbacks
+    extra_paths = [
+        node_dir,  # wherever _find_node() found it
+        "/usr/local/bin",
+        "/opt/homebrew/bin",
+        "/opt/homebrew/sbin",
+        os.path.expanduser("~/.nvm/versions/node/v24.15.0/bin"),
+        os.path.expanduser("~/.local/bin"),
+    ]
+    current_path = safe.get("PATH", "")
+    augmented = ":".join(p for p in extra_paths if p and p not in current_path)
+    safe["PATH"] = augmented + ":" + current_path if augmented else current_path
     return safe
 
 
@@ -60,7 +110,8 @@ def call_agent(
     Returns:
         The agent's text response, or a fallback string on error.
     """
-    args = ["node", AGENT_BRIDGE_PATH, agent_id, prompt]
+    node_bin = _find_node()
+    args = [node_bin, AGENT_BRIDGE_PATH, agent_id, prompt]
 
     if quick:
         args.append("--quick")
