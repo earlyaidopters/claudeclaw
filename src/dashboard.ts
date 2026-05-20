@@ -5,7 +5,7 @@ import { serve } from '@hono/node-server';
 
 import fs from 'fs';
 import path from 'path';
-import { AGENT_ID, ALLOWED_CHAT_ID, DASHBOARD_PORT, DASHBOARD_TOKEN, MESSENGER_TYPE, PROJECT_ROOT, STORE_DIR, WHATSAPP_ENABLED, SLACK_USER_TOKEN, CONTEXT_LIMIT, agentDefaultModel } from './config.js';
+import { AGENT_ID, ALLOWED_CHAT_ID, DASHBOARD_PORT, DASHBOARD_TOKEN, DASHBOARD_URL, MESSENGER_TYPE, PROJECT_ROOT, STORE_DIR, WHATSAPP_ENABLED, SLACK_USER_TOKEN, CONTEXT_LIMIT, agentDefaultModel } from './config.js';
 import crypto from 'crypto';
 import {
   getAllScheduledTasks,
@@ -112,6 +112,16 @@ Reply with JSON: {"agent": "agent_id"}`;
   }
 }
 
+// Constant-time token comparison (audit fix A4E-1, ported from osrepo PR #51).
+// Plain `===` leaks timing info that lets a remote attacker recover the token
+// one byte at a time. timingSafeEqual takes O(n) regardless of where the
+// mismatch occurs. Length pre-check prevents a panic on differing buffers.
+function safeTokenEqual(provided: string | null | undefined, expected: string | null | undefined): boolean {
+  if (!provided || !expected) return false;
+  if (provided.length !== expected.length) return false;
+  return crypto.timingSafeEqual(Buffer.from(provided), Buffer.from(expected));
+}
+
 export function startDashboard(botApi?: Api<RawApi>): void {
   if (!DASHBOARD_TOKEN) {
     logger.info('DASHBOARD_TOKEN not set, dashboard disabled');
@@ -120,9 +130,29 @@ export function startDashboard(botApi?: Api<RawApi>): void {
 
   const app = new Hono();
 
-  // CORS headers for cross-origin access (Cloudflare tunnel, mobile browsers)
+  // CORS headers for cross-origin access (Cloudflare tunnel, mobile browsers).
+  // Reflect Origin only when it matches a known-good host (audit fix A4E-3,
+  // ported from osrepo PR #51). Wildcard `*` is functionally equivalent to
+  // "trust anyone" for credentialed reads of authenticated endpoints; pinning
+  // to an allowlist closes that surface.
   app.use('*', async (c, next) => {
-    c.header('Access-Control-Allow-Origin', '*');
+    const origin = c.req.header('origin');
+    if (origin) {
+      try {
+        const host = new URL(origin).hostname;
+        const dashHost = DASHBOARD_URL ? new URL(DASHBOARD_URL).hostname : '';
+        const allowed =
+          host === 'localhost' ||
+          host === '127.0.0.1' ||
+          host === '[::1]' ||
+          (!!dashHost && host === dashHost) ||
+          host.endsWith('.trycloudflare.com');
+        if (allowed) {
+          c.header('Access-Control-Allow-Origin', origin);
+          c.header('Vary', 'Origin');
+        }
+      } catch { /* malformed Origin — emit no header */ }
+    }
     c.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, PATCH, OPTIONS');
     c.header('Access-Control-Allow-Headers', 'Content-Type');
     if (c.req.method === 'OPTIONS') return c.body(null, 204);
@@ -138,7 +168,7 @@ export function startDashboard(botApi?: Api<RawApi>): void {
   // Token auth middleware
   app.use('*', async (c, next) => {
     const token = c.req.query('token');
-    if (!DASHBOARD_TOKEN || !token || token !== DASHBOARD_TOKEN) {
+    if (!safeTokenEqual(token, DASHBOARD_TOKEN)) {
       return c.json({ error: 'Unauthorized' }, 401);
     }
     await next();
@@ -1476,6 +1506,17 @@ export function startDashboard(botApi?: Api<RawApi>): void {
       ) => {
         const url = new URL(req.url || '/', `http://${req.headers.host}`);
         if (url.pathname !== '/ws/warroom') return;
+
+        // Token-gate the War Room WebSocket upgrade (audit fix, ported from
+        // osrepo PR #51). Without this, anyone who can reach the dashboard
+        // port could proxy into the local Pipecat War Room socket with no
+        // auth and burn Gemini Live credits or eavesdrop on transcripts.
+        const token = url.searchParams.get('token');
+        if (!safeTokenEqual(token, DASHBOARD_TOKEN)) {
+          socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+          socket.destroy();
+          return;
+        }
 
         wss.handleUpgrade(req, socket, head, (clientWs: any) => {
           const remote = new WS(`ws://127.0.0.1:${WARROOM_PORT}`);

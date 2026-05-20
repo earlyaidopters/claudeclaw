@@ -25,6 +25,7 @@ import { messageQueue } from './message-queue.js';
 import { runAgent } from './agent.js';
 import { formatForTelegram, splitMessage } from './bot.js';
 import { buildMemoryContext } from './memory.js';
+import { ingestConversationTurn } from './memory-ingest.js';
 import { emitChatEvent } from './state.js';
 
 type Sender = (text: string) => Promise<void>;
@@ -128,8 +129,10 @@ async function runDueTasks(): Promise<void> {
       try {
         await sender(`Scheduled task running: "${task.prompt.slice(0, 80)}${task.prompt.length > 80 ? '...' : ''}"`);
 
-        // Run as a fresh agent call (no session — scheduled tasks are autonomous)
-        const result = await runAgent(task.prompt, undefined, () => {}, undefined, undefined, abortController, undefined, agentMcpAllowlist);
+        // Run as a fresh agent call (no session — scheduled tasks are autonomous).
+        // Pass agentDefaultModel so the scheduler honours per-agent model overrides
+        // from agent.yaml (osrepo PR #57).
+        const result = await runAgent(task.prompt, undefined, () => {}, undefined, agentDefaultModel, abortController, undefined, agentMcpAllowlist);
         clearTimeout(timeout);
 
         if (result.aborted) {
@@ -151,6 +154,15 @@ async function runDueTasks(): Promise<void> {
           logConversationTurn(ALLOWED_CHAT_ID, 'user', `[Scheduled task]: ${task.prompt}`, activeSession ?? undefined, schedulerAgentId);
           logConversationTurn(ALLOWED_CHAT_ID, 'assistant', text, activeSession ?? undefined, schedulerAgentId);
         }
+
+        // Fire-and-forget memory extraction (osrepo PR #69). Synthetic chat_id when
+        // this agent has no user-facing Telegram chat (specialists usually don't).
+        // Memory is valuable even on background tasks — they produce content worth
+        // remembering, just grouped under a per-agent synthetic thread.
+        const ingestChatId = ALLOWED_CHAT_ID || `scheduled-${schedulerAgentId}`;
+        void ingestConversationTurn(ingestChatId, `[Scheduled task]: ${task.prompt}`, text, schedulerAgentId).catch((err) => {
+          logger.error({ err, taskId: task.id }, 'Memory ingestion fire-and-forget failed (scheduled task)');
+        });
 
         updateTaskAfterRun(task.id, nextRun, text, 'success');
 
@@ -278,6 +290,15 @@ async function runDueMissionTasks(): Promise<boolean> {
             logConversationTurn(ALLOWED_CHAT_ID, 'assistant', text, activeSession ?? undefined, schedulerAgentId);
           }
         }
+
+        // Fire-and-forget memory extraction (osrepo PR #69). Synthetic chat_id when
+        // this agent has no user-facing Telegram chat (specialists usually don't).
+        // Mission tasks produce content worth remembering, grouped under a
+        // per-agent synthetic thread.
+        const ingestChatId = ALLOWED_CHAT_ID || `mission-${schedulerAgentId}`;
+        void ingestConversationTurn(ingestChatId, '[Mission task: ' + mission.title + ']: ' + mission.prompt, text, schedulerAgentId).catch((err) => {
+          logger.error({ err, missionId: mission.id }, 'Memory ingestion fire-and-forget failed (mission task)');
+        });
       }
 
       emitChatEvent({

@@ -1696,7 +1696,7 @@ async function loadAgents() {
         '<div style="display:flex;gap:10px;align-items:flex-start">' +
           avatarImg +
           '<div style="flex:1;min-width:0">' +
-            '<div class="font-bold text-white text-sm">' + a.name + tgPill + '</div>' +
+            '<div class="font-bold text-white text-sm">' + escapeHtml(a.name) + tgPill + '</div>' +
             descBlock +
             '<div class="text-xs mt-1">' + dot + ' ' + statusText + '</div>' +
             modelSelect +
@@ -1760,7 +1760,7 @@ async function toggleAgentDetail(agentId) {
   // Find agent info
   var agent = missionAgentsList.find(function(a) { return a.id === agentId; });
   var color = AGENT_COLORS[agentId] || '#6b7280';
-  title.innerHTML = '<span style="color:' + color + '">' + (agent ? agent.name : agentId) + '</span>';
+  title.innerHTML = '<span style="color:' + color + '">' + escapeHtml(agent ? agent.name : agentId) + '</span>';
   body.innerHTML = '<div class="text-gray-500 text-sm text-center py-8">Loading...</div>';
 
   overlay.style.opacity = '1';
@@ -2426,7 +2426,7 @@ async function loadMissionControl() {
           : '<span style="display:inline-block;width:6px;height:6px;border-radius:50%;border:1px solid #555;margin-right:4px"></span>';
         const agentTasks = cols[id] || [];
         html += '<div class="flex-shrink-0" style="min-width:220px;scroll-snap-align:start;">' +
-          '<div class="text-xs font-semibold mb-1 uppercase" style="color:' + color + '">' + dot + (agent ? agent.name : id) + '</div>' +
+          '<div class="text-xs font-semibold mb-1 uppercase" style="color:' + color + '">' + dot + escapeHtml(agent ? agent.name : id) + '</div>' +
           '<div data-drop-agent="' + id + '" ondragover="missionDragOver(event)" ondragleave="missionDragLeave(event)" ondrop="missionDrop(event)" style="border:1px solid #2a2a2a;border-radius:10px;padding:8px;min-height:120px;background:#141414;transition:border-color 0.2s,background 0.2s">' +
           (agentTasks.length ? agentTasks.map(renderMissionCard).join('') : '<div class="text-xs text-gray-600 text-center py-4">No tasks</div>') +
           '</div></div>';

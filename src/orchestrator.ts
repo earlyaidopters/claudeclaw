@@ -215,7 +215,12 @@ export async function delegateToAgent(
         undefined, // fresh session for each delegation
         () => {}, // no typing indicator needed for sub-delegation
         undefined, // no progress callback for inner agent
-        undefined, // use default model
+        // Honour the target agent's `model:` field from agent.yaml (osrepo PR #67).
+        // NOT `agentDefaultModel` (from config.ts): delegateToAgent runs in-process
+        // inside the orchestrator (main), so the module-level export resolves to
+        // the CALLER's model (undefined for main), not the target's. We pull from
+        // agentConfig which was loaded for the target specialist a few lines above.
+        agentConfig.model,
         abortCtrl,
         undefined, // no streaming for delegation
         agentConfig.mcpServers,
