@@ -137,3 +137,17 @@ export function abortActiveQuery(chatId: string): boolean {
   }
   return false;
 }
+
+/** Aborts every registered controller whose key starts with `prefix`.
+ *  Used by the text war room to kill all of a meeting's per-agent SDK
+ *  queries at once — without this, cancellation has to wait up to 50ms
+ *  for the in-orchestrator watcher poll to notice the cancelFlag flip. */
+export function abortByPrefix(prefix: string): number {
+  let count = 0;
+  for (const [key, ctrl] of _activeAbort) {
+    if (!key.startsWith(prefix)) continue;
+    try { ctrl.abort(); count++; } catch { /* noop */ }
+    _activeAbort.delete(key);
+  }
+  return count;
+}

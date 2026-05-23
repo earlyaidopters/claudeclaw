@@ -69,3 +69,14 @@ launchd/com.claudeclaw.tunnel.plist
 warroom/.venv/
 warroom/__pycache__/
 warroom/**/__pycache__/
+
+# Untracked secrets + personal working files (added during osrepo parity port)
+client_secret_*.json
+*.apps.googleusercontent.com.json
+alaska-trip/
+drive_*.py
+drive_*.gs
+drive_*.md
+personal_sweep.py
+rocket_local_sweep.py
+daily-briefing.jsx

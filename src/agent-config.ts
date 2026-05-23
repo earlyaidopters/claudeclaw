@@ -12,6 +12,8 @@ function mainConfigPath(): string {
 }
 
 export interface AgentConfig {
+  /** Optional per-agent allowlist of MCP tools exposed in the war room. */
+  warroomTools?: string[];
   name: string;
   description: string;
   botTokenEnv: string;

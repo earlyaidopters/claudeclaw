@@ -1052,7 +1052,10 @@ async function reloadMeetingAfterRespawn(statusLabel, targetAgent) {
       return;
     }
 
-    var wsUrl = (window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host + '/ws/warroom';
+    // Append ?token= so the dashboard's WebSocket upgrade gate (PR #51 ported
+    // from osrepo) authenticates the /ws/warroom proxy connection. Without
+    // this, the upgrade closes with 1006 and the meeting silently fails.
+    var wsUrl = (window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host + '/ws/warroom?token=' + encodeURIComponent(TOKEN);
     var WebSocketTransport = window.PipecatWarRoom.WebSocketTransport;
     var PipecatClient = window.PipecatWarRoom.PipecatClient;
     currentTransport = new WebSocketTransport({ wsUrl: wsUrl });
@@ -1374,8 +1377,9 @@ async function togglePin(agentId) {
         return;
       }
 
-      // 5. Reconnect a fresh Pipecat client to the respawned server
-      var wsUrl = (window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host + '/ws/warroom';
+      // 5. Reconnect a fresh Pipecat client to the respawned server.
+      // ?token= required for the WebSocket upgrade gate (PR #51).
+      var wsUrl = (window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host + '/ws/warroom?token=' + encodeURIComponent(TOKEN);
       var WebSocketTransport = window.PipecatWarRoom.WebSocketTransport;
       var PipecatClient = window.PipecatWarRoom.PipecatClient;
       currentTransport = new WebSocketTransport({ wsUrl: wsUrl });
@@ -1650,7 +1654,13 @@ async function toggleMeeting() {
         return;
       }
 
+      // ?token= required for the WebSocket upgrade gate (PR #51 ported from
+      // osrepo). The server's data.ws_url path may also lack it, so we
+      // append it post-hoc when missing to keep the legacy fallback safe.
       var wsUrl = data.ws_url || ((window.location.protocol === 'https:' ? 'wss://' : 'ws://') + window.location.host + '/ws/warroom');
+      if (wsUrl.indexOf('token=') === -1) {
+        wsUrl += (wsUrl.indexOf('?') === -1 ? '?' : '&') + 'token=' + encodeURIComponent(TOKEN);
+      }
 
       // Create the Pipecat client with WebSocket transport
       var WebSocketTransport = window.PipecatWarRoom.WebSocketTransport;

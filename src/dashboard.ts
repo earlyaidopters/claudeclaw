@@ -50,7 +50,29 @@ import {
   addWarRoomTranscript,
   getWarRoomMeetings,
   getWarRoomTranscript,
+  createTextMeeting,
+  getTextMeeting,
+  setMeetingPin,
+  getOpenTextMeetingIds,
+  getTextMeetings,
+  clearMeetingSessions,
+  setDashboardSetting,
+  getAllDashboardSettings,
+  insertAgentSuggestion,
+  listActiveAgentSuggestions,
+  dismissAgentSuggestion,
+  markAgentSuggestionActed,
+  getRecentlySuggestedSplits,
+  insertAuditLog,
 } from './db.js';
+import * as killSwitches from './kill-switches.js';
+import { getWarRoomTextHtml } from './warroom-text-html.js';
+import { handleTextTurn, cancelMeetingTurns, getRoster, warmupMeeting, isWarmupDone, getActiveTurnIds, waitForMeetingTurnsIdle } from './warroom-text-orchestrator.js';
+import { getChannel, closeChannel, startChannelSweeper } from './warroom-text-events.js';
+import { messageQueue } from './message-queue.js';
+import { extractViaClaude } from './memory-ingest.js';
+const WARROOM_TEXT_ID_RE = /^wr_[a-z0-9_]{4,64}$/i;
+const CLIENT_MSG_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 import { generateContent, parseJsonResponse } from './gemini.js';
 import { getSecurityStatus } from './security.js';
 import {
@@ -215,9 +237,31 @@ export function startDashboard(botApi?: Api<RawApi>): void {
     }
     // SPA shell. Read fresh on each request so dev rebuilds appear without
     // restart. The frontend reads ?token= and ?chatId= from window.location,
-    // falling back to sessionStorage. Serving this unauthenticated means a
+    // falling back to localStorage. Serving this unauthenticated means a
     // token-stripped URL still loads the app instead of showing raw 401.
     return c.html(fs.readFileSync(newDashboardIndex, 'utf-8'));
+  });
+
+  // SPA history fallback. Client-side routes (/mission, /usage, /settings,
+  // /agents, etc.) have no matching server route, so a hard refresh or a
+  // direct bookmark to a sub-page would 404. Serve the SPA shell for any
+  // unmatched non-API GET and let the frontend router resolve it. Unknown
+  // /api and /ws paths still return a real 404 instead of HTML.
+  app.notFound((c) => {
+    const pathname = new URL(c.req.url).pathname;
+    const isApiOrWs =
+      pathname.startsWith('/api/') ||
+      pathname.startsWith('/ws/') ||
+      pathname.startsWith('/warroom');
+    if (
+      c.req.method === 'GET' &&
+      !isApiOrWs &&
+      !legacyMode &&
+      fs.existsSync(newDashboardIndex)
+    ) {
+      return c.html(fs.readFileSync(newDashboardIndex, 'utf-8'));
+    }
+    return c.text('Not Found', 404);
   });
 
   // Static asset serving for the Vite-built frontend.
@@ -1114,6 +1158,11 @@ export function startDashboard(botApi?: Api<RawApi>): void {
       telegramConnected: getTelegramConnected(),
       waConnected: WHATSAPP_ENABLED,
       slackConnected: !!SLACK_USER_TOKEN,
+      // SPA v2 expects this map (Usage/Settings/Sidebar pages call
+      // Object.entries on it). Snapshot doesn't have kill-switches.ts yet,
+      // so emit an empty object — the pages render nothing under "Kill
+      // switches" instead of crashing on Object.entries(undefined).
+      killSwitches: {},
     });
   });
 
@@ -1566,6 +1615,732 @@ export function startDashboard(botApi?: Api<RawApi>): void {
     const aborted = abortActiveQuery(chatId);
     return c.json({ ok: aborted });
   });
+
+
+  // ----- parity helper functions (ported from osrepo/main) -----
+  function pickerRedirect(chatId: string) {
+    const q = new URLSearchParams({ token: DASHBOARD_TOKEN });
+    if (chatId) q.set('chatId', chatId);
+    return '/warroom?' + q.toString();
+  }
+
+  function requireOpenMeeting(meetingId: string) {
+    const meeting = getTextMeeting(meetingId);
+    if (!meeting) return { error: 'meeting_not_found' as const, status: 404 as const };
+    if (meeting.ended_at !== null) return { error: 'meeting_ended' as const, status: 410 as const };
+    return { meeting };
+  }
+
+  function requireChatMatches(
+    meeting: { chat_id: string },
+    requestChatId: string,
+  ): { ok: true } | { ok: false; error: string; status: 403 } {
+    if (meeting.chat_id === '') return { ok: true };
+    if (meeting.chat_id === requestChatId) return { ok: true };
+    return { ok: false, error: 'chat_mismatch', status: 403 };
+  }
+
+  async function endTextMeeting(meetingId: string): Promise<{ alreadyEnded: boolean; entryCount: number }> {
+    const meeting = getTextMeeting(meetingId);
+    if (!meeting || meeting.ended_at !== null) {
+      const rows = meeting ? getWarRoomTranscript(meetingId) : [];
+      return { alreadyEnded: true, entryCount: rows.length };
+    }
+    const rows = getWarRoomTranscript(meetingId);
+    endWarRoomMeeting(meetingId, rows.length);
+    if (getActiveTurnIds(meetingId).length > 0) {
+      cancelMeetingTurns(meetingId);
+      await waitForMeetingTurnsIdle(meetingId, 3000);
+    }
+    // Clear the SDK sessions tied to this meeting. Without this, every
+    // meeting leaves orphan rows in the `sessions` table keyed on
+    // warroom-text:<meetingId>:<agentId>; the rows can't be looked up
+    // again (UUID-fresh meetingIds) but they accumulate forever. Mirror
+    // the /clear endpoint's behavior so /end is a true cleanup.
+    try {
+      const agents = getRoster().map((a) => a.id);
+      clearMeetingSessions(meetingId, agents);
+    } catch (err) {
+      logger.warn(
+        { err: err instanceof Error ? err.message : err, meetingId },
+        'clearMeetingSessions failed during endTextMeeting (non-fatal)',
+      );
+    }
+    // Notify every connected tab BEFORE we close the channel so they can
+    // disable their composers and show the "meeting ended" state.
+    const channel = getChannel(meetingId);
+    channel.emit({
+      type: 'meeting_ended',
+      meetingId,
+      at: Math.floor(Date.now() / 1000),
+    });
+    // Close the channel after a short grace period so in-flight SSE
+    // writes finish draining to clients.
+    setTimeout(() => closeChannel(meetingId), 1500);
+    return { alreadyEnded: false, entryCount: rows.length };
+  }
+
+  function validateStandupConfigJson(value: string): string | null {
+    let parsed: unknown;
+    try { parsed = JSON.parse(value); }
+    catch { return 'standup_config: value must be valid JSON'; }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return 'standup_config: value must be a JSON object';
+    }
+    const obj = parsed as Record<string, unknown>;
+    if (!Array.isArray(obj.agents)) {
+      return 'standup_config: agents must be an array';
+    }
+    for (const a of obj.agents) {
+      if (!a || typeof a !== 'object' || typeof (a as { id?: unknown }).id !== 'string') {
+        return 'standup_config: each agent entry must be { id: string, enabled?: boolean }';
+      }
+      const enabled = (a as { enabled?: unknown }).enabled;
+      if (enabled !== undefined && typeof enabled !== 'boolean') {
+        return 'standup_config: agent.enabled must be boolean when present';
+      }
+    }
+    if (typeof obj.maxSpeakers !== 'number' || !Number.isFinite(obj.maxSpeakers)
+        || !Number.isInteger(obj.maxSpeakers) || obj.maxSpeakers < 1 || obj.maxSpeakers > 8) {
+      return 'standup_config: maxSpeakers must be an integer in [1, 8]';
+    }
+    return null;
+  }
+
+  const ALLOWED_SETTING_KEYS = new Set([
+    'workspace_name',
+    'hotkey_mod', // 'meta' | 'ctrl' | 'auto'
+    'sidebar_collapsed_sections', // JSON array of section ids
+    'mission_column_order', // JSON array of agent ids
+    'mission_column_widths', // JSON object { id: px }
+    // JSON {agents: [{id, enabled}], maxSpeakers}. Drives /standup
+    // and /discuss in the text War Room — the user picks who's in,
+    // their order, and the cap. Read by pickSlashRoster() in
+    // src/warroom-text-orchestrator.ts. UI: web/src/pages/StandupConfig.tsx.
+    'standup_config',
+  ]);
+
+  const SETTING_VALUE_MAX_BYTES = 4 * 1024;
+
+  const ALLOWED_KILL_SWITCHES = new Set([
+    'WARROOM_TEXT_ENABLED',
+    'WARROOM_VOICE_ENABLED',
+    'LLM_SPAWN_ENABLED',
+    'DASHBOARD_MUTATIONS_ENABLED',
+    'MISSION_AUTO_ASSIGN_ENABLED',
+    'SCHEDULER_ENABLED',
+  ]);
+
+  // ===== parity routes ported from osrepo/main (settings, kill-switch, suggestions, war room text) =====
+  app.get('/warroom/text', (c) => {
+    // Legacy HTML embeds DASHBOARD_TOKEN — gate it inline since the
+    // global middleware now only protects /api/*.
+    const denied = requireToken(c); if (denied) return denied;
+    const chatId = c.req.query('chatId') || '';
+    const meetingId = (c.req.query('meetingId') || '').trim();
+    const archive = c.req.query('archive') === '1';
+    if (!WARROOM_TEXT_ID_RE.test(meetingId)) {
+      return c.redirect(pickerRedirect(chatId));
+    }
+    const existing = getTextMeeting(meetingId);
+    if (!existing) {
+      return c.redirect(pickerRedirect(chatId));
+    }
+    if (existing.ended_at !== null && !archive) {
+      return c.redirect(pickerRedirect(chatId));
+    }
+    // Chat-id mismatch: don't render the page (would let a stale meetingId
+    // from chat A render under chat B's session). Send them back to the
+    // picker for their actual chat. Legacy meetings with chat_id='' bypass
+    // this since they pre-date the migration.
+    if (existing.chat_id !== '' && existing.chat_id !== chatId) {
+      return c.redirect(pickerRedirect(chatId));
+    }
+    return c.html(getWarRoomTextHtml(DASHBOARD_TOKEN, chatId, meetingId));
+  });
+
+  app.get('/api/warroom/text/list', (c) => {
+    const limit = Math.max(1, Math.min(100, parseInt(c.req.query('limit') || '20', 10) || 20));
+    // Optional chat-scope: if the picker passes its current chatId, return
+    // only meetings for that chat. Picker without chatId (admin/debug or
+    // legacy clients) sees everything.
+    const chatIdRaw = c.req.query('chatId');
+    const chatId = chatIdRaw !== undefined ? chatIdRaw : undefined;
+    return c.json({ ok: true, meetings: getTextMeetings(limit, chatId) });
+  });
+
+  app.post('/api/warroom/text/new', async (c) => {
+    let body: { chatId?: string } = {};
+    try { body = await c.req.json(); } catch { /* empty */ }
+    const chatId = (body.chatId || '').trim();
+    const id = `wr_${Math.floor(Date.now() / 1000).toString(36)}_${crypto.randomBytes(3).toString('hex')}`;
+    createTextMeeting(id, chatId);
+    // Prime the channel so the SSE emit for meeting_state has a target.
+    getChannel(id);
+    // Force-end any prior open text meetings IN THE SAME CHAT so a refresh
+    // / new visit starts clean WITHOUT clobbering meetings from other
+    // chats sharing the box. Fire-and-forget — DB update is synchronous,
+    // only the SSE-emit + cancel-turns wait is async, and the response
+    // shouldn't block on those.
+    const stale = getOpenTextMeetingIds(id, chatId);
+    if (stale.length > 0) {
+      logger.info({ closing: stale, newMeetingId: id, chatId }, 'auto-ending stale text meetings on /new');
+      for (const sid of stale) {
+        void endTextMeeting(sid).catch((err) => {
+          logger.warn({
+            err: err instanceof Error ? err.message : err,
+            staleMeetingId: sid,
+          }, 'auto-end of stale meeting failed (non-fatal)');
+        });
+      }
+    }
+    return c.json({ ok: true, meetingId: id, autoEnded: stale });
+  });
+
+  app.post('/api/warroom/text/warmup', async (c) => {
+    if (isWarmupDone()) return c.json({ ok: true, already: true });
+    // Don't await — the client doesn't need the result, it just wants
+    // the server to have started. The promise resolves in the background.
+    void warmupMeeting();
+    return c.json({ ok: true, started: true });
+  });
+
+  app.get('/api/warroom/text/history', (c) => {
+    const meetingId = (c.req.query('meetingId') || '').trim();
+    const reqChatId = (c.req.query('chatId') || '').trim();
+    if (!WARROOM_TEXT_ID_RE.test(meetingId)) return c.json({ error: 'invalid meetingId' }, 400);
+    const meeting = getTextMeeting(meetingId);
+    if (!meeting) return c.json({ error: 'meeting_not_found' }, 404);
+    const chatGate = requireChatMatches(meeting, reqChatId);
+    if (!chatGate.ok) return c.json({ error: chatGate.error }, chatGate.status);
+    const limit = Math.max(1, Math.min(500, parseInt(c.req.query('limit') || '200', 10) || 200));
+    const beforeTsRaw = c.req.query('beforeTs');
+    const beforeIdRaw = c.req.query('beforeId');
+    const beforeTs = beforeTsRaw ? parseInt(beforeTsRaw, 10) : undefined;
+    const beforeId = beforeIdRaw ? parseInt(beforeIdRaw, 10) : undefined;
+    // Capture latestSeq BEFORE the transcript query. If a new row is
+    // persisted + emits between these two reads, the transcript query
+    // sees the row, and the client connects SSE from a seq that still
+    // covers the emit — seenSeqs dedup takes care of duplicates.
+    // Reverse order (seq-first, then rows) avoids the opposite race where
+    // a row emits after the transcript read but before the seq read,
+    // causing the client to advance past a row it never received.
+    const latestSeq = getChannel(meetingId).latestSeq();
+    const rows = getWarRoomTranscript(meetingId, { limit, beforeTs, beforeId }).reverse();
+    return c.json({
+      ok: true,
+      meetingId,
+      transcript: rows,
+      pinnedAgent: meeting.pinned_agent,
+      meetingStartedAt: meeting.started_at,
+      endedAt: meeting.ended_at,
+      agents: getRoster(),
+      latestSeq,
+    });
+  });
+
+  app.get('/api/warroom/text/stream', (c) => {
+    const meetingId = (c.req.query('meetingId') || '').trim();
+    const reqChatId = (c.req.query('chatId') || '').trim();
+    if (!WARROOM_TEXT_ID_RE.test(meetingId)) return c.json({ error: 'invalid meetingId' }, 400);
+    const meeting = getTextMeeting(meetingId);
+    if (!meeting) return c.json({ error: 'meeting_not_found' }, 404);
+    const chatGate = requireChatMatches(meeting, reqChatId);
+    if (!chatGate.ok) return c.json({ error: chatGate.error }, chatGate.status);
+    // Clients that reconnect to an already-ended meeting still get a
+    // stream — we emit a meeting_ended event immediately then close. This
+    // lets the UI show the ended state instead of silently hanging.
+    const sinceSeq = Math.max(0, parseInt(c.req.query('sinceSeq') || '0', 10) || 0);
+
+    return streamSSE(c, async (stream) => {
+      const channel = getChannel(meetingId);
+
+      // 1. Send meeting_state snapshot with the current roster + pin so
+      //    the client can render without waiting for the next real event.
+      const stateEvent = {
+        type: 'meeting_state' as const,
+        meetingId,
+        pinnedAgent: meeting.pinned_agent,
+        agents: getRoster(),
+        isFresh: meeting.ended_at === null && meeting.entry_count === 0,
+      };
+      await stream.writeSSE({
+        event: 'message',
+        data: JSON.stringify({ seq: 0, event: stateEvent }),
+      });
+
+      // If the meeting already ended when the client connects, tell them
+      // immediately so they can render the ended state instead of hanging.
+      if (meeting.ended_at !== null) {
+        await stream.writeSSE({
+          event: 'message',
+          data: JSON.stringify({ seq: 0, event: { type: 'meeting_ended', meetingId, at: meeting.ended_at } }),
+        });
+        return;
+      }
+
+      // 2. Subscribe FIRST so events emitted concurrently with the replay
+      //    drain aren't lost in the gap between since() and subscribe().
+      //    Writes are serialized through a tiny async queue so rapid
+      //    chunks can't reorder (EventEmitter.emit doesn't await our
+      //    async handler otherwise).
+      const seenSeqs = new Set<number>();
+      let writeChain: Promise<void> = Promise.resolve();
+      const writeOrdered = (seq: number, event: unknown) => {
+        if (seenSeqs.has(seq)) return;
+        seenSeqs.add(seq);
+        writeChain = writeChain.then(async () => {
+          try {
+            await stream.writeSSE({
+              event: 'message',
+              data: JSON.stringify({ seq, event }),
+            });
+          } catch { /* client disconnected */ }
+        });
+      };
+
+      const unsub = channel.subscribe((entry) => {
+        writeOrdered(entry.seq, entry.event);
+      });
+
+      // 3. Detect replay gaps. If the client's sinceSeq is older than the
+      //    oldest event we still have in the ring buffer, the replay
+      //    would silently drop everything between (sinceSeq, oldestSeq).
+      //    Tell the client so it can hard-reload the transcript via
+      //    /history instead of rendering an inconsistent stream.
+      const oldest = channel.oldestSeq();
+      const latest = channel.latestSeq();
+      if (sinceSeq > 0 && oldest > 0 && sinceSeq < oldest - 1) {
+        await stream.writeSSE({
+          event: 'message',
+          data: JSON.stringify({
+            seq: 0,
+            event: { type: 'replay_gap', sinceSeq, oldestSeq: oldest, latestSeq: latest },
+          }),
+        });
+      }
+
+      // 4. Drain the replay window AFTER subscribing. The seenSeqs dedup
+      //    set guarantees we never duplicate an event that the live
+      //    subscription also caught.
+      const missed = channel.since(sinceSeq);
+      for (const entry of missed) {
+        writeOrdered(entry.seq, entry.event);
+      }
+
+      const ping = setInterval(async () => {
+        try { await stream.writeSSE({ event: 'ping', data: '' }); }
+        catch { clearInterval(ping); }
+      }, 30_000);
+
+      try {
+        await new Promise<void>((_, reject) => {
+          stream.onAbort(() => reject(new Error('aborted')));
+        });
+      } catch {
+        // expected: client disconnected
+      } finally {
+        clearInterval(ping);
+        unsub();
+      }
+    });
+  });
+
+  app.post('/api/warroom/text/send', async (c) => {
+    let body: { meetingId?: string; text?: string; clientMsgId?: string; chatId?: string } = {};
+    try { body = await c.req.json(); } catch { /* empty */ }
+    const meetingId = (body.meetingId || '').trim();
+    const text = (body.text || '').trim();
+    const clientMsgId = (body.clientMsgId || '').trim();
+    const reqChatId = (body.chatId || c.req.query('chatId') || '').trim();
+    // DASHBOARD_MUTATIONS_ENABLED + LLM_SPAWN_ENABLED are enforced by
+    // global middlewares (mutation middleware above; LLM-spawn refusal
+    // happens inside runAgentTurn). Only WARROOM_TEXT_ENABLED is
+    // feature-specific and remains here.
+    if (!killSwitches.isEnabled('WARROOM_TEXT_ENABLED')) {
+      return c.json({ error: 'text war room disabled' }, 503);
+    }
+    if (!WARROOM_TEXT_ID_RE.test(meetingId)) return c.json({ error: 'invalid meetingId' }, 400);
+    if (!text) return c.json({ error: 'empty text' }, 400);
+    if (text.length > 8000) return c.json({ error: 'text too long (max 8000 chars)' }, 400);
+    if (!CLIENT_MSG_ID_RE.test(clientMsgId)) return c.json({ error: 'invalid clientMsgId' }, 400);
+    const gate = requireOpenMeeting(meetingId);
+    if (gate.error) return c.json({ error: gate.error }, gate.status);
+    const chatGate = requireChatMatches(gate.meeting, reqChatId);
+    if (!chatGate.ok) return c.json({ error: chatGate.error }, chatGate.status);
+
+    // Fire-and-forget through the per-meeting queue. The client learns
+    // about progress via SSE. The handleTextTurn call is wrapped in a
+    // hard watchdog: if the whole turn takes longer than TURN_BUDGET_MS,
+    // we force the queue to unblock so subsequent sends aren't held
+    // hostage by a single hung SDK subprocess. The watchdog fires at
+    // the queue level (not inside the orchestrator) so even if the
+    // orchestrator never returns, the FIFO drains.
+    //
+    // Budget derivation:
+    //   router (20s) + primary (75s)
+    //   + 2 × ( intervention gate (25s) + intervener (45s) )
+    //   = 235s of agent work,
+    //   + ~30s for SDK cold-start + transcript I/O + queue overhead
+    //   = ~265s realistic worst case for a healthy long turn.
+    // Set TURN_BUDGET_MS to 300_000 so the budget actually clears the
+    // worst case by a comfortable margin. The previous 240s was 5s over
+    // the bare math, which meant healthy long turns were getting cut
+    // off as "took too long".
+    const TURN_BUDGET_MS = 300_000;
+    messageQueue.enqueue(`warroom-text:${meetingId}`, async () => {
+      let finished = false;
+      const turnPromise = handleTextTurn(meetingId, text, clientMsgId).finally(() => { finished = true; });
+      await Promise.race([
+        turnPromise,
+        new Promise<void>((resolve) => {
+          setTimeout(() => {
+            if (finished) return;
+            // Timed out. Emit a user-visible error via the channel so the
+            // UI unfreezes. Use turn_aborted scoped to the actual active
+            // turnId(s) — turn_complete with a synthetic 'watchdog' id
+            // can't drive turnId-scoped UI cleanup correctly.
+            const ch = getChannel(meetingId);
+            ch.emit({
+              type: 'system_note',
+              text: 'That turn took too long to complete and was interrupted. Send again, or end and restart the meeting if this keeps happening.',
+              tone: 'warn',
+              dismissable: true,
+            });
+            const activeTurns = getActiveTurnIds(meetingId);
+            for (const tid of activeTurns) {
+              ch.emit({ type: 'turn_aborted', turnId: tid, clearedAgents: [] });
+              // Mark finalized AFTER emitting turn_aborted so the abort
+              // event itself reaches the client. From here on, late SDK
+              // chunks/agent_done/transcript writes for this turnId are
+              // dropped by the channel — they can't leak into the next
+              // queued turn's bubbles.
+              ch.markTurnFinalized(tid);
+            }
+            cancelMeetingTurns(meetingId);
+            resolve();
+          }, TURN_BUDGET_MS);
+        }),
+      ]);
+      // After the race settles (whether the turn finished cleanly or the
+      // watchdog fired), give the orchestrator a brief grace window to
+      // finish its async cleanup before we let the next queued turn run.
+      // This prevents a half-aborted turn's late agent_done from racing
+      // with a freshly-started turn's bubbles.
+      if (!finished) {
+        await Promise.race([
+          turnPromise,
+          new Promise<void>((r) => setTimeout(r, 2000)),
+        ]);
+      }
+    });
+    return c.json({ ok: true, queued: true });
+  });
+
+  app.post('/api/warroom/text/abort', async (c) => {
+    let body: { meetingId?: string; chatId?: string } = {};
+    try { body = await c.req.json(); } catch { /* empty */ }
+    const meetingId = (body.meetingId || '').trim();
+    const reqChatId = (body.chatId || c.req.query('chatId') || '').trim();
+    if (!WARROOM_TEXT_ID_RE.test(meetingId)) return c.json({ error: 'invalid meetingId' }, 400);
+    const meeting = getTextMeeting(meetingId);
+    if (!meeting) return c.json({ error: 'meeting_not_found' }, 404);
+    const chatGate = requireChatMatches(meeting, reqChatId);
+    if (!chatGate.ok) return c.json({ error: chatGate.error }, chatGate.status);
+    const count = cancelMeetingTurns(meetingId);
+    return c.json({ ok: true, cancelled: count });
+  });
+
+  app.post('/api/warroom/text/pin', async (c) => {
+    let body: { meetingId?: string; agentId?: string; chatId?: string } = {};
+    try { body = await c.req.json(); } catch { /* empty */ }
+    const meetingId = (body.meetingId || '').trim();
+    const agentId = (body.agentId || '').trim();
+    const reqChatId = (body.chatId || c.req.query('chatId') || '').trim();
+    if (!WARROOM_TEXT_ID_RE.test(meetingId)) return c.json({ error: 'invalid meetingId' }, 400);
+    const rosterIds = new Set(getRoster().map((a) => a.id));
+    if (!rosterIds.has(agentId)) return c.json({ error: 'unknown agent' }, 400);
+    const gate = requireOpenMeeting(meetingId);
+    if (gate.error) return c.json({ error: gate.error }, gate.status);
+    const chatGate = requireChatMatches(gate.meeting, reqChatId);
+    if (!chatGate.ok) return c.json({ error: chatGate.error }, chatGate.status);
+    setMeetingPin(meetingId, agentId);
+    // Tell every connected tab so the pin indicator stays in sync
+    // without a reload. Without this, tabs that didn't initiate the
+    // pin click rendered the wrong roster state until they reconnected.
+    getChannel(meetingId).emit({ type: 'meeting_state_update', pinnedAgent: agentId });
+    return c.json({ ok: true, meetingId, pinnedAgent: agentId });
+  });
+
+  app.post('/api/warroom/text/unpin', async (c) => {
+    let body: { meetingId?: string; chatId?: string } = {};
+    try { body = await c.req.json(); } catch { /* empty */ }
+    const meetingId = (body.meetingId || '').trim();
+    const reqChatId = (body.chatId || c.req.query('chatId') || '').trim();
+    if (!WARROOM_TEXT_ID_RE.test(meetingId)) return c.json({ error: 'invalid meetingId' }, 400);
+    const gate = requireOpenMeeting(meetingId);
+    if (gate.error) return c.json({ error: gate.error }, gate.status);
+    const chatGate = requireChatMatches(gate.meeting, reqChatId);
+    if (!chatGate.ok) return c.json({ error: chatGate.error }, chatGate.status);
+    setMeetingPin(meetingId, null);
+    getChannel(meetingId).emit({ type: 'meeting_state_update', pinnedAgent: null });
+    return c.json({ ok: true, meetingId, pinnedAgent: null });
+  });
+
+  app.post('/api/warroom/text/clear', async (c) => {
+    let body: { meetingId?: string; chatId?: string } = {};
+    try { body = await c.req.json(); } catch { /* empty */ }
+    const meetingId = (body.meetingId || '').trim();
+    const reqChatId = (body.chatId || c.req.query('chatId') || '').trim();
+    if (!WARROOM_TEXT_ID_RE.test(meetingId)) return c.json({ error: 'invalid meetingId' }, 400);
+    const gate = requireOpenMeeting(meetingId);
+    if (gate.error) return c.json({ error: gate.error }, gate.status);
+    const chatGate = requireChatMatches(gate.meeting, reqChatId);
+    if (!chatGate.ok) return c.json({ error: chatGate.error }, chatGate.status);
+    // Cancel any in-flight turn FIRST and wait for it to exit before we
+    // wipe sessions. Otherwise runAgentTurn's setSession() can land after
+    // clearMeetingSessions() and resurrect the cleared session id, leaving
+    // the user with "memory cleared" UX but the agent still resuming the
+    // prior thread.
+    if (getActiveTurnIds(meetingId).length > 0) {
+      cancelMeetingTurns(meetingId);
+      await waitForMeetingTurnsIdle(meetingId, 5000);
+    }
+    const agents = getRoster().map((a) => a.id);
+    const cleared = clearMeetingSessions(meetingId, agents);
+    // Persist the divider so reload still shows the marker. Speaker
+    // __divider__ is handled client-side to render as a dashed divider.
+    addWarRoomTranscript(meetingId, '__divider__', 'Memory cleared — agents start fresh from here');
+    const channel = getChannel(meetingId);
+    channel.emit({
+      type: 'divider',
+      kind: 'memory_cleared',
+      text: 'Memory cleared — agents start fresh from here',
+    });
+    channel.emit({
+      type: 'system_note',
+      text: 'Sessions cleared. Next message starts fresh.',
+      tone: 'info',
+      dismissable: true,
+    });
+    return c.json({ ok: true, cleared });
+  });
+
+  app.post('/api/warroom/text/end', async (c) => {
+    let body: { meetingId?: string; chatId?: string } = {};
+    try { body = await c.req.json(); } catch { /* empty */ }
+    const meetingId = (body.meetingId || '').trim();
+    const reqChatId = (body.chatId || c.req.query('chatId') || '').trim();
+    if (!WARROOM_TEXT_ID_RE.test(meetingId)) return c.json({ error: 'invalid meetingId' }, 400);
+    const meeting = getTextMeeting(meetingId);
+    if (!meeting) return c.json({ error: 'meeting_not_found' }, 404);
+    const chatGate = requireChatMatches(meeting, reqChatId);
+    if (!chatGate.ok) return c.json({ error: chatGate.error }, chatGate.status);
+    const result = await endTextMeeting(meetingId);
+    if (result.alreadyEnded) {
+      return c.json({ ok: true, meetingId, alreadyEnded: true });
+    }
+    return c.json({ ok: true, meetingId, entryCount: result.entryCount });
+  });
+
+  app.get('/api/agents/suggestions', (c) => {
+    return c.json({ suggestions: listActiveAgentSuggestions() });
+  });
+
+  app.post('/api/agents/suggestions/refresh', async (c) => {
+    const liveAgents = ['main', ...listAgentIds()];
+    const agentMeta: Array<{ id: string; description: string; rawCount: number; recentSummaries: string[] }> = [];
+    for (const id of liveAgents) {
+      let description = '';
+      if (id !== 'main') {
+        try { description = loadAgentConfig(id).description || ''; } catch { /* skip */ }
+      } else {
+        description = 'Primary ClaudeClaw bot — general triage and routing';
+      }
+      const entries = getHiveMindEntries(200, id);
+      const allFiltered = entries
+        .map((e) => `[${e.action}] ${e.summary}`)
+        .filter((s) => s.length > 0);
+      // Sample evenly across the agent's last 200 entries, picking 12
+      // representative summaries. We want diversity (different domains,
+      // not just the latest cluster) without bloating the prompt past
+      // Haiku's comfort zone — total prompt with 6 agents × 12
+      // summaries × ~80 chars stays under ~2 KB and typically completes
+      // in 15–25s.
+      const target = 12;
+      const recentSummaries = allFiltered.length <= target
+        ? allFiltered
+        : allFiltered.filter((_, i) => i % Math.ceil(allFiltered.length / target) === 0).slice(0, target);
+      agentMeta.push({ id, description, rawCount: allFiltered.length, recentSummaries });
+    }
+
+    // Skip agents with too little signal — splitting an agent that's
+    // done 5 things isn't useful, and Haiku will hallucinate splits.
+    const eligible = agentMeta.filter((a) => a.rawCount >= 20);
+    if (eligible.length === 0) {
+      return c.json({ ok: true, suggestions: [], reason: 'not enough hive_mind activity to analyze' });
+    }
+
+    const recentlySuggested = new Set(
+      getRecentlySuggestedSplits(30).map((r) => `${r.from_agent}::${r.suggested_id}`),
+    );
+
+    // Prompt: "for each agent, is one doing many distinct domains?"
+    // Constrain the model to suggest AT MOST one split per agent and
+    // require activity_share_pct so the user knows whether the
+    // suggestion is meaningful (a 5%-share split isn't worth doing).
+    const promptParts = [
+      'You analyze a multi-agent system to spot when an agent has drifted into doing many distinct things and should be split.',
+      '',
+      'For each agent below, decide: is there ONE coherent sub-domain handling >= 25% of their recent activity that would benefit from being its own specialized agent? Only suggest a split when the new agent would have a clean scope and the parent agent would be more focused after the split.',
+      '',
+      'Return JSON with this exact shape:',
+      '{ "suggestions": [{ "from_agent": "<id>", "suggested_id": "<lowercase-id>", "suggested_name": "<Title Case>", "suggested_description": "<one-sentence scope, 80 chars max>", "reasoning": "<why now, 200 chars max>", "activity_share_pct": <integer 0-100> }] }',
+      '',
+      'Rules:',
+      '- suggested_id must be lowercase letters, numbers, hyphens; not match an existing agent.',
+      '- Suggest at most one split per from_agent.',
+      '- Skip suggestions where activity_share_pct < 25.',
+      '- If no agent needs splitting, return { "suggestions": [] }.',
+      '',
+      'Agents:',
+    ];
+    for (const a of eligible) {
+      promptParts.push('');
+      promptParts.push(`AGENT: ${a.id}`);
+      promptParts.push(`DESCRIPTION: ${a.description || '(no description)'}`);
+      promptParts.push('RECENT ACTIVITY:');
+      for (const s of a.recentSummaries) {
+        promptParts.push(`  - ${s}`);
+      }
+    }
+    const existingIds = new Set(liveAgents);
+
+    let raw = '';
+    const promptStr = promptParts.join('\n');
+    logger.info({ promptBytes: promptStr.length, agentCount: eligible.length }, 'agent suggestion: starting analysis');
+    const t0 = Date.now();
+    try {
+      // 120s timeout — the dashboard process spawns the SDK subprocess
+      // alongside its own busy event loop (war-room polling, memory
+      // ingest, scheduler). Cold-starts under load have measured up to
+      // 90s in practice, vs 4–5s for a standalone CLI call with the
+      // same prompt size. Better to wait than fail spuriously.
+      raw = await extractViaClaude(promptStr, 120_000);
+      logger.info({ elapsedMs: Date.now() - t0, responseBytes: raw.length }, 'agent suggestion: Haiku replied');
+    } catch (err) {
+      logger.warn({ err: err instanceof Error ? err.message : err, elapsedMs: Date.now() - t0 }, 'agent suggestion analysis failed');
+      return c.json({ error: 'analysis failed (Haiku unavailable)' }, 503);
+    }
+    const parsed = parseJsonResponse<{ suggestions: any[] }>(raw);
+    const list = Array.isArray(parsed?.suggestions) ? parsed!.suggestions : [];
+
+    let inserted = 0;
+    let skipped = 0;
+    for (const s of list) {
+      if (!s || typeof s !== 'object') { skipped++; continue; }
+      const fromAgent = String(s.from_agent || '').trim();
+      const suggestedId = String(s.suggested_id || '').trim().toLowerCase();
+      const suggestedName = String(s.suggested_name || '').trim();
+      const suggestedDescription = String(s.suggested_description || '').trim();
+      const reasoning = String(s.reasoning || '').trim();
+      const sharePct = Math.max(0, Math.min(100, Math.round(Number(s.activity_share_pct) || 0)));
+
+      if (!fromAgent || !existingIds.has(fromAgent)) { skipped++; continue; }
+      if (!/^[a-z0-9-]{2,32}$/.test(suggestedId)) { skipped++; continue; }
+      if (existingIds.has(suggestedId)) { skipped++; continue; }
+      if (!suggestedName || !suggestedDescription || !reasoning) { skipped++; continue; }
+      if (sharePct < 25) { skipped++; continue; }
+      // Don't re-suggest the exact same split we already proposed in
+      // the last 30 days (whether dismissed or still active).
+      if (recentlySuggested.has(`${fromAgent}::${suggestedId}`)) { skipped++; continue; }
+
+      insertAgentSuggestion({
+        from_agent: fromAgent,
+        suggested_id: suggestedId,
+        suggested_name: suggestedName,
+        suggested_description: suggestedDescription.slice(0, 200),
+        reasoning: reasoning.slice(0, 500),
+        activity_share_pct: sharePct,
+      });
+      inserted++;
+    }
+    insertAuditLog('main', '', 'agent_suggestion_refresh', `inserted=${inserted} skipped=${skipped}`, false);
+    return c.json({ ok: true, inserted, skipped, suggestions: listActiveAgentSuggestions() });
+  });
+
+  app.post('/api/agents/suggestions/:id/dismiss', (c) => {
+    const id = parseInt(c.req.param('id'), 10);
+    if (!Number.isFinite(id)) return c.json({ error: 'invalid id' }, 400);
+    const ok = dismissAgentSuggestion(id);
+    if (!ok) return c.json({ error: 'not found or already dismissed' }, 404);
+    insertAuditLog('main', '', 'agent_suggestion_dismiss', `id=${id}`, false);
+    return c.json({ ok: true });
+  });
+
+  app.post('/api/agents/suggestions/:id/acted', (c) => {
+    const id = parseInt(c.req.param('id'), 10);
+    if (!Number.isFinite(id)) return c.json({ error: 'invalid id' }, 400);
+    const ok = markAgentSuggestionActed(id);
+    if (!ok) return c.json({ error: 'not found or already acted' }, 404);
+    insertAuditLog('main', '', 'agent_suggestion_acted', `id=${id}`, false);
+    return c.json({ ok: true });
+  });
+
+  app.get('/api/dashboard/settings', (c) => {
+    return c.json(getAllDashboardSettings());
+  });
+
+  app.patch('/api/dashboard/settings', async (c) => {
+    const body = await c.req.json().catch(() => null) as { key?: string; value?: string } | null;
+    if (!body || typeof body.key !== 'string' || typeof body.value !== 'string') {
+      return c.json({ error: 'expected { key: string, value: string }' }, 400);
+    }
+    if (!ALLOWED_SETTING_KEYS.has(body.key)) {
+      return c.json({ error: `unknown setting key: ${body.key}` }, 400);
+    }
+    if (Buffer.byteLength(body.value, 'utf8') > SETTING_VALUE_MAX_BYTES) {
+      return c.json({ error: `value exceeds ${SETTING_VALUE_MAX_BYTES} bytes` }, 400);
+    }
+    if (body.key === 'standup_config') {
+      const err = validateStandupConfigJson(body.value);
+      if (err) return c.json({ error: err }, 400);
+    }
+    // Workspace name has its own length cap so the sidebar layout stays
+    // sane. Strip control chars + zero-width joiners; trim whitespace.
+    let value = body.value;
+    if (body.key === 'workspace_name') {
+      value = value.replace(/[\u0000-\u001f\u200b-\u200d\ufeff]/g, '').trim();
+      if (value.length > 32) value = value.slice(0, 32);
+    }
+    setDashboardSetting(body.key, value);
+    insertAuditLog('main', '', 'dashboard_setting_change', `${body.key}=${value.slice(0, 80)}`, false);
+    return c.json({ ok: true, key: body.key, value });
+  });
+
+  app.post('/api/security/kill-switch', async (c) => {
+    const body = await c.req.json<{ key?: string; enabled?: boolean }>();
+    const key = body?.key;
+    const enabled = body?.enabled;
+    if (!key || typeof enabled !== 'boolean') {
+      return c.json({ error: 'key (string) and enabled (boolean) required' }, 400);
+    }
+    if (!ALLOWED_KILL_SWITCHES.has(key)) {
+      return c.json({ error: 'unknown kill switch: ' + key }, 400);
+    }
+    try {
+      const envPath = path.join(PROJECT_ROOT, '.env');
+      const { setEnvKey } = await import('./env-write.js');
+      setEnvKey(envPath, key, enabled ? 'true' : 'false');
+      logger.info({ key, enabled }, 'Kill switch toggled via dashboard');
+      return c.json({ ok: true, key, enabled });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return c.json({ error: 'Failed to write .env: ' + msg }, 500);
+    }
+  });
+
+  startChannelSweeper();
 
   let server: ReturnType<typeof serve>;
   try {

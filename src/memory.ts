@@ -38,11 +38,21 @@ export interface MemoryContextResult {
   surfacedMemorySummaries: Map<number, string>;
 }
 
+export interface BuildMemoryContextOpts {
+  includeConsolidations?: boolean;
+  includeTeamActivity?: boolean;
+  includeRecallHistory?: boolean;
+  strictAgentId?: string;
+  warRoomBridge?: unknown;
+}
+
 export async function buildMemoryContext(
   chatId: string,
   userMessage: string,
   agentId = 'main',
+  opts: BuildMemoryContextOpts = {},
 ): Promise<MemoryContextResult> {
+  void opts; // accepted for war-room call-site parity; honored fields TBD
   const seen = new Set<number>();
   const summaryMap = new Map<number, string>();
   const memLines: string[] = [];

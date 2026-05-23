@@ -2,6 +2,9 @@ import { generateContent, parseJsonResponse } from './gemini.js';
 import { cosineSimilarity, embedText } from './embeddings.js';
 import { getMemoriesWithEmbeddings, saveStructuredMemoryAtomic } from './db.js';
 import { logger } from './logger.js';
+import { query } from '@anthropic-ai/claude-agent-sdk';
+import { readEnvFile } from './env.js';
+import { getScrubbedSdkEnv } from './security.js';
 
 // Callback for notifying when a high-importance memory is created.
 // Set by bot.ts to send a Telegram notification.
@@ -152,4 +155,53 @@ export async function ingestConversationTurn(
     logger.error({ err }, 'Memory ingestion failed (Gemini)');
     return false;
   }
+}
+
+// ===== ported from osrepo/main: Claude-based extractor (used by suggestions + war room text) =====
+export async function extractViaClaude(prompt: string, timeoutMs = 15_000): Promise<string> {
+  const secrets = readEnvFile(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY']);
+  const env = getScrubbedSdkEnv(secrets);
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), timeoutMs);
+  let text = '';
+  try {
+    async function* turn(): AsyncGenerator<{
+      type: 'user';
+      message: { role: 'user'; content: string };
+      parent_tool_use_id: null;
+      session_id: string;
+    }> {
+      yield {
+        type: 'user',
+        message: { role: 'user', content: prompt },
+        parent_tool_use_id: null,
+        session_id: '',
+      };
+    }
+    for await (const ev of query({
+      prompt: turn(),
+      options: {
+        model: 'claude-haiku-4-5-20251001',
+        allowedTools: [],
+        disallowedTools: ['*'],
+        settingSources: [],
+        maxTurns: 1,
+        permissionMode: 'bypassPermissions',
+        allowDangerouslySkipPermissions: true,
+        env,
+        abortController: abort,
+      } as any,
+    })) {
+      const e = ev as Record<string, unknown>;
+      if (e.type === 'result' && typeof e.result === 'string') {
+        text = e.result;
+      }
+    }
+  } catch (err) {
+    logger.warn({ err: err instanceof Error ? err.message : err }, 'Memory extraction (Claude Haiku) failed');
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+  return text;
 }

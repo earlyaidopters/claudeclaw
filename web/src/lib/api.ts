@@ -1,23 +1,24 @@
 // Token + chatId come from the URL query string (set by the Telegram deep
-// link or by a saved bookmark). We persist both to sessionStorage on first
-// load so subsequent navigations keep working without rewriting the URL.
-// We never use localStorage: dashboardToken is sensitive, and storing it
-// across browser sessions would enlarge its blast radius.
+// link or by a saved bookmark). We persist both to localStorage on first
+// load so subsequent navigations, fresh tabs, and bare bookmarks keep
+// working without rewriting the URL. The dashboard is gated behind the
+// Cloudflare tunnel, so persisting the token across sessions is an
+// accepted convenience tradeoff for a single-operator deployment.
 
 const url = new URL(window.location.href);
 
 let cachedToken = url.searchParams.get('token') || '';
 if (cachedToken) {
-  try { sessionStorage.setItem('claudeclaw.token', cachedToken); } catch {}
+  try { localStorage.setItem('claudeclaw.token', cachedToken); } catch {}
 } else {
-  try { cachedToken = sessionStorage.getItem('claudeclaw.token') || ''; } catch {}
+  try { cachedToken = localStorage.getItem('claudeclaw.token') || ''; } catch {}
 }
 
 let cachedChatId = url.searchParams.get('chatId') || '';
 if (cachedChatId) {
-  try { sessionStorage.setItem('claudeclaw.chatId', cachedChatId); } catch {}
+  try { localStorage.setItem('claudeclaw.chatId', cachedChatId); } catch {}
 } else {
-  try { cachedChatId = sessionStorage.getItem('claudeclaw.chatId') || ''; } catch {}
+  try { cachedChatId = localStorage.getItem('claudeclaw.chatId') || ''; } catch {}
 }
 
 export const dashboardToken = cachedToken;
