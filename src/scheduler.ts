@@ -17,6 +17,7 @@ import { messageQueue } from './message-queue.js';
 import { runAgent } from './agent.js';
 import { formatForTelegram, splitMessage } from './bot.js';
 import { emitChatEvent } from './state.js';
+import { notifyMissionCompletion } from './mission-autopush.js';
 
 type Sender = (text: string) => Promise<void>;
 
@@ -159,11 +160,13 @@ async function runDueMissionTasks(): Promise<void> {
 
       if (result.aborted) {
         completeMissionTask(mission.id, null, 'failed', 'Timed out after 10 minutes');
+        notifyMissionCompletion(mission.id);
         logger.warn({ missionId: mission.id }, 'Mission task timed out');
         try { await sender('Mission task timed out: "' + mission.title + '"'); } catch {}
       } else {
         const text = result.text?.trim() || 'Task completed with no output.';
         completeMissionTask(mission.id, text, 'completed');
+        notifyMissionCompletion(mission.id);
         logger.info({ missionId: mission.id }, 'Mission task completed');
 
         // Send result to Telegram
@@ -192,6 +195,7 @@ async function runDueMissionTasks(): Promise<void> {
       clearTimeout(timeout);
       const errMsg = err instanceof Error ? err.message : String(err);
       completeMissionTask(mission.id, null, 'failed', errMsg.slice(0, 500));
+      notifyMissionCompletion(mission.id);
       logger.error({ err, missionId: mission.id }, 'Mission task failed');
     } finally {
       runningTaskIds.delete(missionKey);
