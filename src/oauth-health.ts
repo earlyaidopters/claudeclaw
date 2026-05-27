@@ -19,6 +19,14 @@ interface Credentials {
   };
 }
 
+function credentialsFileExists(): boolean {
+  try {
+    return fs.existsSync(CREDENTIALS_PATH);
+  } catch {
+    return false;
+  }
+}
+
 function readCredentials(): Credentials | null {
   try {
     const raw = fs.readFileSync(CREDENTIALS_PATH, 'utf-8');
@@ -45,6 +53,14 @@ async function checkOAuthHealth(sender: Sender): Promise<void> {
   const env = readEnvFile(['CLAUDE_CODE_OAUTH_TOKEN']);
   if (env.CLAUDE_CODE_OAUTH_TOKEN) {
     logger.debug('Using long-lived env token (CLAUDE_CODE_OAUTH_TOKEN), skipping credentials check');
+    lastAlertLevel = 'none';
+    return;
+  }
+
+  // If the credentials file doesn't exist, the token is stored elsewhere
+  // (e.g. Windows keychain). The claude CLI reads it fine — skip the check.
+  if (!credentialsFileExists()) {
+    logger.debug('No .credentials.json found — OAuth stored in keychain, skipping file-based check');
     lastAlertLevel = 'none';
     return;
   }

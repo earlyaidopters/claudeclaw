@@ -1,4 +1,5 @@
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
@@ -6,6 +7,14 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { AGENT_MAX_TURNS, PROJECT_ROOT, agentCwd } from './config.js';
 import { readEnvFile } from './env.js';
 import { logger } from './logger.js';
+
+/**
+ * Stable absolute path to the open-source launcher used by this bot.
+ *
+ * We intentionally use only `fcc-claude.exe` (free-claude-code wrapper)
+ * so requests route through the local open-source proxy stack.
+ */
+const CLAUDE_EXE = path.join(os.homedir(), '.local', 'bin', 'fcc-claude.exe');
 
 // ── MCP server loading ──────────────────────────────────────────────
 // The Agent SDK's settingSources loads CLAUDE.md and permissions from
@@ -169,12 +178,28 @@ export async function runAgent(
   onStreamText?: (accumulatedText: string) => void,
   mcpAllowlist?: string[],
 ): Promise<AgentResult> {
+  // Verify the open-source launcher exists before handing it to the SDK.
+  if (!fs.existsSync(CLAUDE_EXE)) {
+    throw new Error(
+      `Open-source launcher not found at ${CLAUDE_EXE}. ` +
+      `Install free-claude-code and ensure fcc-claude is available.`,
+    );
+  }
+
   // Read secrets from .env without polluting process.env.
   // CLAUDE_CODE_OAUTH_TOKEN is optional — the subprocess finds auth via ~/.claude/
   // automatically. Only needed if you want to override which account is used.
   const secrets = readEnvFile(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY']);
 
   const sdkEnv: Record<string, string | undefined> = { ...process.env };
+  // On Windows, HOME is not set — claude CLI needs it to find ~/.claude/ OAuth credentials
+  if (!sdkEnv.HOME && process.env.USERPROFILE) {
+    sdkEnv.HOME = process.env.USERPROFILE;
+  }
+  // Unset CLAUDECODE to allow nested claude sessions. When running inside a
+  // Claude Code session (e.g. developing the bot), the child claude process
+  // refuses to start if this var is present.
+  delete sdkEnv.CLAUDECODE;
   if (secrets.CLAUDE_CODE_OAUTH_TOKEN) {
     sdkEnv.CLAUDE_CODE_OAUTH_TOKEN = secrets.CLAUDE_CODE_OAUTH_TOKEN;
   }
@@ -228,6 +253,10 @@ export async function runAgent(
         // stale cookies 40+ times). Configurable via AGENT_MAX_TURNS in .env.
         ...(AGENT_MAX_TURNS > 0 ? { maxTurns: AGENT_MAX_TURNS } : {}),
 
+        // Explicit path to the Claude Code CLI binary (avoids PATH/PATHEXT
+        // resolution issues on Windows with .ps1 wrappers).
+        pathToClaudeCodeExecutable: CLAUDE_EXE,
+
         // Pass secrets to the subprocess without polluting our own process.env
         env: sdkEnv,
 
@@ -242,6 +271,12 @@ export async function runAgent(
 
         // Abort support — signals the SDK to kill the subprocess
         ...(abortController ? { abortController } : {}),
+
+        // Log stderr from the Claude Code child process for debugging spawn
+        // failures (OAuth errors, version mismatches, native-module crashes).
+        stderr: (data: string) => {
+          if (data.trim()) logger.warn({ claudeStderr: data.trim() }, 'Claude Code stderr');
+        },
       },
     })) {
       const ev = event as Record<string, unknown>;

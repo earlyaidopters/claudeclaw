@@ -113,11 +113,9 @@ export const TYPING_REFRESH_MS = 4000;
 
 // Maximum time (ms) an agent query can run before being auto-aborted.
 // Safety net for truly stuck commands (e.g. recursive `find /`).
-// Default: 15 minutes. Use /stop in Telegram to manually kill a running query.
-// Previously 5 min, which caused mid-execution timeouts on bulk API work
-// (posting YouTube comments, sending multiple messages) leading to duplicate posts.
+// 0 = unlimited. Use /stop in Telegram to manually kill a running query.
 export const AGENT_TIMEOUT_MS = parseInt(
-  process.env.AGENT_TIMEOUT_MS || envConfig.AGENT_TIMEOUT_MS || '900000',
+  process.env.AGENT_TIMEOUT_MS || envConfig.AGENT_TIMEOUT_MS || '0',
   10,
 );
 

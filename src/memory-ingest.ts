@@ -152,8 +152,14 @@ export async function ingestConversationTurn(
     );
     return true;
   } catch (err) {
-    // Gemini failure should never block the bot
-    logger.error({ err }, 'Memory ingestion failed (Gemini)');
+    // Gemini failure should never block the bot.
+    // Downgrade to warn: missing API key is a config issue, not a system error.
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes('GOOGLE_API_KEY is not set')) {
+      logger.debug('Memory ingestion skipped (GOOGLE_API_KEY not configured)');
+    } else {
+      logger.warn({ err }, 'Memory ingestion failed (Gemini)');
+    }
     return false;
   }
 }
