@@ -26,24 +26,53 @@ export function WorkspaceSwitcher() {
   }, [open]);
 
   const current = themeMeta[theme.value];
-  const name = workspaceName.value;
+  const rawName = workspaceName.value;
+  // Treat the default "ClaudeClaw" workspace as ImpactWorks OS.
+  const isDefault = !rawName || rawName === 'ClaudeClaw';
+  const name = isDefault ? 'ImpactWorks OS' : rawName;
+  const tagline = isDefault ? 'Gearbox' : null;
 
   return (
     <div ref={ref} class="relative px-3 pt-3 pb-1">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        class="w-full flex items-center gap-2 px-2 py-2 rounded-md hover:bg-[var(--color-elevated)] transition-colors"
+        class="w-full px-2 py-2 rounded-md hover:bg-[var(--color-elevated)] transition-colors text-left"
       >
-        <div
-          class="w-6 h-6 rounded shrink-0"
-          style={{
-            background: `linear-gradient(135deg, ${current.swatch} 0%, var(--color-elevated) 100%)`,
-            border: '1px solid var(--color-border)',
-          }}
-        />
-        <span class="text-[14px] font-semibold text-[var(--color-text)] truncate">{name}</span>
-        <ChevronDown size={15} class="ml-auto text-[var(--color-text-faint)]" />
+        <div class="flex items-center gap-2">
+          {isDefault ? (
+            <img
+              src="/impactworks-logo.png"
+              alt="ImpactWorks"
+              class="w-11 h-11 rounded-full shrink-0 object-cover"
+              style={{ border: '1px solid var(--color-border)' }}
+              onError={(e) => {
+                // Hide the broken-image icon and fall back to the theme swatch.
+                (e.currentTarget as HTMLImageElement).style.display = 'none';
+                const fallback = (e.currentTarget as HTMLImageElement).nextElementSibling as HTMLElement | null;
+                if (fallback) fallback.style.display = 'block';
+              }}
+            />
+          ) : null}
+          <div
+            class="w-11 h-11 rounded-full shrink-0"
+            style={{
+              display: isDefault ? 'none' : 'block',
+              background: `linear-gradient(135deg, ${current.swatch} 0%, var(--color-elevated) 100%)`,
+              border: '1px solid var(--color-border)',
+            }}
+          />
+          <span class="flex-1 min-w-0 text-[14px] font-semibold text-[var(--color-text)] truncate">{name}</span>
+          <ChevronDown size={15} class="text-[var(--color-text-faint)] shrink-0" />
+        </div>
+        {tagline && (
+          <div
+            class="text-[10px] text-[var(--color-text-faint)] truncate"
+            style={{ paddingLeft: 'calc(2.75rem + 0.5rem)', marginTop: "-10px" }}
+          >
+            {tagline}
+          </div>
+        )}
       </button>
 
       {open && (

@@ -119,16 +119,33 @@ function SidebarFooter() {
   const switches = data?.killSwitches || {};
   const off = Object.entries(switches).filter(([, on]) => !on);
   const anyOff = off.length > 0;
-  const name = workspaceName.value;
+  const rawName = workspaceName.value;
+  const isDefault = !rawName || rawName === 'ClaudeClaw';
+  const name = isDefault ? 'ImpactWorks OS' : rawName;
+  const tagline = isDefault ? 'Gearbox' : null;
   return (
     <Link
       href="/settings"
       class="px-3 py-3 border-t border-[var(--color-border)] text-[12px] text-[var(--color-text-faint)] hover:bg-[var(--color-elevated)] transition-colors"
     >
       <div class="flex items-center gap-2.5">
+        {isDefault ? (
+          <img
+            src="/impactworks-logo.png"
+            alt="ImpactWorks"
+            class="w-11 h-11 rounded-full shrink-0 object-cover"
+            style={{ border: '1px solid var(--color-border)' }}
+            onError={(e) => {
+              (e.currentTarget as HTMLImageElement).style.display = 'none';
+              const fallback = (e.currentTarget as HTMLImageElement).nextElementSibling as HTMLElement | null;
+              if (fallback) fallback.style.display = 'flex';
+            }}
+          />
+        ) : null}
         <div
-          class="w-7 h-7 rounded-full flex items-center justify-center text-[var(--color-text-muted)]"
+          class="w-11 h-11 rounded-full items-center justify-center text-[var(--color-text-muted)]"
           style={{
+            display: isDefault ? 'none' : 'flex',
             backgroundColor: anyOff
               ? 'color-mix(in srgb, var(--color-status-failed) 18%, transparent)'
               : 'var(--color-elevated)',
@@ -137,15 +154,20 @@ function SidebarFooter() {
         >
           ●
         </div>
-        <div class="flex-1 min-w-0">
-          <div class="text-[var(--color-text)] text-[12.5px] font-medium truncate">{name}</div>
+        <div class="flex-1 min-w-0 text-[var(--color-text)] text-[12.5px] font-medium truncate">{name}</div>
+      </div>
+      {(tagline || anyOff || !anyOff) && (
+        <div
+          style={{ paddingLeft: 'calc(2.75rem + 0.625rem)', marginTop: "-10px" }}
+        >
+          {tagline && <div class="text-[10px] text-[var(--color-text-faint)] truncate">{tagline}</div>}
           <div class="truncate text-[11px]">
             {anyOff
               ? off.length + ' kill switch' + (off.length === 1 ? '' : 'es') + ' off'
               : 'All systems normal'}
           </div>
         </div>
-      </div>
+      )}
     </Link>
   );
 }

@@ -14,11 +14,14 @@ export default defineConfig({
     outDir: '../dist/web',
     emptyOutDir: true,
     sourcemap: true,
+    chunkSizeWarningLimit: 600,
     rollupOptions: {
       output: {
         // Single-page app: keep entry chunk tight, code-split routes lazily.
         manualChunks: {
           vendor: ['preact', '@preact/signals', 'wouter-preact', 'lucide-preact'],
+          three: ['three'],
+          markdown: ['marked', 'dompurify'],
         },
       },
     },

@@ -97,6 +97,13 @@ import {
 } from './agent-create.js';
 import { dispatchDashboardChatToAgent, processMessageFromDashboard } from './bot.js';
 import { getDashboardHtml } from './dashboard-html.js';
+import { getPipelineData, updateCard } from './pipeline-data.js';
+import { getOutreachData, setOutreachStatus } from './outreach-data.js';
+import { getWebinarsData, setWebinarDisposition } from './webinars-data.js';
+import { getMembersData, addMember, updateMember } from './members-data.js';
+import { getCashData, createLinkToken, exchangePublicToken } from './cash-data.js';
+import { importCsv, deleteManualAccount, loadManualAccounts } from './manual-cash-data.js';
+import { getFounderDashboard } from './founder-data.js';
 import { getWarRoomHtml } from './warroom-html.js';
 import { WARROOM_ENABLED, WARROOM_PORT } from './config.js';
 import { logger } from './logger.js';
@@ -132,6 +139,138 @@ Reply with JSON: {"agent": "agent_id"}`;
     logger.error({ err }, 'Auto-assign classification failed');
     return null;
   }
+}
+
+// Plaid Link bootstrap HTML. Loads Plaid's official Link JS, generates a
+// link_token via /api/cash/link-token, opens the Link modal, and on success
+// posts the public_token to /api/cash/exchange for permanent storage.
+function plaidConnectHtml(): string {
+  // Build identifier — bump when this function changes so we can confirm
+  // the running process picked up the latest source. Visible in HTML source
+  // and as <meta name="build"> for quick diagnostic checks.
+  const BUILD_ID = 'plaidConnect-v3-oauth-2026-05-26';
+  return `<!doctype html>
+<html><head><meta charset="utf-8"><title>Connect a Bank</title>
+<meta name="build" content="${BUILD_ID}">
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; background: #0f1115; color: #e5e7eb; margin: 0; padding: 0; }
+  .wrap { max-width: 520px; margin: 80px auto; padding: 24px; background: #151821; border: 1px solid #232838; border-radius: 12px; }
+  h1 { font-size: 20px; margin: 0 0 8px 0; }
+  p { color: #9ca3af; line-height: 1.5; }
+  button { background: #2563eb; color: white; border: 0; padding: 12px 20px; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .status { margin-top: 16px; font-size: 13px; color: #9ca3af; min-height: 20px; }
+  .ok { color: #16a34a; }
+  .err { color: #dc2626; }
+  code { background: #232838; padding: 2px 6px; border-radius: 4px; font-size: 12px; }
+</style>
+</head><body>
+<div class="wrap">
+  <h1>Connect a Bank</h1>
+  <p>This opens Plaid Link in a modal. Search for <strong>Novo</strong> (or any institution), sign in, and authorize the read-only connection. Your credentials go directly to Plaid — never to this server.</p>
+  <button id="connect" disabled>Initializing…</button>
+  <div class="status" id="status"></div>
+</div>
+<script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
+<script>
+(async () => {
+  const status = document.getElementById('status');
+  const btn = document.getElementById('connect');
+  function setStatus(msg, cls) { status.textContent = msg; status.className = 'status ' + (cls || ''); }
+
+  // The Mission Control API gates every /api/* route behind ?token=. We
+  // accept the token from (1) the URL query string, then (2) localStorage
+  // (where the SPA caches it on first load), and (3) fall through with
+  // an empty string — the API will then 401 with a clear message.
+  function resolveToken() {
+    try {
+      const url = new URL(window.location.href);
+      const t = url.searchParams.get('token');
+      if (t) { try { localStorage.setItem('claudeclaw.token', t); } catch {} return t; }
+    } catch {}
+    try { return localStorage.getItem('claudeclaw.token') || ''; } catch { return ''; }
+  }
+  function withTok(path) {
+    const tok = resolveToken();
+    if (!tok) return path;
+    return path + (path.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(tok);
+  }
+
+  // OAuth round-trip support. When Plaid Link redirects the user to Novo
+  // (or any OAuth bank), Novo returns the user to this page with an
+  // oauth_state_id in the URL. We must then re-initialize Plaid Link with
+  // the same link_token and received_redirect_uri to complete the flow.
+  // We stash link_token in sessionStorage so it survives the redirect.
+  const url = new URL(window.location.href);
+  const oauthStateId = url.searchParams.get('oauth_state_id');
+  const isReturningFromOauth = !!oauthStateId;
+  // Plaid requires the redirect_uri sent in /link/token/create to match an
+  // entry in the dashboard's "Allowed redirect URIs" EXACTLY (including
+  // query string). We register and send the clean URL with no query string.
+  // The dashboard token persists via localStorage (set by the SPA on first
+  // visit) and the Mission Control session, so we don't need to thread it
+  // through the OAuth redirect.
+  const redirectUri = window.location.origin + window.location.pathname;
+
+  function buildHandler(linkToken, opts) {
+    return Plaid.create({
+      token: linkToken,
+      receivedRedirectUri: opts && opts.receivedRedirectUri || undefined,
+      onSuccess: async (public_token, metadata) => {
+        setStatus('Authorizing…');
+        try {
+          const er = await fetch(withTok('/api/cash/exchange'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ public_token, institution_name: metadata.institution?.name || 'Bank' }),
+          });
+          const ej = await er.json();
+          if (!er.ok) throw new Error(ej.error || 'exchange failed');
+          try { sessionStorage.removeItem('claudeclaw.plaid.linkToken'); } catch {}
+          setStatus('Connected: ' + (metadata.institution?.name || 'Bank') + ' — close this window and refresh the Cash page.', 'ok');
+        } catch (e) { setStatus('Error: ' + e.message, 'err'); }
+      },
+      onExit: (err) => {
+        if (err) setStatus('Closed: ' + (err.error_message || err.error_code), 'err');
+      },
+    });
+  }
+
+  try {
+    let handler;
+    if (isReturningFromOauth) {
+      // We came back from Novo/etc. Pull the saved link_token and resume.
+      let saved = '';
+      try { saved = sessionStorage.getItem('claudeclaw.plaid.linkToken') || ''; } catch {}
+      if (!saved) throw new Error('OAuth return but no saved link_token (sessionStorage cleared?)');
+      setStatus('Completing OAuth handoff…');
+      handler = buildHandler(saved, { receivedRedirectUri: window.location.href });
+      // Auto-open so the user doesn't have to click again after the redirect.
+      handler.open();
+      btn.disabled = false;
+      btn.textContent = 'Resume Plaid Link';
+      btn.onclick = () => { setStatus(''); handler.open(); };
+    } else {
+      const r = await fetch(withTok('/api/cash/link-token'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ redirect_uri: redirectUri }),
+      });
+      if (!r.ok) throw new Error('link-token: ' + r.status + (r.status === 401 ? ' (missing ?token= in URL — open this page via the Cash tab\\'s Connect button)' : ''));
+      const { link_token, error } = await r.json();
+      if (error) throw new Error(error);
+      try { sessionStorage.setItem('claudeclaw.plaid.linkToken', link_token); } catch {}
+      handler = buildHandler(link_token);
+      btn.disabled = false;
+      btn.textContent = 'Open Plaid Link';
+      btn.onclick = () => { setStatus(''); handler.open(); };
+    }
+  } catch (e) {
+    setStatus('Init failed: ' + e.message, 'err');
+  }
+})();
+</script>
+</body></html>`;
 }
 
 // Constant-time token comparison (audit fix A4E-1, ported from osrepo PR #51).
@@ -791,6 +930,195 @@ export function startDashboard(botApi?: Api<RawApi>): void {
       });
     } catch (err) {
       return c.json({ ok: false, error: String(err) }, 500);
+    }
+  });
+
+  // Sales pipeline + accounts (CRM view) — live from Vendasta + ClickUp.
+  app.get('/api/pipeline', async (c) => {
+    try {
+      const data = await getPipelineData(c.req.query('refresh') === '1');
+      return c.json(data);
+    } catch (e) {
+      logger.error({ err: String((e as Error)?.message || e) }, 'pipeline endpoint failed');
+      return c.json({ error: String((e as Error)?.message || e) }, 500);
+    }
+  });
+
+  // Edit a pipeline card (stage -> Vendasta, contact -> Vendasta, outreach status + notes -> local).
+  app.post('/api/pipeline/card', async (c) => {
+    try {
+      const body = await c.req.json();
+      const res = await updateCard(body);
+      return c.json(res);
+    } catch (e) {
+      logger.error({ err: String((e as Error)?.message || e) }, 'pipeline card update failed');
+      return c.json({ error: String((e as Error)?.message || e) }, 500);
+    }
+  });
+
+  // Outreach tracker (BID Traffic Partnership + future campaigns).
+  app.get('/api/outreach', (c) => {
+    try { return c.json(getOutreachData()); }
+    catch (e) {
+      logger.error({ err: String((e as Error)?.message || e) }, 'outreach endpoint failed');
+      return c.json({ error: String((e as Error)?.message || e) }, 500);
+    }
+  });
+  app.post('/api/outreach/status', async (c) => {
+    try {
+      const { email, status } = await c.req.json();
+      if (!email || typeof email !== 'string') return c.json({ error: 'email required' }, 400);
+      setOutreachStatus(email, String(status || ''));
+      return c.json({ ok: true });
+    } catch (e) {
+      logger.error({ err: String((e as Error)?.message || e) }, 'outreach status update failed');
+      return c.json({ error: String((e as Error)?.message || e) }, 500);
+    }
+  });
+
+  // Webinars (BID Discovery Webinar pipeline).
+  app.get('/api/webinars', async (c) => {
+    try { return c.json(await getWebinarsData()); }
+    catch (e) {
+      logger.error({ err: String((e as Error)?.message || e) }, 'webinars endpoint failed');
+      return c.json({ error: String((e as Error)?.message || e) }, 500);
+    }
+  });
+  app.post('/api/webinars/disposition', async (c) => {
+    try {
+      const { eventId, email, disposition } = await c.req.json();
+      setWebinarDisposition({ eventId, email, disposition });
+      return c.json({ ok: true });
+    } catch (e) {
+      return c.json({ error: String((e as Error)?.message || e) }, 500);
+    }
+  });
+
+  // Member sub-pipeline (Tier 2 revenue layer).
+  app.get('/api/members', (c) => {
+    try { return c.json(getMembersData()); }
+    catch (e) {
+      logger.error({ err: String((e as Error)?.message || e) }, 'members endpoint failed');
+      return c.json({ error: String((e as Error)?.message || e) }, 500);
+    }
+  });
+  app.post('/api/members', async (c) => {
+    try {
+      const body = await c.req.json();
+      if (!body.bidEmail || !body.businessName) return c.json({ error: 'bidEmail and businessName required' }, 400);
+      const m = addMember(body);
+      return c.json({ ok: true, member: m });
+    } catch (e) {
+      return c.json({ error: String((e as Error)?.message || e) }, 500);
+    }
+  });
+  app.post('/api/members/:id', async (c) => {
+    try {
+      const id = c.req.param('id');
+      const updates = await c.req.json();
+      const m = updateMember(id, updates);
+      if (!m) return c.json({ error: 'not found' }, 404);
+      return c.json({ ok: true, member: m });
+    } catch (e) {
+      return c.json({ error: String((e as Error)?.message || e) }, 500);
+    }
+  });
+
+  // Cash / banking (Plaid).
+  app.get('/api/cash', async (c) => {
+    try {
+      const force = c.req.query('force') === '1';
+      const data = await getCashData(force);
+      return c.json(data);
+    } catch (e) {
+      logger.error({ err: String((e as Error)?.message || e) }, 'cash endpoint failed');
+      return c.json({ error: String((e as Error)?.message || e) }, 500);
+    }
+  });
+  app.post('/api/cash/link-token', async (c) => {
+    try {
+      // Accept redirect_uri in the JSON body so the connect page can pass
+      // its own URL through. Required by OAuth institutions (Novo, Chase).
+      let redirectUri: string | undefined;
+      try { const body = await c.req.json(); redirectUri = body?.redirect_uri; } catch { /* no body */ }
+      const r = await createLinkToken('ClaudeClaw Mission Control', redirectUri);
+      return c.json(r);
+    } catch (e) {
+      return c.json({ error: String((e as Error)?.message || e) }, 500);
+    }
+  });
+  app.post('/api/cash/exchange', async (c) => {
+    try {
+      const body = await c.req.json();
+      if (!body.public_token) return c.json({ error: 'public_token required' }, 400);
+      const r = await exchangePublicToken(body.public_token, body.institution_name || 'Bank');
+      return c.json({ ok: true, ...r });
+    } catch (e) {
+      return c.json({ error: String((e as Error)?.message || e) }, 500);
+    }
+  });
+
+  // CSV statement import — Apple Card and any other institution Plaid
+  // can't reach. Accepts JSON with base64-encoded CSV text or raw csv_text.
+  app.post('/api/cash/import-csv', async (c) => {
+    try {
+      const body = await c.req.json();
+      if (!body.csv_text || typeof body.csv_text !== 'string') {
+        return c.json({ error: 'csv_text required (string contents of the CSV file)' }, 400);
+      }
+      if (!body.institution_name || !body.account_name || !body.mask) {
+        return c.json({ error: 'institution_name, account_name, and mask are required' }, 400);
+      }
+      const result = importCsv({
+        institution_name: String(body.institution_name),
+        account_name: String(body.account_name),
+        mask: String(body.mask),
+        account_type: body.account_type,
+        account_subtype: body.account_subtype,
+        statement_balance: body.statement_balance,
+        available_credit: body.available_credit,
+        csv_text: body.csv_text,
+        billing_period_start: body.billing_period_start,
+        billing_period_end: body.billing_period_end,
+      });
+      // Invalidate the cash cache so the next /api/cash sees the new data.
+      try { fs.unlinkSync(path.join(PROJECT_ROOT, 'store', 'cash-cache.json')); } catch { /* ignore */ }
+      return c.json({ ok: true, ...result });
+    } catch (e) {
+      logger.error({ err: String((e as Error)?.message || e) }, 'csv import failed');
+      return c.json({ error: String((e as Error)?.message || e) }, 500);
+    }
+  });
+
+  // List manual accounts (so the UI can render them in the disconnect picker).
+  app.get('/api/cash/manual-accounts', (c) => {
+    try { return c.json({ accounts: loadManualAccounts() }); }
+    catch (e) { return c.json({ error: String((e as Error)?.message || e) }, 500); }
+  });
+
+  // Remove a manual account + all its transactions (e.g. user uploaded the
+  // wrong file). Required: account_id.
+  app.post('/api/cash/manual-accounts/:id/delete', (c) => {
+    try {
+      deleteManualAccount(c.req.param('id'));
+      try { fs.unlinkSync(path.join(PROJECT_ROOT, 'store', 'cash-cache.json')); } catch { /* ignore */ }
+      return c.json({ ok: true });
+    } catch (e) { return c.json({ error: String((e as Error)?.message || e) }, 500); }
+  });
+
+  // Plaid Link bootstrap page — opens the official Plaid Link iframe so the
+  // user can connect Novo (or any institution). Returns the public_token to
+  // /api/cash/exchange for permanent access_token storage.
+  app.get('/cash/connect', (c) => {
+    return c.html(plaidConnectHtml());
+  });
+
+  // Founder Dashboard — single read that fans out to all four data layers.
+  app.get('/api/founder', async (c) => {
+    try { return c.json(await getFounderDashboard()); }
+    catch (e) {
+      logger.error({ err: String((e as Error)?.message || e) }, 'founder dashboard endpoint failed');
+      return c.json({ error: String((e as Error)?.message || e) }, 500);
     }
   });
 

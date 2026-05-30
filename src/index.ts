@@ -224,6 +224,32 @@ async function main(): Promise<void> {
   if (AGENT_ID === 'main') {
     startDashboard(bot?.api);
 
+    // Memory-driven daily brief: fires at 7am local time. Uses recent
+    // high-importance memories + consolidations + outreach + cash to compose
+    // a short Telegram digest of what needs attention today.
+    if (ALLOWED_CHAT_ID && GOOGLE_API_KEY && bot?.api) {
+      const botApi = bot.api;
+      const { runDailyBrief, msUntilNext7am } = await import('./daily-brief.js');
+      const ms = msUntilNext7am();
+      setTimeout(() => {
+        void runDailyBrief(botApi, ALLOWED_CHAT_ID);
+        setInterval(() => { void runDailyBrief(botApi, ALLOWED_CHAT_ID); }, 24 * 60 * 60 * 1000);
+      }, ms);
+      const hours = (ms / (60 * 60 * 1000)).toFixed(1);
+      logger.info({ hoursUntilFirstBrief: hours }, 'Daily brief scheduled (7am local)');
+    }
+
+    // Gmail watcher: polls every 5 min, auto-promotes outreach statuses for
+    // any BID contact based on send/reply activity. No-ops if the roster
+    // file is missing.
+    try {
+      const { startGmailWatcher } = await import('./gmail-watcher.js');
+      startGmailWatcher();
+    } catch (e) {
+      // Non-fatal: Gmail OAuth may not be configured yet.
+      console.warn('gmail-watcher startup skipped:', (e as Error)?.message || e);
+    }
+
     // War Room voice server (auto-start if enabled, with auto-respawn)
     if (WARROOM_ENABLED) {
       const { spawn } = await import('child_process');

@@ -89,7 +89,23 @@ export function warRoomToolPolicy(
 ): WarRoomToolPolicy {
   const overrides = agentTools && agentTools.length > 0 ? agentTools : null;
   const extra = overrides ?? DEFAULT_AGENT_ALLOWLISTS[agentId] ?? [];
-  const allowed = Array.from(new Set([...SAFE_READONLY_TOOLS, ...extra]));
+
+  // Split MCP opt-ins (`mcp:<server>`) from built-in tool names.
+  const mcpServerNames = extra
+    .filter((t) => t.startsWith('mcp:'))
+    .map((t) => t.slice('mcp:'.length));
+  const builtinExtra = extra.filter((t) => !t.startsWith('mcp:'));
+
+  // Built-in allow set = always-safe read-only tools + opted-in built-ins.
+  // For each opted-in MCP server, also add the SDK's server-wide allow rule
+  // (`mcp__<server>`) so its tools are actually permitted under
+  // permissionMode 'default'. The bare `mcp:<server>` token is config-only
+  // and is NOT a valid SDK tool name, so listing it alone would expose the
+  // server but leave every tool denied.
+  const mcpAllowRules = mcpServerNames.map((s) => `mcp__${s}`);
+  const allowed = Array.from(
+    new Set([...SAFE_READONLY_TOOLS, ...builtinExtra, ...mcpAllowRules]),
+  );
 
   // Disallow EVERY side-effect tool the agent didn't explicitly opt into.
   // This is defense in depth: if `allowedTools` is non-empty, the SDK
@@ -98,11 +114,9 @@ export function warRoomToolPolicy(
   // floor.
   const disallowed = SIDE_EFFECT_TOOLS.filter((t) => !allowed.includes(t));
 
-  // MCP servers default to none. An operator can opt agents in via
-  // `tools_allowlist` entries that begin with `mcp:` (e.g. `mcp:gmail`).
-  const allowedMcpServers = (overrides ?? [])
-    .filter((t) => t.startsWith('mcp:'))
-    .map((t) => t.slice('mcp:'.length));
+  // MCP servers default to none. An agent opts in via `warroom_tools`
+  // entries that begin with `mcp:` (e.g. `mcp:vendasta-crm`).
+  const allowedMcpServers = mcpServerNames;
 
   return {
     allowedTools: allowed,

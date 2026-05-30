@@ -115,6 +115,11 @@ export function loadAgentConfig(agentId: string): AgentConfig {
     ? (rawSkills as unknown[]).filter((s): s is string => typeof s === 'string').map((s) => s.toLowerCase())
     : undefined;
 
+  const rawWarroom = raw['warroom_tools'];
+  const warroomTools = Array.isArray(rawWarroom)
+    ? (rawWarroom as unknown[]).filter((s): s is string => typeof s === 'string')
+    : undefined;
+
   return {
     name,
     description,
@@ -126,6 +131,7 @@ export function loadAgentConfig(agentId: string): AgentConfig {
     meetVoiceId,
     meetBotName,
     skillsAllowlist,
+    warroomTools,
   };
 }
 

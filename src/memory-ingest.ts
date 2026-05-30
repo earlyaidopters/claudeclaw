@@ -7,10 +7,12 @@ import { readEnvFile } from './env.js';
 import { getScrubbedSdkEnv } from './security.js';
 
 // Callback for notifying when a high-importance memory is created.
-// Set by bot.ts to send a Telegram notification.
-let onHighImportanceMemory: ((memoryId: number, summary: string, importance: number) => void) | null = null;
+// Set by bot.ts to send a Telegram notification AND dispatch the memory to
+// ClickUp if it looks like an action item. raw_text is included so the
+// action-item detector can read the full content, not just the summary.
+let onHighImportanceMemory: ((memoryId: number, summary: string, importance: number, rawText: string) => void) | null = null;
 
-export function setHighImportanceCallback(cb: (memoryId: number, summary: string, importance: number) => void): void {
+export function setHighImportanceCallback(cb: (memoryId: number, summary: string, importance: number, rawText: string) => void): void {
   onHighImportanceMemory = cb;
 }
 
@@ -21,9 +23,25 @@ interface ExtractionResult {
   importance: number;
 }
 
+// Business / ops domains where the extraction bar is LOWER. Dante is running
+// ImpactWorks + Rocket Local; nearly any decision, milestone, customer
+// interaction, or pricing/financial detail in these areas is worth keeping.
+// The default HIGH bar still applies to casual chat and one-off tasks.
+const PRIORITY_DOMAINS = [
+  'ZAGG', 'Ralph', 'Caparotti', 'Phone Repair', 'franchise', 'RCP',
+  'BID', 'Charlotte Center City', 'Downtown Raleigh', 'Downtown Greensboro', 'Business Improvement District',
+  'Vendasta', 'Rocket Local', 'rocketlocal', 'Mission Control', 'ImpactWorks', 'Gearbox',
+  'Novo', 'Plaid', 'Capital One', 'US Bank', 'Credit One', 'Apple Card',
+  'MRR', 'ARR', 'churn', 'COGS', 'margin', 'runway', 'pricing',
+  'Discovery Webinar', 'endorsement',
+  'Nikki', 'Reesource', 'Sharee', 'Wallace', 'NEATCap', 'TeleComp', 'Dundas Matheson',
+];
+
 const EXTRACTION_PROMPT = `You are a memory extraction agent. Given a conversation exchange between a user and their AI assistant, decide if it contains information worth remembering LONG-TERM (weeks/months from now).
 
-The bar is HIGH. Most exchanges should be skipped. Only extract if a future conversation would go noticeably worse without this memory.
+The bar is HIGH by default. Most exchanges should be skipped. Only extract if a future conversation would go noticeably worse without this memory.
+
+EXCEPTION — PRIORITY DOMAINS: when the exchange involves any of the user's active business contexts (${PRIORITY_DOMAINS.join(', ')}), the bar is LOWER. In these domains, extract any concrete decision, milestone, customer interaction, pricing/financial detail, deadline, follow-up commitment, named relationship, or pipeline-state change. Err on the side of saving — these small business facts compound over time.
 
 SKIP (return {"skip": true}) if:
 - The message is just an acknowledgment (ok, yes, no, got it, thanks, send it, do it)
@@ -142,7 +160,7 @@ export async function ingestConversationTurn(
 
     // Notify on high-importance memories so the user can pin them
     if (importance >= 0.8 && onHighImportanceMemory) {
-      try { onHighImportanceMemory(memoryId, result.summary, importance); } catch { /* non-fatal */ }
+      try { onHighImportanceMemory(memoryId, result.summary, importance, userMessage); } catch { /* non-fatal */ }
     }
 
     logger.info(

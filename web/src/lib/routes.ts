@@ -3,6 +3,12 @@ import {
   Brain, Network, Activity, ShieldCheck,
   Swords,
   Settings,
+  TrendingUp,
+  Send,
+  Presentation,
+  Store,
+  Wallet,
+  Crown,
 } from 'lucide-preact';
 import type { ComponentChildren } from 'preact';
 
@@ -20,9 +26,15 @@ export interface RouteDef {
 // Voices used to be a top-level item; it now lives under War Room as the
 // "Voice config" sub-tab and is reachable via /warroom?mode=voices.
 export const ROUTES: RouteDef[] = [
+  { path: '/founder',    label: 'Founder Dashboard',section: 'workspace',   icon: Crown,         shortcut: 'g f' },
   { path: '/mission',    label: 'Mission Control', section: 'workspace',    icon: LayoutGrid,    shortcut: 'g m' },
   { path: '/scheduled',  label: 'Scheduled',       section: 'workspace',    icon: ListTodo,      shortcut: 'g s' },
   { path: '/agents',     label: 'Agents',          section: 'workspace',    icon: Users,         shortcut: 'g a' },
+  { path: '/pipeline',   label: 'Sales Pipeline',  section: 'workspace',    icon: TrendingUp,    shortcut: 'g p' },
+  { path: '/outreach',   label: 'Outreach Tracker',section: 'workspace',    icon: Send,          shortcut: 'g o' },
+  { path: '/webinars',   label: 'Webinars',        section: 'workspace',    icon: Presentation,  shortcut: 'g b' },
+  { path: '/members',    label: 'BID Members',     section: 'workspace',    icon: Store,         shortcut: 'g n' },
+  { path: '/cash',       label: 'Cash',            section: 'workspace',    icon: Wallet,        shortcut: 'g $' },
   { path: '/chat',       label: 'Chat',            section: 'workspace',    icon: MessageSquare, shortcut: 'g c' },
 
   { path: '/memories',   label: 'Memories',        section: 'intelligence', icon: Brain,         shortcut: 'g e' },
@@ -42,7 +54,7 @@ export const SECTION_LABEL: Record<RouteSection, string> = {
   configure:    'Configure',
 };
 
-export const DEFAULT_ROUTE = '/mission';
+export const DEFAULT_ROUTE = '/founder';
 
 // Lightly typed children helper for placeholder pages.
 export type PageProps = { children?: ComponentChildren };

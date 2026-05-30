@@ -851,11 +851,23 @@ export function createBot(): Bot {
   });
 
   // Register callback for high-importance memory notifications.
-  // When a memory with importance >= 0.8 is created, notify via Telegram
-  // so the user can /pin it if it should be permanent.
+  // When a memory with importance >= 0.8 is created we (a) notify via
+  // Telegram so the user can /pin it if it should be permanent, and (b)
+  // ask the memory-to-tasks dispatcher whether this looks like a concrete
+  // commitment (e.g. "follow up with Ralph by Friday") — if so, the
+  // dispatcher creates a ClickUp task and the Telegram notification gets
+  // the task link appended.
   if (ALLOWED_CHAT_ID && MEMORY_NOTIFY) {
-    setHighImportanceCallback((memoryId, summary, importance) => {
-      const msg = `🧠 New memory #${memoryId} [${importance.toFixed(1)}]: ${summary.slice(0, 200)}\n\n/pin ${memoryId} to make permanent`;
+    setHighImportanceCallback(async (memoryId, summary, importance, rawText) => {
+      const baseMsg = `🧠 New memory #${memoryId} [${importance.toFixed(1)}]: ${summary.slice(0, 200)}\n\n/pin ${memoryId} to make permanent`;
+      let msg = baseMsg;
+      try {
+        const { dispatchMemoryToClickUp } = await import('./memory-to-tasks.js');
+        const r = await dispatchMemoryToClickUp(memoryId, summary, rawText, importance);
+        if (r.taskId) {
+          msg = baseMsg + `\n\n✅ Auto-created ClickUp task ${r.taskId} (${r.reason})`;
+        }
+      } catch { /* non-fatal: keep base msg */ }
       bot.api.sendMessage(ALLOWED_CHAT_ID, msg).catch(() => {});
     });
   }

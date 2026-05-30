@@ -39,7 +39,7 @@ export function saveTokens(tokens: StoredTokens): void {
 
 let oauthClient: OAuth2Client | null = null;
 
-function getOAuthClient(): OAuth2Client {
+export function getOAuthClient(): OAuth2Client {
   if (oauthClient) return oauthClient;
 
   const env = readEnvFile(['GOOGLE_OAUTH_CLIENT_ID', 'GOOGLE_OAUTH_CLIENT_SECRET']);
