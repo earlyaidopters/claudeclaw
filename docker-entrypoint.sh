@@ -22,6 +22,17 @@ env \
 # Make sure it's only readable by the app user
 chmod 600 "$ENV_FILE"
 
+# ── Materialize Vendasta service-account JSON from Fly secret ─────────
+# Vendasta connector needs the GCP service account file on disk. The image
+# layer is ephemeral, so we stash the JSON content as a Fly secret
+# (VENDASTA_SERVICE_ACCOUNT_JSON) and write it out at boot.
+if [ -n "${VENDASTA_SERVICE_ACCOUNT_JSON:-}" ]; then
+  mkdir -p /app/secrets
+  printf '%s' "$VENDASTA_SERVICE_ACCOUNT_JSON" > /app/secrets/vendasta-nikki-service-account.json
+  chmod 600 /app/secrets/vendasta-nikki-service-account.json
+  echo "Restored Vendasta service account → /app/secrets/"
+fi
+
 # ── Restore Claude Code credentials from persistent volume ───────────────
 # Claude Code CLI reads OAuth creds from $HOME/.claude/.credentials.json.
 # The image filesystem is ephemeral, so we persist the file in /app/store
