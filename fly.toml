@@ -1,0 +1,78 @@
+# Fly.io app config for ClaudeClaw.
+#
+# Single-instance app (SQLite + persistent volume = no horizontal scaling).
+# Region: iad (Ashburn, VA) — closest Fly region to Charlotte, low latency
+# back to your Mac + the Plaid US endpoints.
+#
+# Volume `claudeclaw_store` holds:
+#   /app/store/claudeclaw.db            ← SQLite (memories, conversation log)
+#   /app/store/bid-roster.json          ← 41 NC BIDs
+#   /app/store/plaid-items.json         ← linked bank accounts
+#   /app/store/manual-accounts.json     ← Apple Card + manual entries
+#   /app/store/manual-transactions.json
+#   /app/store/outreach-status.json     ← BID outreach state
+#   /app/store/agent-*-conn.json        ← per-agent runtime
+#
+# To bootstrap:  ./scripts/fly-setup.sh
+# To migrate:    ./scripts/fly-migrate-data.sh
+# To cut over:   ./scripts/fly-cutover.sh
+
+app = "claudeclaw-impactworks"
+primary_region = "iad"
+kill_signal = "SIGTERM"
+kill_timeout = "30s"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  DASHBOARD_PORT = "3141"
+  CLAUDECLAW_AGENT_ID = "main"
+  CLAUDECLAW_DEPLOY = "fly"
+  NODE_ENV = "production"
+  # Tell the app to write logs to the mounted volume so they survive restarts
+  LOG_DIR = "/app/store/logs"
+
+# Persistent SQLite + JSON state lives here. Create the volume BEFORE first
+# deploy with: fly volumes create claudeclaw_store --region iad --size 3
+[[mounts]]
+  source = "claudeclaw_store"
+  destination = "/app/store"
+  initial_size = "3gb"
+
+# Public HTTP — claw.impactworks.com routes through Fly's edge after DNS swap
+[http_service]
+  internal_port = 3141
+  force_https = true
+  auto_stop_machines = "off"      # always-on; Telegram polling needs the bot alive
+  auto_start_machines = true
+  min_machines_running = 1
+  processes = ["app"]
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 80
+    hard_limit = 120
+
+# NOTE: HTTP health check removed because all /api/* routes require the
+# dashboard token, which Fly's health check doesn't send → checks return 401
+# → machine marked unhealthy → proxy refuses all traffic. Without an HTTP
+# check, Fly still restarts the machine if the process exits. Add a public
+# unauthenticated /healthz route to the app and we can put a check back here.
+
+# VM sizing — start small. The bot + SPA + memory consolidation comfortably
+# fit in 512MB; bump to 1gb if Gemini embeddings cause memory pressure.
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "1gb"
+  cpu_kind = "shared"
+  cpus = 1
+
+# Single process group — bot + dashboard + scheduler all run in one node proc
+[processes]
+  app = "node dist/index.js"
+
+# Custom domain. After first deploy, run:
+#   fly certs add claw.impactworks.com
+# then point CNAME claw.impactworks.com → claudeclaw.fly.dev in Cloudflare DNS
+# (proxy OFF so Fly can issue the TLS cert).
