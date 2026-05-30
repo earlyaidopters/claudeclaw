@@ -37,11 +37,12 @@ coverage
 com.claudeclaw.*.plist
 ~/Library/LaunchAgents
 
-# Documentation that doesn't need to ship with the image
-*.md
-!CLAUDE.md
+# Documentation that doesn't need to ship with the image — we keep CLAUDE.md
+# explicitly listed so docker doesn't pick up README.md/etc. but the agent
+# personality and runbook files we DO want in the image.
 docs/
 FLY-MIGRATION.md
+README.md
 
 # Test files
 **/*.test.ts
