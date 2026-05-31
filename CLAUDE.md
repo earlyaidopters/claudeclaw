@@ -232,3 +232,104 @@ print('Checkpoint saved.')
 "
 ```
 5. Confirm: "Checkpoint saved. Safe to /newchat."
+
+---
+
+<!-- AI CODING ASSISTANT SECTION
+     The sections below this line are for Claude Code (and similar AI coding assistants)
+     working on this repository. They are ignored by the bot at runtime. -->
+
+## Development guide (for AI coding assistants)
+
+### Setup
+
+```bash
+npm install          # install dependencies
+npm run build        # compile TypeScript → dist/
+npm run setup        # interactive setup wizard (creates .env, configures bot token, chat ID, security)
+```
+
+Before first run, copy `.env.example` to `.env` and set at minimum:
+- `TELEGRAM_BOT_TOKEN` — from @BotFather
+- `ALLOWED_CHAT_ID` — send `/chatid` to your bot after first start
+
+### Common commands
+
+```bash
+npm run dev          # run with tsx (no build step, for development)
+npm start            # run compiled bot (production)
+npm run build        # compile TypeScript
+npm run typecheck    # type-check without emitting
+npm test             # run test suite (vitest)
+npm run test:watch   # vitest in watch mode
+npm run status       # health check (env, bot, DB, service)
+npm run migrate      # apply pending DB migrations
+```
+
+**Run a single test:**
+```bash
+npx vitest run src/db.test.ts          # single file
+npx vitest run -t "test name pattern"  # filter by name
+```
+
+### Architecture
+
+ClaudeClaw spawns the real `claude` CLI as a child process and pipes output to Telegram. It is **not** a chatbot wrapper — the full Claude Code session (skills, tools, context) is available from the phone.
+
+**Message flow:**
+```
+Telegram → grammy (bot.ts) → handleMessage()
+  → voice? → Groq Whisper transcription
+  → media? → download to workspace/uploads/
+  → 5-layer memory retrieval (memory.ts) → context block
+  → agent.ts → @anthropic-ai/claude-agent-sdk query() → spawns `claude` subprocess
+  → response formatted (Markdown→HTML) → split to Telegram limits → reply
+```
+
+**Key source files:**
+
+| File | Purpose |
+|------|---------|
+| `src/index.ts` | Entry point. Starts bot, scheduler, dashboard, WhatsApp daemon |
+| `src/bot.ts` | All Telegram message handling (text, voice, photo, document, commands) |
+| `src/agent.ts` | Runs Claude Code via Agent SDK (`query()`) |
+| `src/agent-config.ts` | Loads per-agent YAML configs and CLAUDE.md templates |
+| `src/orchestrator.ts` | Agent delegation routing (`@agent:` syntax) |
+| `src/db.ts` | SQLite schema, migrations, all table access |
+| `src/memory.ts` | 5-layer context injection + memory feedback loop |
+| `src/memory-ingest.ts` | Gemini-powered memory extraction from conversations |
+| `src/memory-consolidate.ts` | Pattern detection across memories (runs every 30 min) |
+| `src/embeddings.ts` | Vector embeddings for semantic memory search |
+| `src/scheduler.ts` | Cron + mission task runner (checks every 60s) |
+| `src/voice.ts` | Voice transcription (Groq) + TTS cascade (ElevenLabs → Gradium → macOS say) |
+| `src/dashboard.ts` | Web dashboard server (Hono + SSE) |
+| `src/message-queue.ts` | Per-chat FIFO queue (prevents session collisions) |
+| `src/config.ts` | Reads `.env` safely (never pollutes `process.env`) |
+| `src/state.ts` | Shared state + SSE event emitter |
+
+### Multi-agent system
+
+Agents are configured in `agents/<name>/` with `agent.yaml` + `CLAUDE.md`. Each agent is its own Telegram bot with its own session. Start with `npm start -- --agent <id>`. Install as background services via `scripts/install-launchd.sh` (macOS) or systemd/pm2 (Linux/Windows).
+
+### Database
+
+SQLite at `store/claudeclaw.db`, auto-created on first run. Key tables: `sessions`, `memories`, `scheduled_tasks`, `mission_tasks`, `conversation_log`, `token_usage`, `hive_mind`, `wa_messages`, `slack_messages`. WhatsApp/Slack message bodies are AES-256-GCM encrypted at rest. Messages auto-purge after 3 days.
+
+### Skills
+
+Bundled skills in `skills/` (gmail, google-calendar, slack) are copied to `~/.claude/skills/` to activate. The `add-migration` skill in `.claude/skills/` is available for creating new DB migrations.
+
+### Testing
+
+Tests use vitest with a node environment. Test files are co-located with source (`src/*.test.ts`). The test config is in `package.json` under the `"vitest"` key. Tests that need a temporary database should create one in a temp directory and clean up after.
+
+### Adding a DB migration
+
+Use the `add-migration` skill, or create a new `.sql` file in `migrations/` and register it in `src/migrations.ts`. Run `npm run migrate` to apply.
+
+### Updating ClaudeClaw
+
+```bash
+git pull && npm install && npm run migrate && npm run build
+```
+Then restart the bot/service.

@@ -1,11 +1,21 @@
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
+import pRetry from 'p-retry';
 
 import { AGENT_MAX_TURNS, PROJECT_ROOT, agentCwd } from './config.js';
 import { readEnvFile } from './env.js';
 import { logger } from './logger.js';
+
+/**
+ * Stable absolute path to the open-source launcher used by this bot.
+ *
+ * We intentionally use only `fcc-claude.exe` (free-claude-code wrapper)
+ * so requests route through the local open-source proxy stack.
+ */
+const CLAUDE_EXE = path.join(os.homedir(), '.local', 'bin', 'fcc-claude.exe');
 
 // ── MCP server loading ──────────────────────────────────────────────
 // The Agent SDK's settingSources loads CLAUDE.md and permissions from
@@ -169,12 +179,28 @@ export async function runAgent(
   onStreamText?: (accumulatedText: string) => void,
   mcpAllowlist?: string[],
 ): Promise<AgentResult> {
+  // Verify the open-source launcher exists before handing it to the SDK.
+  if (!fs.existsSync(CLAUDE_EXE)) {
+    throw new Error(
+      `Open-source launcher not found at ${CLAUDE_EXE}. ` +
+      `Install free-claude-code and ensure fcc-claude is available.`,
+    );
+  }
+
   // Read secrets from .env without polluting process.env.
   // CLAUDE_CODE_OAUTH_TOKEN is optional — the subprocess finds auth via ~/.claude/
   // automatically. Only needed if you want to override which account is used.
   const secrets = readEnvFile(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY']);
 
   const sdkEnv: Record<string, string | undefined> = { ...process.env };
+  // On Windows, HOME is not set — claude CLI needs it to find ~/.claude/ OAuth credentials
+  if (!sdkEnv.HOME && process.env.USERPROFILE) {
+    sdkEnv.HOME = process.env.USERPROFILE;
+  }
+  // Unset CLAUDECODE to allow nested claude sessions. When running inside a
+  // Claude Code session (e.g. developing the bot), the child claude process
+  // refuses to start if this var is present.
+  delete sdkEnv.CLAUDECODE;
   if (secrets.CLAUDE_CODE_OAUTH_TOKEN) {
     sdkEnv.CLAUDE_CODE_OAUTH_TOKEN = secrets.CLAUDE_CODE_OAUTH_TOKEN;
   }
@@ -182,6 +208,70 @@ export async function runAgent(
     sdkEnv.ANTHROPIC_API_KEY = secrets.ANTHROPIC_API_KEY;
   }
 
+  // Refresh typing indicator on an interval while Claude works.
+  // Telegram's "typing..." action expires after ~5s.
+  const typingInterval = setInterval(onTyping, 4000);
+
+  // Transient errors that warrant a retry vs. permanent failures that shouldn't.
+  const TRANSIENT_ERR_RE = /overloaded|rate.limit|429|529|ECONNREFUSED|ECONNRESET|fetch failed|temporarily|service.unavailable/i;
+  const PERMANENT_ERR_RE = /authentication_failed|billing_error|invalid_request|API key|unauthorized|401|403|permission denied|NOT FOUND|ENOENT/i;
+  const isTransient = (err: unknown) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (PERMANENT_ERR_RE.test(msg)) return false;
+    return TRANSIENT_ERR_RE.test(msg);
+  };
+
+  try {
+    return await pRetry(async () => {
+      try {
+        return await executeAgentQuery(
+          message,
+          sessionId,
+          onTyping,
+          onProgress,
+          model,
+          abortController,
+          onStreamText,
+          mcpAllowlist,
+          sdkEnv,
+        );
+      } catch (err) {
+        if (!isTransient(err)) throw err;
+        logger.warn({ err: err instanceof Error ? err.message : String(err) }, 'Transient error, retrying');
+        throw err;
+      }
+    }, {
+      retries: 3,
+      factor: 2,
+      minTimeout: 2000,
+      maxTimeout: 10000,
+      onFailedAttempt: (error) => {
+        logger.warn(
+          { attempt: error.attemptNumber, retriesLeft: error.retriesLeft },
+          `Agent query attempt ${error.attemptNumber} failed, ${error.retriesLeft} retries left`,
+        );
+      },
+    });
+  } finally {
+    clearInterval(typingInterval);
+  }
+}
+
+/**
+ * Execute the agent query. Extracted from runAgent so p-retry can wrap it.
+ * Returns the AgentResult on success.
+ */
+async function executeAgentQuery(
+  message: string,
+  sessionId: string | undefined,
+  onTyping: () => void,
+  onProgress?: (event: AgentProgressEvent) => void,
+  model?: string,
+  abortController?: AbortController,
+  onStreamText?: (accumulatedText: string) => void,
+  mcpAllowlist?: string[],
+  sdkEnv?: Record<string, string | undefined>,
+): Promise<AgentResult> {
   let newSessionId: string | undefined;
   let resultText: string | null = null;
   let usage: UsageInfo | null = null;
@@ -191,60 +281,39 @@ export async function runAgent(
   let lastCallInputTokens = 0;
   let streamedText = '';
 
-  // Refresh typing indicator on an interval while Claude works.
-  // Telegram's "typing..." action expires after ~5s.
-  const typingInterval = setInterval(onTyping, 4000);
+  // Load MCP servers from project + user settings files, filtered by agent allowlist
+  const mcpServers = loadMcpServers(mcpAllowlist);
+  const mcpServerNames = Object.keys(mcpServers);
+  logger.info(
+    { sessionId: sessionId ?? 'new', messageLen: message.length, mcpServers: mcpServerNames },
+    'Starting agent query',
+  );
+
+  // SDK Options.mcpServers expects Record<string, McpServerConfig>
+  const mcpServerSpecs = mcpServerNames.length > 0 ? mcpServers : undefined;
 
   try {
-    // Load MCP servers from project + user settings files, filtered by agent allowlist
-    const mcpServers = loadMcpServers(mcpAllowlist);
-    const mcpServerNames = Object.keys(mcpServers);
-    logger.info(
-      { sessionId: sessionId ?? 'new', messageLen: message.length, mcpServers: mcpServerNames },
-      'Starting agent query',
-    );
-
-    // SDK Options.mcpServers expects Record<string, McpServerConfig>
-    const mcpServerSpecs = mcpServerNames.length > 0 ? mcpServers : undefined;
-
     for await (const event of query({
-      prompt: singleTurn(message),
-      options: {
-        // cwd = agent directory (if running as agent) or project root.
-        // Claude Code loads CLAUDE.md from cwd via settingSources: ['project'].
-        cwd: agentCwd ?? PROJECT_ROOT,
-
-        // Resume the previous session for this chat (persistent context)
-        resume: sessionId,
-
-        // 'project' loads CLAUDE.md from cwd; 'user' loads ~/.claude/skills/ and user settings
-        settingSources: ['project', 'user'],
-
-        // Skip all permission prompts — this is a trusted personal bot on your own machine
-        permissionMode: 'bypassPermissions',
-        allowDangerouslySkipPermissions: true,
-
-        // Cap agentic turns to prevent runaway tool-use loops (e.g. retrying
-        // stale cookies 40+ times). Configurable via AGENT_MAX_TURNS in .env.
-        ...(AGENT_MAX_TURNS > 0 ? { maxTurns: AGENT_MAX_TURNS } : {}),
-
-        // Pass secrets to the subprocess without polluting our own process.env
-        env: sdkEnv,
-
-        // MCP servers loaded from .claude/settings.json and ~/.claude/settings.json
-        ...(mcpServerSpecs ? { mcpServers: mcpServerSpecs } : {}),
-
-        // Stream partial text so Telegram can show progressive updates
-        includePartialMessages: !!onStreamText,
-
-        // Model override (e.g. 'claude-haiku-4-5', 'claude-sonnet-4-5')
-        ...(model ? { model } : {}),
-
-        // Abort support — signals the SDK to kill the subprocess
-        ...(abortController ? { abortController } : {}),
+    prompt: singleTurn(message),
+    options: {
+      cwd: agentCwd ?? PROJECT_ROOT,
+      resume: sessionId,
+      settingSources: ['project', 'user'],
+      permissionMode: 'bypassPermissions',
+      allowDangerouslySkipPermissions: true,
+      ...(AGENT_MAX_TURNS > 0 ? { maxTurns: AGENT_MAX_TURNS } : {}),
+      pathToClaudeCodeExecutable: CLAUDE_EXE,
+      env: sdkEnv,
+      ...(mcpServerSpecs ? { mcpServers: mcpServerSpecs } : {}),
+      includePartialMessages: !!onStreamText,
+      ...(model ? { model } : {}),
+      ...(abortController ? { abortController } : {}),
+      stderr: (data: string) => {
+        if (data.trim()) logger.warn({ claudeStderr: data.trim() }, 'Claude Code stderr');
       },
+    },
     })) {
-      const ev = event as Record<string, unknown>;
+    const ev = event as Record<string, unknown>;
 
       if (ev['type'] === 'system' && ev['subtype'] === 'init') {
         newSessionId = ev['session_id'] as string;
@@ -362,8 +431,6 @@ export async function runAgent(
       return { text: null, newSessionId, usage, aborted: true };
     }
     throw err;
-  } finally {
-    clearInterval(typingInterval);
   }
 
   return { text: resultText, newSessionId, usage };

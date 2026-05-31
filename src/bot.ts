@@ -495,11 +495,15 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
     const abortCtrl = new AbortController();
     setActiveAbort(chatIdStr, abortCtrl);
 
-    // Auto-abort if the agent runs too long (prevents runaway commands from blocking the bot)
-    const timeoutId = setTimeout(() => {
-      logger.warn({ chatId: chatIdStr, timeoutMs: AGENT_TIMEOUT_MS }, 'Agent query timed out, aborting');
-      abortCtrl.abort();
-    }, AGENT_TIMEOUT_MS);
+    // Auto-abort if the agent runs too long (prevents runaway commands from blocking the bot).
+    // AGENT_TIMEOUT_MS=0 means unlimited — no timer set.
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    if (AGENT_TIMEOUT_MS > 0) {
+      timeoutId = setTimeout(() => {
+        logger.warn({ chatId: chatIdStr, timeoutMs: AGENT_TIMEOUT_MS }, 'Agent query timed out, aborting');
+        abortCtrl.abort();
+      }, AGENT_TIMEOUT_MS);
+    }
 
     // Streaming: send a placeholder message and edit it as text arrives
     let streamMsgId: number | undefined;
@@ -542,7 +546,7 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
       agentMcpAllowlist,
     );
 
-    clearTimeout(timeoutId);
+    if (timeoutId) clearTimeout(timeoutId);
     setActiveAbort(chatIdStr, null);
     clearInterval(typingInterval);
 
@@ -555,7 +559,9 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
     if (result.aborted) {
       setProcessing(chatIdStr, false);
       const msg = result.text === null
-        ? `Timed out after ${Math.round(AGENT_TIMEOUT_MS / 1000)}s. The task may have been too complex or a command got stuck. Try breaking it into smaller steps.`
+        ? (AGENT_TIMEOUT_MS > 0
+          ? `Timed out after ${Math.round(AGENT_TIMEOUT_MS / 1000)}s. The task may have been too complex or a command got stuck.`
+          : 'Stopped.')
         : 'Stopped.';
       emitChatEvent({ type: 'assistant_message', chatId: chatIdStr, content: msg, source: 'telegram' });
       await ctx.reply(msg);
@@ -660,22 +666,34 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
     setProcessing(chatIdStr, false);
     logger.error({ err }, 'Agent error');
 
-    // Detect context window exhaustion (process exits with code 1 after long sessions)
     const errMsg = err instanceof Error ? err.message : String(err);
-    if (errMsg.includes('exited with code 1')) {
+
+    // Classify error for a helpful user-facing message.
+    const isOverloaded = /overloaded|529/i.test(errMsg);
+    const isRateLimited = /rate.limit|429/i.test(errMsg);
+    const isSpawnError = /ENOENT|EACCES|not found|could not be launched|executable/i.test(errMsg);
+    const isContextExhausted = errMsg.includes('exited with code 1') && !isOverloaded && !isSpawnError;
+
+    if (isOverloaded) {
+      await ctx.reply('⚠️ Anthropic API is overloaded. Please try again in 30–60 seconds.');
+    } else if (isRateLimited) {
+      await ctx.reply('⚠️ Rate limited by Anthropic. Please try again shortly.');
+    } else if (isSpawnError) {
+      await ctx.reply('Claude Code subprocess failed to start. Check logs or try /newchat.');
+    } else if (isContextExhausted) {
       const usage = lastUsage.get(chatIdStr);
       const contextSize = usage?.lastCallInputTokens || usage?.lastCallCacheRead || 0;
       if (contextSize > 0) {
-        // We have prior usage data — context exhaustion is plausible
         await ctx.reply(
           `Context window likely exhausted. Last known context: ~${Math.round(contextSize / 1000)}k tokens.\n\nUse /newchat to start fresh, then /respin to pull recent conversation back in.`,
         );
       } else {
-        // No prior usage — likely a subprocess init failure, not context exhaustion
-        await ctx.reply('Claude Code subprocess failed to start. Check logs or try /newchat.');
+        const safeErr = errMsg.length > 200 ? errMsg.slice(0, 200) + '…' : errMsg;
+        await ctx.reply(`Error: ${safeErr}`);
       }
     } else {
-      await ctx.reply('Something went wrong. Check the logs and try again.');
+      const safeErr = errMsg.length > 200 ? errMsg.slice(0, 200) + '…' : errMsg;
+      await ctx.reply(`Error: ${safeErr}`);
     }
   }
 }
@@ -1533,10 +1551,13 @@ async function processDashboardMessage(
 
     const abortCtrl = new AbortController();
     setActiveAbort(chatIdStr, abortCtrl);
-    const dashTimeout = setTimeout(() => {
-      logger.warn({ chatId: chatIdStr, timeoutMs: AGENT_TIMEOUT_MS }, 'Dashboard agent query timed out, aborting');
-      abortCtrl.abort();
-    }, AGENT_TIMEOUT_MS);
+    let dashTimeout: ReturnType<typeof setTimeout> | undefined;
+    if (AGENT_TIMEOUT_MS > 0) {
+      dashTimeout = setTimeout(() => {
+        logger.warn({ chatId: chatIdStr, timeoutMs: AGENT_TIMEOUT_MS }, 'Dashboard agent query timed out, aborting');
+        abortCtrl.abort();
+      }, AGENT_TIMEOUT_MS);
+    }
 
     const result = await runAgent(
       fullMessage,
@@ -1549,13 +1570,15 @@ async function processDashboardMessage(
       agentMcpAllowlist,
     );
 
-    clearTimeout(dashTimeout);
+    if (dashTimeout) clearTimeout(dashTimeout);
     setActiveAbort(chatIdStr, null);
 
     // Handle abort
     if (result.aborted) {
       const msg = result.text === null
-        ? `Timed out after ${Math.round(AGENT_TIMEOUT_MS / 1000)}s. Try breaking the task into smaller steps.`
+        ? (AGENT_TIMEOUT_MS > 0
+          ? `Timed out after ${Math.round(AGENT_TIMEOUT_MS / 1000)}s. Try breaking the task into smaller steps.`
+          : 'Stopped.')
         : 'Stopped.';
       emitChatEvent({ type: 'assistant_message', chatId: chatIdStr, content: msg, source: 'dashboard' });
       return;
@@ -1606,7 +1629,13 @@ async function processDashboardMessage(
   } catch (err) {
     setActiveAbort(chatIdStr, null);
     logger.error({ err }, 'Dashboard message processing error');
-    emitChatEvent({ type: 'error', chatId: chatIdStr, content: 'Something went wrong. Check the logs.' });
+    const errMsg = err instanceof Error ? err.message : String(err);
+    const detail = /overloaded|529/i.test(errMsg)
+      ? 'Anthropic API is overloaded. Please try again shortly.'
+      : /rate.limit|429/i.test(errMsg)
+        ? 'Rate limited. Please try again shortly.'
+        : 'Something went wrong. Check the logs.';
+    emitChatEvent({ type: 'error', chatId: chatIdStr, content: detail });
   } finally {
     setProcessing(chatIdStr, false);
   }
