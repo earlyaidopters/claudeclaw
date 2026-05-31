@@ -69,7 +69,7 @@ function AttentionRow({ item }: { item: AttentionItem }) {
 }
 
 export function Founder() {
-  const { data, loading, error, refresh } = useFetch<FounderData>('/api/founder');
+  const { data, loading, refreshing, error, refresh } = useFetch<FounderData>('/api/founder');
 
   const today = useMemo(() => new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' }), [data]);
 
@@ -92,7 +92,7 @@ export function Founder() {
       <PageHeader
         title="Founder Dashboard"
         subtitle={today + ' · ImpactWorks + Rocket Local'}
-        actions={<button type="button" onClick={() => refresh()} class="inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border)] px-2.5 py-1 text-[12px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)]"><RefreshCw size={12} /> Refresh</button>}
+        actions={<button type="button" onClick={() => refresh()} disabled={refreshing} class="inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border)] px-2.5 py-1 text-[12px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] disabled:opacity-60 disabled:cursor-not-allowed transition-opacity"><RefreshCw size={12} class={refreshing ? 'animate-spin' : ''} /> {refreshing ? 'Refreshing…' : 'Refresh'}</button>}
       />
 
       <div class="flex-1 overflow-auto p-4 space-y-4">

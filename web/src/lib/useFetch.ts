@@ -3,7 +3,18 @@ import { apiGet, ApiError } from './api';
 
 export interface FetchState<T> {
   data: T | null;
+  /**
+   * True only during the very first fetch when no cached data exists yet.
+   * Use this for full-page loading states.
+   */
   loading: boolean;
+  /**
+   * True while a refetch is in flight AFTER the initial load — covers
+   * manual refresh() clicks and polling-driven revalidations. Use this
+   * for inline spinner indicators (e.g. a spinning refresh button) so
+   * the user can tell their click did something.
+   */
+  refreshing: boolean;
   error: string | null;
   refresh: () => void;
 }
@@ -27,6 +38,10 @@ export function useFetch<T = unknown>(path: string | null, pollMs = 0): FetchSta
   // Only show loading on a true cold start. If we have cached data the
   // page can render immediately and the revalidate is invisible.
   const [loading, setLoading] = useState<boolean>(path !== null && cached === undefined);
+  // Refreshing covers BOTH cold-start fetches and warm refresh()/poll calls.
+  // Pages that want to show a spinner on the refresh button use this; pages
+  // that want a full-screen loader use `loading`.
+  const [refreshing, setRefreshing] = useState<boolean>(path !== null);
   const [error, setError] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
   const lastPath = useRef(path);
@@ -36,6 +51,7 @@ export function useFetch<T = unknown>(path: string | null, pollMs = 0): FetchSta
     let cancelled = false;
     const hadCache = _cache.has(path);
     if (!hadCache) setLoading(true);
+    setRefreshing(true);
     apiGet<T>(path).then((d) => {
       if (cancelled) return;
       _cache.set(path, d);
@@ -47,6 +63,7 @@ export function useFetch<T = unknown>(path: string | null, pollMs = 0): FetchSta
     }).finally(() => {
       if (cancelled) return;
       setLoading(false);
+      setRefreshing(false);
     });
     return () => { cancelled = true; };
   }, [path, tick]);
@@ -73,5 +90,5 @@ export function useFetch<T = unknown>(path: string | null, pollMs = 0): FetchSta
     }
   }
 
-  return { data, loading, error, refresh: () => setTick((t) => t + 1) };
+  return { data, loading, refreshing, error, refresh: () => setTick((t) => t + 1) };
 }
