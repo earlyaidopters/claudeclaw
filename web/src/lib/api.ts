@@ -77,10 +77,28 @@ export class ApiError extends Error {
   }
 }
 
+// When the server tells us our token is bad (401) or our session is
+// forbidden (403), hop to the token entry page with a "return" param so
+// the user lands back where they were after re-authenticating. Skip the
+// redirect when we're already on /auth.html (avoid loops) or when the
+// page itself is opted out (e.g. an embed). The first 401 wins — we set
+// a flag so concurrent failed requests don't all trigger redirects.
+let redirectingToAuth = false;
+function maybeRedirectToAuth(status: number): void {
+  if (status !== 401 && status !== 403) return;
+  if (redirectingToAuth) return;
+  if (typeof window === 'undefined') return;
+  if (window.location.pathname === '/auth.html') return;
+  redirectingToAuth = true;
+  const ret = encodeURIComponent(window.location.pathname + window.location.search);
+  window.location.replace(`/auth.html?return=${ret}`);
+}
+
 export async function apiGet<T = unknown>(path: string): Promise<T> {
   const res = await fetch(withToken(path), { method: 'GET', headers: authHeaders() });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
+    maybeRedirectToAuth(res.status);
     throw new ApiError(res.status, body, `GET ${path} failed: ${res.status}`);
   }
   return res.json();
@@ -94,6 +112,7 @@ export async function apiPost<T = unknown>(path: string, body?: unknown): Promis
   });
   if (!res.ok) {
     const errBody = await res.json().catch(() => ({}));
+    maybeRedirectToAuth(res.status);
     throw new ApiError(res.status, errBody, `POST ${path} failed: ${res.status}`);
   }
   return res.json();
@@ -107,6 +126,7 @@ export async function apiPatch<T = unknown>(path: string, body: unknown): Promis
   });
   if (!res.ok) {
     const errBody = await res.json().catch(() => ({}));
+    maybeRedirectToAuth(res.status);
     throw new ApiError(res.status, errBody, `PATCH ${path} failed: ${res.status}`);
   }
   return res.json();
@@ -120,6 +140,7 @@ export async function apiPut<T = unknown>(path: string, body: unknown): Promise<
   });
   if (!res.ok) {
     const errBody = await res.json().catch(() => ({}));
+    maybeRedirectToAuth(res.status);
     throw new ApiError(res.status, errBody, `PUT ${path} failed: ${res.status}`);
   }
   return res.json();
@@ -129,6 +150,7 @@ export async function apiDelete<T = unknown>(path: string): Promise<T> {
   const res = await fetch(withToken(path), { method: 'DELETE', headers: authHeaders() });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
+    maybeRedirectToAuth(res.status);
     throw new ApiError(res.status, body, `DELETE ${path} failed: ${res.status}`);
   }
   return res.json();

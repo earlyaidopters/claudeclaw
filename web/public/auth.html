@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Sign in · ImpactWorks OS</title>
+<style>
+  :root {
+    --bg: #0a0a0c;
+    --card: #14141a;
+    --border: #2a2a35;
+    --text: #e8e8ee;
+    --muted: #8a8a99;
+    --accent: #7b5cff;
+    --accent-hover: #8d6fff;
+    --danger: #ef4444;
+  }
+  * { box-sizing: border-box; }
+  html, body { background: var(--bg); color: var(--text); margin: 0; min-height: 100vh; font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  .wrap { min-height: 100vh; display: grid; place-items: center; padding: 24px; }
+  .card { width: 100%; max-width: 440px; background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 32px 28px; box-shadow: 0 30px 80px rgba(0,0,0,0.4); }
+  h1 { margin: 0 0 6px; font-size: 22px; letter-spacing: -0.01em; }
+  p.lede { margin: 0 0 24px; color: var(--muted); font-size: 14px; }
+  label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+  input { width: 100%; background: #0e0e13; color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 11px 12px; font: inherit; outline: none; transition: border-color 120ms; font-family: ui-monospace, SFMono-Regular, monospace; font-size: 13px; }
+  input:focus { border-color: var(--accent); }
+  button { margin-top: 16px; width: 100%; background: var(--accent); color: white; border: 0; border-radius: 8px; padding: 12px; font: inherit; font-weight: 600; cursor: pointer; transition: background 120ms; }
+  button:hover { background: var(--accent-hover); }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .err { margin-top: 12px; font-size: 13px; color: var(--danger); display: none; }
+  .err.show { display: block; }
+  .hint { margin-top: 18px; font-size: 12px; color: var(--muted); line-height: 1.5; }
+  .hint code { background: #0e0e13; padding: 1px 5px; border-radius: 3px; color: var(--text); font-size: 11px; }
+  .logo { width: 48px; height: 48px; border-radius: 50%; background: linear-gradient(135deg, #7b5cff, #4a3aa8); margin: 0 auto 18px; display: block; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <form class="card" id="form">
+    <img src="/impactworks-logo.png" alt="" class="logo" onerror="this.style.display='none'" />
+    <h1>Mission Control</h1>
+    <p class="lede" id="lede">Enter your access token to continue.</p>
+
+    <label for="token">Access token</label>
+    <input id="token" name="token" type="password" autocomplete="off" spellcheck="false" placeholder="paste your token" autofocus />
+
+    <button type="submit" id="submit">Sign in</button>
+    <div class="err" id="err"></div>
+    <div class="hint">
+      Token format: 48 hex characters. Find it in your <code>.env</code> as <code>DASHBOARD_TOKEN</code>, or ask Dante.
+    </div>
+  </form>
+</div>
+
+<script>
+(function () {
+  var COOKIE_NAME = 'claw_token';
+  var COOKIE_MAX_AGE = 30 * 24 * 60 * 60;
+
+  // Honor an optional "return" param so we can hop back to the page that 401'd.
+  var params = new URLSearchParams(location.search);
+  var returnTo = params.get('return') || '/';
+  if (returnTo.indexOf('/') !== 0) returnTo = '/'; // safety: only relative paths
+
+  // If a token is already in localStorage/cookie, verify it silently and skip the form.
+  function readCookie(name) {
+    var parts = (document.cookie || '').split(';');
+    for (var i = 0; i < parts.length; i++) {
+      var p = parts[i].trim();
+      var eq = p.indexOf('=');
+      if (eq < 0) continue;
+      if (p.slice(0, eq) === name) return decodeURIComponent(p.slice(eq + 1));
+    }
+    return '';
+  }
+  var existing = '';
+  try { existing = localStorage.getItem('claudeclaw.token') || ''; } catch (e) {}
+  if (!existing) existing = readCookie(COOKIE_NAME);
+
+  function persist(token) {
+    try { localStorage.setItem('claudeclaw.token', token); } catch (e) {}
+    try { document.cookie = COOKIE_NAME + '=' + encodeURIComponent(token) + '; Secure; SameSite=Lax; Max-Age=' + COOKIE_MAX_AGE + '; Path=/'; } catch (e) {}
+  }
+
+  async function verify(token) {
+    try {
+      var res = await fetch('/api/health', { headers: { 'Authorization': 'Bearer ' + token } });
+      return res.ok || res.status === 404; // 404 means endpoint missing but auth passed
+    } catch (e) { return false; }
+  }
+
+  if (existing && params.get('forceLogin') !== '1') {
+    verify(existing).then(function (ok) {
+      if (ok) {
+        location.replace(returnTo);
+      }
+    });
+  }
+
+  document.getElementById('form').addEventListener('submit', async function (e) {
+    e.preventDefault();
+    var btn = document.getElementById('submit');
+    var err = document.getElementById('err');
+    var token = document.getElementById('token').value.trim();
+    if (!token) return;
+    btn.disabled = true; btn.textContent = 'Verifying...';
+    err.classList.remove('show');
+    var ok = await verify(token);
+    if (!ok) {
+      btn.disabled = false; btn.textContent = 'Sign in';
+      err.textContent = 'Token rejected. Double-check the value and try again.';
+      err.classList.add('show');
+      return;
+    }
+    persist(token);
+    // Hop to the original page (preserving any non-token query params would
+    // require capture in the redirector; we keep it simple: just `return`).
+    location.replace(returnTo);
+  });
+})();
+</script>
+</body>
+</html>
