@@ -83,5 +83,18 @@ syncthing serve \
 
 echo "Started syncthing in background (PID $!)"
 
-# Hand off to the real command (node dist/index.js by default)
+# ── Spawn the four sub-agents in the background ─────────────────────────
+# Mirrors the Mac launchd setup. Each sub-agent runs the same dist/index.js
+# with --agent <name>, picking up its own Telegram bot token from .env.
+# Logs go to /app/store/logs so they survive restarts and can be tailed.
+mkdir -p /app/store/logs
+for AGENT in comms content ops research; do
+  CLAUDECLAW_AGENT_ID="$AGENT" node dist/index.js --agent "$AGENT" \
+    >> /app/store/logs/agent-$AGENT.log 2>&1 &
+  echo "Spawned sub-agent '$AGENT' (PID $!)"
+done
+
+# Hand off to the real command (node dist/index.js by default — the main agent).
+# When main exits, this script exits, killing the backgrounded sub-agents and
+# triggering Fly's machine supervisor to restart the whole container.
 exec "$@"

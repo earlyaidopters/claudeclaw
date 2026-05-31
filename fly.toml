@@ -60,11 +60,12 @@ kill_timeout = "30s"
 # check, Fly still restarts the machine if the process exits. Add a public
 # unauthenticated /healthz route to the app and we can put a check back here.
 
-# VM sizing — start small. The bot + SPA + memory consolidation comfortably
-# fit in 512MB; bump to 1gb if Gemini embeddings cause memory pressure.
+# VM sizing — main + 4 sub-agents (comms, content, ops, research) all run
+# in this container as separate node processes. Each agent uses ~250-400MB.
+# 2GB gives headroom for the 5 nodes + Gemini embedding bursts + War Room.
 [[vm]]
   size = "shared-cpu-1x"
-  memory = "1gb"
+  memory = "2gb"
   cpu_kind = "shared"
   cpus = 1
 
