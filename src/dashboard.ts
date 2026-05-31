@@ -1467,9 +1467,9 @@ export function startDashboard(botApi?: Api<RawApi>): void {
     return c.json(result.data, result.ok ? 200 : 500);
   });
 
-  // Memory stats
+  // Memory stats — same chatId-default as /api/tokens.
   app.get('/api/memories', (c) => {
-    const chatId = c.req.query('chatId') || '';
+    const chatId = c.req.query('chatId') || ALLOWED_CHAT_ID || '';
     const stats = getDashboardMemoryStats(chatId);
     const fading = getDashboardLowSalienceMemories(chatId, 10);
     const topAccessed = getDashboardTopAccessedMemories(chatId, 5);
@@ -1494,9 +1494,12 @@ export function startDashboard(botApi?: Api<RawApi>): void {
     return c.json(result);
   });
 
-  // System health
+  // System health.
+  // Same chatId-default rationale as /api/tokens: the SPA hits this without
+  // a chatId param, so we fall back to the primary authorized chat so the
+  // Usage page actually shows context %, turns, session age, etc.
   app.get('/api/health', (c) => {
-    const chatId = c.req.query('chatId') || '';
+    const chatId = c.req.query('chatId') || ALLOWED_CHAT_ID || '';
     const sessionId = getSession(chatId);
     let contextPct = 0;
     let turns = 0;
@@ -1537,9 +1540,14 @@ export function startDashboard(botApi?: Api<RawApi>): void {
     });
   });
 
-  // Token / cost stats
+  // Token / cost stats.
+  // When called without a chatId (the dashboard's default — Audra / Dante
+  // accessing the SPA without a chatId in the URL), default to the primary
+  // authorized chat. Without this default the page filters by an empty
+  // string and returns all-zero stats even though token_usage has hundreds
+  // of rows for the real chat.
   app.get('/api/tokens', (c) => {
-    const chatId = c.req.query('chatId') || '';
+    const chatId = c.req.query('chatId') || ALLOWED_CHAT_ID || '';
     const stats = getDashboardTokenStats(chatId);
     const costTimeline = getDashboardCostTimeline(chatId, 30);
     const recentUsage = getDashboardRecentTokenUsage(chatId, 20);
