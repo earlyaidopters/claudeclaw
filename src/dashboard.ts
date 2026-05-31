@@ -453,7 +453,7 @@ export function startDashboard(botApi?: Api<RawApi>): void {
   // Top-level static files copied from web/public/ at Vite build time
   // (e.g. /brain.glb for the 3D Hive Mind view). Stable filenames so they
   // sit at the root, not under /assets/.
-  app.get('/:filename{.+\\.(glb|gltf|bin|ktx2|wasm|svg|png|webp|ico)}', (c) => {
+  app.get('/:filename{.+\\.(glb|gltf|bin|ktx2|wasm|svg|png|webp|ico|html)}', (c) => {
     const filename = c.req.param('filename');
     const filePath = path.join(PROJECT_ROOT, 'dist', 'web', filename);
     const root = path.join(PROJECT_ROOT, 'dist', 'web');
@@ -468,9 +468,15 @@ export function startDashboard(botApi?: Api<RawApi>): void {
       : ext === '.png' ? 'image/png'
       : ext === '.webp' ? 'image/webp'
       : ext === '.ico' ? 'image/x-icon'
+      : ext === '.html' ? 'text/html; charset=utf-8'
       : 'application/octet-stream';
+    // HTML files (like /auth.html) shouldn't be cached aggressively — we may
+    // tweak them between deploys. Binary assets stay on 1-day cache.
+    const cache = ext === '.html'
+      ? 'no-cache'
+      : 'public, max-age=86400';
     return new Response(new Uint8Array(data), {
-      headers: { 'Content-Type': ctype, 'Cache-Control': 'public, max-age=86400' },
+      headers: { 'Content-Type': ctype, 'Cache-Control': cache },
     });
   });
 
