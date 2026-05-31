@@ -666,22 +666,32 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
     setProcessing(chatIdStr, false);
     logger.error({ err }, 'Agent error');
 
-    // Detect context window exhaustion (process exits with code 1 after long sessions)
     const errMsg = err instanceof Error ? err.message : String(err);
-    if (errMsg.includes('exited with code 1')) {
+
+    // Classify error for a helpful user-facing message.
+    const isOverloaded = /overloaded|529/i.test(errMsg);
+    const isRateLimited = /rate.limit|429/i.test(errMsg);
+    const isSpawnError = /ENOENT|EACCES|not found|could not be launched|executable/i.test(errMsg);
+    const isContextExhausted = errMsg.includes('exited with code 1') && !isOverloaded && !isSpawnError;
+
+    if (isOverloaded) {
+      await ctx.reply('⚠️ Anthropic API is overloaded. Please try again in 30–60 seconds.');
+    } else if (isRateLimited) {
+      await ctx.reply('⚠️ Rate limited by Anthropic. Please try again shortly.');
+    } else if (isSpawnError) {
+      await ctx.reply('Claude Code subprocess failed to start. Check logs or try /newchat.');
+    } else if (isContextExhausted) {
       const usage = lastUsage.get(chatIdStr);
       const contextSize = usage?.lastCallInputTokens || usage?.lastCallCacheRead || 0;
       if (contextSize > 0) {
-        // We have prior usage data — context exhaustion is plausible
         await ctx.reply(
           `Context window likely exhausted. Last known context: ~${Math.round(contextSize / 1000)}k tokens.\n\nUse /newchat to start fresh, then /respin to pull recent conversation back in.`,
         );
       } else {
-        // No prior usage — likely a subprocess init failure, not context exhaustion
-        await ctx.reply('Claude Code subprocess failed to start. Check logs or try /newchat.');
+        const safeErr = errMsg.length > 200 ? errMsg.slice(0, 200) + '…' : errMsg;
+        await ctx.reply(`Error: ${safeErr}`);
       }
     } else {
-      // Surface the actual error so we can diagnose issues
       const safeErr = errMsg.length > 200 ? errMsg.slice(0, 200) + '…' : errMsg;
       await ctx.reply(`Error: ${safeErr}`);
     }
@@ -1619,7 +1629,13 @@ async function processDashboardMessage(
   } catch (err) {
     setActiveAbort(chatIdStr, null);
     logger.error({ err }, 'Dashboard message processing error');
-    emitChatEvent({ type: 'error', chatId: chatIdStr, content: 'Something went wrong. Check the logs.' });
+    const errMsg = err instanceof Error ? err.message : String(err);
+    const detail = /overloaded|529/i.test(errMsg)
+      ? 'Anthropic API is overloaded. Please try again shortly.'
+      : /rate.limit|429/i.test(errMsg)
+        ? 'Rate limited. Please try again shortly.'
+        : 'Something went wrong. Check the logs.';
+    emitChatEvent({ type: 'error', chatId: chatIdStr, content: detail });
   } finally {
     setProcessing(chatIdStr, false);
   }

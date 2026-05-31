@@ -981,7 +981,7 @@ export function updateTaskAfterRun(
   const now = Math.floor(Date.now() / 1000);
   db.prepare(
     `UPDATE scheduled_tasks SET status = 'active', last_run = ?, next_run = ?, last_result = ?, last_status = ?, started_at = NULL WHERE id = ?`,
-  ).run(now, nextRun, result.slice(0, 4000), lastStatus, id);
+  ).run(now, nextRun, result.slice(0, 500), lastStatus, id);
 }
 
 export function resetStuckTasks(agentId: string): number {

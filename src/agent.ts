@@ -3,6 +3,7 @@ import os from 'os';
 import path from 'path';
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
+import pRetry from 'p-retry';
 
 import { AGENT_MAX_TURNS, PROJECT_ROOT, agentCwd } from './config.js';
 import { readEnvFile } from './env.js';
@@ -207,6 +208,70 @@ export async function runAgent(
     sdkEnv.ANTHROPIC_API_KEY = secrets.ANTHROPIC_API_KEY;
   }
 
+  // Refresh typing indicator on an interval while Claude works.
+  // Telegram's "typing..." action expires after ~5s.
+  const typingInterval = setInterval(onTyping, 4000);
+
+  // Transient errors that warrant a retry vs. permanent failures that shouldn't.
+  const TRANSIENT_ERR_RE = /overloaded|rate.limit|429|529|ECONNREFUSED|ECONNRESET|fetch failed|temporarily|service.unavailable/i;
+  const PERMANENT_ERR_RE = /authentication_failed|billing_error|invalid_request|API key|unauthorized|401|403|permission denied|NOT FOUND|ENOENT/i;
+  const isTransient = (err: unknown) => {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (PERMANENT_ERR_RE.test(msg)) return false;
+    return TRANSIENT_ERR_RE.test(msg);
+  };
+
+  try {
+    return await pRetry(async () => {
+      try {
+        return await executeAgentQuery(
+          message,
+          sessionId,
+          onTyping,
+          onProgress,
+          model,
+          abortController,
+          onStreamText,
+          mcpAllowlist,
+          sdkEnv,
+        );
+      } catch (err) {
+        if (!isTransient(err)) throw err;
+        logger.warn({ err: err instanceof Error ? err.message : String(err) }, 'Transient error, retrying');
+        throw err;
+      }
+    }, {
+      retries: 3,
+      factor: 2,
+      minTimeout: 2000,
+      maxTimeout: 10000,
+      onFailedAttempt: (error) => {
+        logger.warn(
+          { attempt: error.attemptNumber, retriesLeft: error.retriesLeft },
+          `Agent query attempt ${error.attemptNumber} failed, ${error.retriesLeft} retries left`,
+        );
+      },
+    });
+  } finally {
+    clearInterval(typingInterval);
+  }
+}
+
+/**
+ * Execute the agent query. Extracted from runAgent so p-retry can wrap it.
+ * Returns the AgentResult on success.
+ */
+async function executeAgentQuery(
+  message: string,
+  sessionId: string | undefined,
+  onTyping: () => void,
+  onProgress?: (event: AgentProgressEvent) => void,
+  model?: string,
+  abortController?: AbortController,
+  onStreamText?: (accumulatedText: string) => void,
+  mcpAllowlist?: string[],
+  sdkEnv?: Record<string, string | undefined>,
+): Promise<AgentResult> {
   let newSessionId: string | undefined;
   let resultText: string | null = null;
   let usage: UsageInfo | null = null;
@@ -216,70 +281,39 @@ export async function runAgent(
   let lastCallInputTokens = 0;
   let streamedText = '';
 
-  // Refresh typing indicator on an interval while Claude works.
-  // Telegram's "typing..." action expires after ~5s.
-  const typingInterval = setInterval(onTyping, 4000);
+  // Load MCP servers from project + user settings files, filtered by agent allowlist
+  const mcpServers = loadMcpServers(mcpAllowlist);
+  const mcpServerNames = Object.keys(mcpServers);
+  logger.info(
+    { sessionId: sessionId ?? 'new', messageLen: message.length, mcpServers: mcpServerNames },
+    'Starting agent query',
+  );
+
+  // SDK Options.mcpServers expects Record<string, McpServerConfig>
+  const mcpServerSpecs = mcpServerNames.length > 0 ? mcpServers : undefined;
 
   try {
-    // Load MCP servers from project + user settings files, filtered by agent allowlist
-    const mcpServers = loadMcpServers(mcpAllowlist);
-    const mcpServerNames = Object.keys(mcpServers);
-    logger.info(
-      { sessionId: sessionId ?? 'new', messageLen: message.length, mcpServers: mcpServerNames },
-      'Starting agent query',
-    );
-
-    // SDK Options.mcpServers expects Record<string, McpServerConfig>
-    const mcpServerSpecs = mcpServerNames.length > 0 ? mcpServers : undefined;
-
     for await (const event of query({
-      prompt: singleTurn(message),
-      options: {
-        // cwd = agent directory (if running as agent) or project root.
-        // Claude Code loads CLAUDE.md from cwd via settingSources: ['project'].
-        cwd: agentCwd ?? PROJECT_ROOT,
-
-        // Resume the previous session for this chat (persistent context)
-        resume: sessionId,
-
-        // 'project' loads CLAUDE.md from cwd; 'user' loads ~/.claude/skills/ and user settings
-        settingSources: ['project', 'user'],
-
-        // Skip all permission prompts — this is a trusted personal bot on your own machine
-        permissionMode: 'bypassPermissions',
-        allowDangerouslySkipPermissions: true,
-
-        // Cap agentic turns to prevent runaway tool-use loops (e.g. retrying
-        // stale cookies 40+ times). Configurable via AGENT_MAX_TURNS in .env.
-        ...(AGENT_MAX_TURNS > 0 ? { maxTurns: AGENT_MAX_TURNS } : {}),
-
-        // Explicit path to the Claude Code CLI binary (avoids PATH/PATHEXT
-        // resolution issues on Windows with .ps1 wrappers).
-        pathToClaudeCodeExecutable: CLAUDE_EXE,
-
-        // Pass secrets to the subprocess without polluting our own process.env
-        env: sdkEnv,
-
-        // MCP servers loaded from .claude/settings.json and ~/.claude/settings.json
-        ...(mcpServerSpecs ? { mcpServers: mcpServerSpecs } : {}),
-
-        // Stream partial text so Telegram can show progressive updates
-        includePartialMessages: !!onStreamText,
-
-        // Model override (e.g. 'claude-haiku-4-5', 'claude-sonnet-4-5')
-        ...(model ? { model } : {}),
-
-        // Abort support — signals the SDK to kill the subprocess
-        ...(abortController ? { abortController } : {}),
-
-        // Log stderr from the Claude Code child process for debugging spawn
-        // failures (OAuth errors, version mismatches, native-module crashes).
-        stderr: (data: string) => {
-          if (data.trim()) logger.warn({ claudeStderr: data.trim() }, 'Claude Code stderr');
-        },
+    prompt: singleTurn(message),
+    options: {
+      cwd: agentCwd ?? PROJECT_ROOT,
+      resume: sessionId,
+      settingSources: ['project', 'user'],
+      permissionMode: 'bypassPermissions',
+      allowDangerouslySkipPermissions: true,
+      ...(AGENT_MAX_TURNS > 0 ? { maxTurns: AGENT_MAX_TURNS } : {}),
+      pathToClaudeCodeExecutable: CLAUDE_EXE,
+      env: sdkEnv,
+      ...(mcpServerSpecs ? { mcpServers: mcpServerSpecs } : {}),
+      includePartialMessages: !!onStreamText,
+      ...(model ? { model } : {}),
+      ...(abortController ? { abortController } : {}),
+      stderr: (data: string) => {
+        if (data.trim()) logger.warn({ claudeStderr: data.trim() }, 'Claude Code stderr');
       },
+    },
     })) {
-      const ev = event as Record<string, unknown>;
+    const ev = event as Record<string, unknown>;
 
       if (ev['type'] === 'system' && ev['subtype'] === 'init') {
         newSessionId = ev['session_id'] as string;
@@ -397,8 +431,6 @@ export async function runAgent(
       return { text: null, newSessionId, usage, aborted: true };
     }
     throw err;
-  } finally {
-    clearInterval(typingInterval);
   }
 
   return { text: resultText, newSessionId, usage };
