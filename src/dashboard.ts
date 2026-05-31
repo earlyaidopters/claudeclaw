@@ -391,7 +391,7 @@ export function startDashboard(botApi?: Api<RawApi>): void {
     const isApiOrWs =
       pathname.startsWith('/api/') ||
       pathname.startsWith('/ws/') ||
-      pathname.startsWith('/warroom');
+      pathname.startsWith('/warroom/');  // only sub-paths; /warroom itself has its own explicit route
     if (
       c.req.method === 'GET' &&
       !isApiOrWs &&
@@ -453,14 +453,30 @@ export function startDashboard(botApi?: Api<RawApi>): void {
     });
   });
 
-  // War Room page (legacy voice UI). The SPA has its own WarRoom view under
-  // /warroom in v2 routing, but the original /warroom HTML is preserved for
-  // direct access and for clients that haven't loaded the SPA. This embeds
-  // DASHBOARD_TOKEN in the HTML so it MUST require the token.
+  // War Room page. The SPA has its own WarRoom view at /warroom (Preact router).
+  // The original /warroom HTML is preserved as the "classic" entry-point for
+  // direct legacy access (voice room, deep-links that carry ?token=).
+  //
+  // Routing logic:
+  //   • token present + valid  → legacy War Room HTML  (e.g. "Open in classic"
+  //                               card, "Launch voice meeting" button, Telegram
+  //                               deep-links that all include ?token=…)
+  //   • no token               → SPA shell  (sidebar nav, hard-refresh, bookmark)
+  //                               The Preact router then renders <WarRoom />.
   app.get('/warroom', (c) => {
+    const token = c.req.query('token');
+    if (safeTokenEqual(token, DASHBOARD_TOKEN)) {
+      // Valid token in URL — caller wants the legacy embedded HTML.
+      const chatId = c.req.query('chatId') || '';
+      return c.html(getWarRoomHtml(DASHBOARD_TOKEN, chatId, WARROOM_PORT));
+    }
+    // No (or invalid) token — serve the SPA shell so the Preact router handles it.
+    if (!legacyMode && fs.existsSync(newDashboardIndex)) {
+      return c.html(fs.readFileSync(newDashboardIndex, 'utf-8'));
+    }
+    // Full legacy mode: require the token.
     const denied = requireToken(c); if (denied) return denied;
-    const chatId = c.req.query('chatId') || '';
-    return c.html(getWarRoomHtml(DASHBOARD_TOKEN, chatId, WARROOM_PORT));
+    return c.html(getWarRoomHtml(DASHBOARD_TOKEN, c.req.query('chatId') || '', WARROOM_PORT));
   });
 
   // Serve War Room background music (user's custom music.mp3 first, then bundled entrance.mp3)
