@@ -1,9 +1,12 @@
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { Api, Bot, Context, InputFile, RawApi } from 'grammy';
 
-import { runAgent, UsageInfo, AgentProgressEvent } from './agent.js';
+import { runAgent, runAgentWithRetry, UsageInfo, AgentProgressEvent } from './agent.js';
+import { isAgentRunning } from './agent-create.js';
+import { AgentError } from './errors.js';
 import {
   AGENT_ID,
   ALLOWED_CHAT_ID,
@@ -15,15 +18,30 @@ import {
   activeBotToken,
   agentDefaultModel,
   agentMcpAllowlist,
+  agentSkillsAllowlist,
   agentSystemPrompt,
   TYPING_REFRESH_MS,
   AGENT_TIMEOUT_MS,
   STREAM_STRATEGY,
+  MODEL_FALLBACK_CHAIN,
+  SHOW_COST_FOOTER,
+  SMART_ROUTING_ENABLED,
+  SMART_ROUTING_CHEAP_MODEL,
+  EXFILTRATION_GUARD_ENABLED,
+  PROTECTED_ENV_VARS,
+  DAILY_COST_BUDGET,
+  HOURLY_TOKEN_BUDGET,
+  MEMORY_NOTIFY,
+  PROJECT_ROOT,
 } from './config.js';
-import { clearSession, getRecentConversation, getRecentMemories, getRecentTaskOutputs, getSession, getSessionConversation, logToHiveMind, pinMemory, unpinMemory, setSession, lookupWaChatId, saveWaMessageMap, saveTokenUsage } from './db.js';
+import { clearSession, createMissionTask, getMissionTask, getRecentConversation, getRecentMemories, getRecentTaskOutputs, getSession, getSessionConversation, logToHiveMind, pinMemory, unpinMemory, setSession, lookupWaChatId, saveWaMessageMap, saveTokenUsage, saveCompactionEvent, getCompactionCount } from './db.js';
 import { logger } from './logger.js';
 import { downloadMedia, buildPhotoMessage, buildDocumentMessage, buildVideoMessage } from './media.js';
-import { buildMemoryContext, evaluateMemoryRelevance, saveConversationTurn } from './memory.js';
+import { buildMemoryContext, evaluateMemoryRelevance, saveConversationTurn, shouldNudgeMemory, MEMORY_NUDGE_TEXT } from './memory.js';
+import { classifyMessageComplexity } from './message-classifier.js';
+import { scanForSecrets, redactSecrets } from './exfiltration-guard.js';
+import { trackUsage, getRateStatus } from './rate-tracker.js';
+import { buildCostFooter } from './cost-footer.js';
 import { setHighImportanceCallback } from './memory-ingest.js';
 import { messageQueue } from './message-queue.js';
 import { parseDelegation, delegateToAgent, getAvailableAgents } from './orchestrator.js';
@@ -346,11 +364,31 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
     return;
   }
 
-  // First-run setup guidance: ALLOWED_CHAT_ID not set yet
+  // First-run setup: auto-save the chat ID and restart
   if (!ALLOWED_CHAT_ID) {
-    await ctx.reply(
-      `Your chat ID is ${chatId}.\n\nAdd this to your .env:\n\nALLOWED_CHAT_ID=${chatId}\n\nThen restart ClaudeClaw.`,
-    );
+    const envPath = path.join(PROJECT_ROOT, '.env');
+    try {
+      let envContent = fs.existsSync(envPath) ? fs.readFileSync(envPath, 'utf-8') : '';
+      if (envContent.includes('ALLOWED_CHAT_ID=')) {
+        // Replace existing empty value
+        envContent = envContent.replace(/ALLOWED_CHAT_ID=.*/, `ALLOWED_CHAT_ID=${chatId}`);
+      } else {
+        // Append
+        envContent += `\nALLOWED_CHAT_ID=${chatId}\n`;
+      }
+      fs.writeFileSync(envPath, envContent);
+      await ctx.reply(
+        `Setup complete! Your chat ID (${chatId}) has been saved.\n\nRestarting now...`,
+      );
+      logger.info({ chatId }, 'Auto-saved ALLOWED_CHAT_ID to .env, restarting');
+      // Give Telegram a moment to deliver the message, then restart
+      setTimeout(() => process.exit(0), 1000);
+    } catch (err) {
+      logger.error({ err }, 'Could not auto-save chat ID');
+      await ctx.reply(
+        `Your chat ID is ${chatId}.\n\nI couldn't save it automatically. Open the .env file in your claudeclaw-os folder and add this line:\n\nALLOWED_CHAT_ID=${chatId}\n\nThen restart with: npm start`,
+      );
+    }
     return;
   }
 
@@ -451,8 +489,19 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
     parts.push(`[Recent scheduled task context — the user may be replying to this]\n${taskLines.join('\n\n')}\n[End task context]`);
   }
 
+  // Memory nudge: remind the agent to persist knowledge if it's been a while
+  if (shouldNudgeMemory(chatIdStr, AGENT_ID)) {
+    parts.push(MEMORY_NUDGE_TEXT);
+  }
+
   parts.push(message);
   const fullMessage = parts.join('\n\n');
+
+  // Smart model routing: use cheap model for simple acknowledgments
+  const userModel = chatModelOverride.get(chatIdStr) ?? agentDefaultModel;
+  const effectiveModel = (SMART_ROUTING_ENABLED && !userModel && classifyMessageComplexity(message) === 'simple')
+    ? SMART_ROUTING_CHEAP_MODEL
+    : (userModel ?? 'claude-opus-4-6');
 
   // Start typing immediately, then refresh on interval
   await sendTyping(ctx.api, chatId);
@@ -531,14 +580,18 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
       }
     } : undefined;
 
-    const result = await runAgent(
+    const result = await runAgentWithRetry(
       fullMessage,
       sessionId,
       () => void sendTyping(ctx.api, chatId),
       onProgress,
-      chatModelOverride.get(chatIdStr) ?? agentDefaultModel,
+      effectiveModel,
       abortCtrl,
       onStreamText,
+      (attempt, error) => {
+        void ctx.reply(`${error.recovery.userMessage} (retry ${attempt}/${2})`).catch(() => {});
+      },
+      MODEL_FALLBACK_CHAIN.length > 0 ? MODEL_FALLBACK_CHAIN : undefined,
       agentMcpAllowlist,
     );
 
@@ -555,7 +608,7 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
     if (result.aborted) {
       setProcessing(chatIdStr, false);
       const msg = result.text === null
-        ? `Timed out after ${Math.round(AGENT_TIMEOUT_MS / 1000)}s. The task may have been too complex or a command got stuck. Try breaking it into smaller steps.`
+        ? `Timed out after ${Math.round(AGENT_TIMEOUT_MS / 1000)}s. Raise AGENT_TIMEOUT_MS in your .env (default is 1800000 = 30 min) and restart, or break the task into smaller steps.`
         : 'Stopped.';
       emitChatEvent({ type: 'assistant_message', chatId: chatIdStr, content: msg, source: 'telegram' });
       await ctx.reply(msg);
@@ -567,10 +620,28 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
       logger.info({ newSessionId: result.newSessionId }, 'Session saved');
     }
 
-    const rawResponse = result.text?.trim() || 'Done.';
+    let rawResponse = result.text?.trim() || 'Done.';
+
+    // Exfiltration guard: scan for leaked secrets before sending to Telegram
+    if (EXFILTRATION_GUARD_ENABLED) {
+      const protectedValues = PROTECTED_ENV_VARS
+        .map((key) => process.env[key])
+        .filter((v): v is string => !!v && v.length > 8);
+      const secretMatches = scanForSecrets(rawResponse, protectedValues);
+      if (secretMatches.length > 0) {
+        rawResponse = redactSecrets(rawResponse, secretMatches);
+        logger.warn(
+          { matchCount: secretMatches.length, types: secretMatches.map((m) => m.type) },
+          'Exfiltration guard: redacted secrets from response',
+        );
+      }
+    }
 
     // Extract file markers before any formatting
     const { text: responseText, files: fileMarkers } = extractFileMarkers(rawResponse);
+
+    // Add cost footer
+    const costFooter = buildCostFooter(SHOW_COST_FOOTER, result.usage, effectiveModel);
 
     // Save conversation turn to memory (including full log).
     // Skip logging for synthetic messages like /respin to avoid self-referential growth.
@@ -610,19 +681,21 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
     const shouldSpeakBack = caps.tts && (forceVoiceReply || voiceEnabledChats.has(chatIdStr));
 
     // Send text response (if there's any left after stripping markers)
-    if (responseText) {
+    const textWithFooter = responseText ? responseText + costFooter : '';
+    if (textWithFooter) {
       if (shouldSpeakBack) {
         try {
+          // Don't speak the cost footer, just the actual response
           const audioBuffer = await synthesizeSpeech(responseText);
           await ctx.replyWithVoice(new InputFile(audioBuffer, 'response.ogg'));
         } catch (ttsErr) {
           logger.error({ err: ttsErr }, 'TTS failed, falling back to text');
-          for (const part of splitMessage(formatForTelegram(responseText))) {
+          for (const part of splitMessage(formatForTelegram(textWithFooter))) {
             await ctx.reply(part, { parse_mode: 'HTML' });
           }
         }
       } else {
-        for (const part of splitMessage(formatForTelegram(responseText))) {
+        for (const part of splitMessage(formatForTelegram(textWithFooter))) {
           await ctx.reply(part, { parse_mode: 'HTML' });
         }
       }
@@ -647,9 +720,32 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
         logger.error({ err: dbErr }, 'Failed to save token usage');
       }
 
+      // Track usage for rate limiting
+      trackUsage(result.usage.inputTokens + result.usage.outputTokens, result.usage.totalCostUsd);
+
+      // Compaction tracking
+      if (result.usage.didCompact && activeSessionId) {
+        saveCompactionEvent(
+          activeSessionId,
+          result.usage.preCompactTokens ?? 0,
+          result.usage.lastCallInputTokens,
+          0,
+        );
+        const compactionCount = getCompactionCount(activeSessionId);
+        if (compactionCount >= 2) {
+          await ctx.reply('Context compacted multiple times. Consider /newchat to keep response quality high.');
+        }
+      }
+
       const warning = checkContextWarning(chatIdStr, activeSessionId, result.usage);
       if (warning) {
         await ctx.reply(warning);
+      }
+
+      // Rate limit warnings
+      const rateStatus = getRateStatus(DAILY_COST_BUDGET, HOURLY_TOKEN_BUDGET);
+      for (const rateWarning of rateStatus.warnings) {
+        await ctx.reply(rateWarning);
       }
     }
 
@@ -658,23 +754,15 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
     clearInterval(typingInterval);
     setActiveAbort(chatIdStr, null);
     setProcessing(chatIdStr, false);
-    logger.error({ err }, 'Agent error');
 
-    // Detect context window exhaustion (process exits with code 1 after long sessions)
-    const errMsg = err instanceof Error ? err.message : String(err);
-    if (errMsg.includes('exited with code 1')) {
-      const usage = lastUsage.get(chatIdStr);
-      const contextSize = usage?.lastCallInputTokens || usage?.lastCallCacheRead || 0;
-      if (contextSize > 0) {
-        // We have prior usage data — context exhaustion is plausible
-        await ctx.reply(
-          `Context window likely exhausted. Last known context: ~${Math.round(contextSize / 1000)}k tokens.\n\nUse /newchat to start fresh, then /respin to pull recent conversation back in.`,
-        );
-      } else {
-        // No prior usage — likely a subprocess init failure, not context exhaustion
-        await ctx.reply('Claude Code subprocess failed to start. Check logs or try /newchat.');
-      }
+    if (err instanceof AgentError) {
+      logger.error(
+        { category: err.category, recovery: err.recovery },
+        'Agent error (classified)',
+      );
+      await ctx.reply(err.recovery.userMessage);
     } else {
+      logger.error({ err }, 'Agent error (unclassified)');
       await ctx.reply('Something went wrong. Check the logs and try again.');
     }
   }
@@ -683,10 +771,18 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
 /**
  * Auto-discover user-invocable skills from ~/.claude/skills/.
  * Reads SKILL.md frontmatter for name + description when user_invocable: true.
+ *
+ * If `allowlist` is provided (from agent.yaml's skills_allowlist field), only
+ * skills whose normalised name appears in the list are returned. Lets a
+ * team-scoped bot expose a restricted skill surface while the global skills
+ * directory stays intact.
  */
-function discoverSkillCommands(): Array<{ command: string; description: string }> {
+function discoverSkillCommands(allowlist?: string[]): Array<{ command: string; description: string }> {
   const skillsDir = path.join(os.homedir(), '.claude', 'skills');
   const commands: Array<{ command: string; description: string }> = [];
+  const allow = allowlist && allowlist.length > 0
+    ? new Set(allowlist.map((s) => s.toLowerCase()))
+    : null;
 
   let entries: string[];
   try {
@@ -716,6 +812,9 @@ function discoverSkillCommands(): Array<{ command: string; description: string }
       if (!nameMatch) continue;
       const name = nameMatch[1].trim().toLowerCase().replace(/[^a-z0-9_]/g, '');
       if (!name) continue;
+
+      // Honour per-agent allowlist when set
+      if (allow && !allow.has(name)) continue;
 
       // Extract description (truncate to 256 chars for Telegram limit)
       const descMatch = fm.match(/^description:\s*(.+)$/m);
@@ -752,11 +851,23 @@ export function createBot(): Bot {
   });
 
   // Register callback for high-importance memory notifications.
-  // When a memory with importance >= 0.8 is created, notify via Telegram
-  // so the user can /pin it if it should be permanent.
-  if (ALLOWED_CHAT_ID) {
-    setHighImportanceCallback((memoryId, summary, importance) => {
-      const msg = `🧠 New memory #${memoryId} [${importance.toFixed(1)}]: ${summary.slice(0, 200)}\n\n/pin ${memoryId} to make permanent`;
+  // When a memory with importance >= 0.8 is created we (a) notify via
+  // Telegram so the user can /pin it if it should be permanent, and (b)
+  // ask the memory-to-tasks dispatcher whether this looks like a concrete
+  // commitment (e.g. "follow up with Ralph by Friday") — if so, the
+  // dispatcher creates a ClickUp task and the Telegram notification gets
+  // the task link appended.
+  if (ALLOWED_CHAT_ID && MEMORY_NOTIFY) {
+    setHighImportanceCallback(async (memoryId, summary, importance, rawText) => {
+      const baseMsg = `🧠 New memory #${memoryId} [${importance.toFixed(1)}]: ${summary.slice(0, 200)}\n\n/pin ${memoryId} to make permanent`;
+      let msg = baseMsg;
+      try {
+        const { dispatchMemoryToClickUp } = await import('./memory-to-tasks.js');
+        const r = await dispatchMemoryToClickUp(memoryId, summary, rawText, importance);
+        if (r.taskId) {
+          msg = baseMsg + `\n\n✅ Auto-created ClickUp task ${r.taskId} (${r.reason})`;
+        }
+      } catch { /* non-fatal: keep base msg */ }
       bot.api.sendMessage(ALLOWED_CHAT_ID, msg).catch(() => {});
     });
   }
@@ -780,10 +891,13 @@ export function createBot(): Bot {
     { command: 'lock', description: 'Lock session (requires PIN to unlock)' },
     { command: 'status', description: 'Show security status' },
   ];
-  const skillCommands = discoverSkillCommands();
+  const skillCommands = discoverSkillCommands(agentSkillsAllowlist);
   const allCommands = [...builtInCommands, ...skillCommands].slice(0, 100); // Telegram limit: 100 commands
+  // Cache for deterministic slash-command dispatch in the text handler.
+  // Lowercased, no leading slash.
+  const userInvocableSkills = new Set<string>(skillCommands.map((s) => s.command));
   bot.api.setMyCommands(allCommands)
-    .then(() => logger.info({ count: skillCommands.length }, 'Registered %d skill commands with Telegram', skillCommands.length))
+    .then(() => logger.info({ count: skillCommands.length, allowlisted: !!agentSkillsAllowlist }, 'Registered %d skill commands with Telegram', skillCommands.length))
     .catch((err) => logger.warn({ err }, 'Failed to register bot commands with Telegram'));
 
   // /help — list available commands
@@ -888,8 +1002,10 @@ export function createBot(): Bot {
     if (await replyIfLocked(ctx)) return;
     const chatIdStr = ctx.chat!.id.toString();
 
-    // Pull the last 20 turns (10 back-and-forth exchanges) from conversation_log
-    const turns = getRecentConversation(chatIdStr, 20);
+    // Pull the last 20 turns (10 back-and-forth exchanges) from conversation_log.
+    // Filter by AGENT_ID so /respin in main doesn't bleed in turns from
+    // research/comms/content/ops under the same chat_id.
+    const turns = getRecentConversation(chatIdStr, 20, AGENT_ID);
     if (turns.length === 0) {
       await ctx.reply('No conversation history to respin from.');
       return;
@@ -964,7 +1080,7 @@ export function createBot(): Bot {
   bot.command('memory', async (ctx) => {
     if (await replyIfLocked(ctx)) return;
     const chatId = ctx.chat!.id.toString();
-    const recent = getRecentMemories(chatId, 10);
+    const recent = getRecentMemories(chatId, 10, AGENT_ID);
     if (recent.length === 0) {
       await ctx.reply('No memories yet.');
       return;
@@ -1088,7 +1204,10 @@ export function createBot(): Bot {
     const chatIdStr = ctx.chat!.id.toString();
     const base = DASHBOARD_URL || `http://localhost:${DASHBOARD_PORT}`;
     const url = `${base}/?token=${DASHBOARD_TOKEN}&chatId=${chatIdStr}`;
-    await ctx.reply(`<a href="${url}">Open Dashboard</a>`, { parse_mode: 'HTML' });
+
+    const { InlineKeyboard } = await import('grammy');
+    const keyboard = new InlineKeyboard().url('Open Dashboard', url);
+    await ctx.reply('Dashboard', { reply_markup: keyboard });
   });
 
   // /stop — interrupt the current agent query
@@ -1173,8 +1292,32 @@ export function createBot(): Bot {
     const chatIdStr = ctx.chat!.id.toString();
 
     if (text.startsWith('/')) {
-      const cmd = text.split(/[\s@]/)[0].toLowerCase();
-      if (OWN_COMMANDS.has(cmd)) return; // already handled by bot.command() above
+      const firstToken = text.split(/[\s@]/)[0].toLowerCase();
+      if (OWN_COMMANDS.has(firstToken)) return; // already handled by bot.command() above
+
+      // Deterministic skill dispatch: if the slash command matches a
+      // user-invocable skill (optionally filtered by agent.yaml's
+      // skills_allowlist), rewrite the prompt to an explicit Skill-tool
+      // directive instead of hoping the agent loop infers intent.
+      const skillName = firstToken.slice(1).split('@')[0];
+      if (skillName && userInvocableSkills.has(skillName)) {
+        if (!isAuthorised(ctx.chat!.id)) return;
+        if (isLocked()) {
+          if (unlock(text)) {
+            await ctx.reply('Unlocked. Session active.');
+          } else {
+            await ctx.reply('Session locked. Send your PIN to unlock.');
+          }
+          return;
+        }
+        touchActivity();
+        const rawArgs = text.slice(firstToken.length).trim();
+        const directive = rawArgs
+          ? `Invoke the \`${skillName}\` skill now via the Skill tool. Follow its SKILL.md instructions exactly. Do not ask for confirmation. Arguments: ${rawArgs}`
+          : `Invoke the \`${skillName}\` skill now via the Skill tool. Follow its SKILL.md instructions exactly. Do not ask for confirmation.`;
+        messageQueue.enqueue(chatIdStr, () => handleMessage(ctx, directive));
+        return;
+      }
     }
 
     // ── Security: kill phrase + lock check (before any state machines) ──
@@ -1352,17 +1495,23 @@ export function createBot(): Bot {
 
   // Voice messages — real transcription via Groq Whisper
   bot.on('message:voice', async (ctx) => {
+    const chatId = ctx.chat!.id;
+    if (!isAuthorised(chatId)) return;
     const caps = voiceCapabilities();
     if (!caps.stt) {
       await ctx.reply('Voice transcription not configured. Add GROQ_API_KEY to .env');
       return;
     }
-    const chatId = ctx.chat!.id;
-    if (!isAuthorised(chatId)) return;
     if (!ALLOWED_CHAT_ID) {
       await ctx.reply(
-        `Your chat ID is ${chatId}.\n\nAdd this to your .env:\n\nALLOWED_CHAT_ID=${chatId}\n\nThen restart ClaudeClaw.`,
+        `Your chat ID is ${chatId}.\n\nAdd this to your .env:\n\nALLOWED_CHAT_ID=${chatId}\n\nThen restart ClaudeClaw OS.`,
       );
+      return;
+    }
+    // Telegram Bot API caps downloads at 20MB regardless of server-side size.
+    const voiceSize = ctx.message.voice.file_size;
+    if (voiceSize && voiceSize > 20 * 1024 * 1024) {
+      await ctx.reply('Voice message is over 20 MB (Telegram bot download cap). Try a shorter clip.');
       return;
     }
 
@@ -1380,13 +1529,54 @@ export function createBot(): Bot {
     }
   });
 
+  // Audio files — transcription via the same Whisper path as voice notes.
+  // Telegram emits message:audio for music files and uploaded audio that
+  // wasn't recorded as a voice note (podcast clips, recorded meetings,
+  // an .mp3 dragged in from Finder). Without this handler, those files
+  // fall through to message:document and get passed to Claude as opaque
+  // file context rather than a transcript. The only difference from the
+  // voice handler is which Telegram field holds the file_id.
+  bot.on('message:audio', async (ctx) => {
+    const chatId = ctx.chat!.id;
+    if (!isAuthorised(chatId)) return;
+    const caps = voiceCapabilities();
+    if (!caps.stt) {
+      await ctx.reply('Audio transcription not configured. Add GROQ_API_KEY to .env');
+      return;
+    }
+    if (!ALLOWED_CHAT_ID) {
+      await ctx.reply(
+        `Your chat ID is ${chatId}.\n\nAdd this to your .env:\n\nALLOWED_CHAT_ID=${chatId}\n\nThen restart ClaudeClaw OS.`,
+      );
+      return;
+    }
+    // Audio uploads hit the 20MB bot download cap more often than voice notes.
+    const audioSize = ctx.message.audio.file_size;
+    if (audioSize && audioSize > 20 * 1024 * 1024) {
+      await ctx.reply('Audio file is over 20 MB (Telegram bot download cap). Split or compress first.');
+      return;
+    }
+
+    try {
+      const fileId = ctx.message.audio.file_id;
+      const localPath = await downloadTelegramFile(activeBotToken, fileId, UPLOADS_DIR);
+      const transcribed = await transcribeAudio(localPath);
+      const wantsVoiceBack = /\b(respond (with|via|in) voice|send (me )?(a )?voice( note| back)?|voice reply|reply (with|via) voice)\b/i.test(transcribed);
+      const chatIdStr = ctx.chat!.id.toString();
+      messageQueue.enqueue(chatIdStr, () => handleMessage(ctx, `[Voice transcribed]: ${transcribed}`, wantsVoiceBack));
+    } catch (err) {
+      logger.error({ err }, 'Audio transcription failed');
+      await ctx.reply('Could not transcribe audio file. Try again.');
+    }
+  });
+
   // Photos — download and pass to Claude
   bot.on('message:photo', async (ctx) => {
     const chatId = ctx.chat!.id;
     if (!isAuthorised(chatId)) return;
     if (!ALLOWED_CHAT_ID) {
       await ctx.reply(
-        `Your chat ID is ${chatId}.\n\nAdd this to your .env:\n\nALLOWED_CHAT_ID=${chatId}\n\nThen restart ClaudeClaw.`,
+        `Your chat ID is ${chatId}.\n\nAdd this to your .env:\n\nALLOWED_CHAT_ID=${chatId}\n\nThen restart ClaudeClaw OS.`,
       );
       return;
     }
@@ -1409,7 +1599,7 @@ export function createBot(): Bot {
     if (!isAuthorised(chatId)) return;
     if (!ALLOWED_CHAT_ID) {
       await ctx.reply(
-        `Your chat ID is ${chatId}.\n\nAdd this to your .env:\n\nALLOWED_CHAT_ID=${chatId}\n\nThen restart ClaudeClaw.`,
+        `Your chat ID is ${chatId}.\n\nAdd this to your .env:\n\nALLOWED_CHAT_ID=${chatId}\n\nThen restart ClaudeClaw OS.`,
       );
       return;
     }
@@ -1432,7 +1622,7 @@ export function createBot(): Bot {
     const chatId = ctx.chat!.id;
     if (!isAuthorised(chatId)) return;
     if (!ALLOWED_CHAT_ID) {
-      await ctx.reply(`Your chat ID is ${chatId}.\n\nAdd this to your .env:\n\nALLOWED_CHAT_ID=${chatId}\n\nThen restart ClaudeClaw.`);
+      await ctx.reply(`Your chat ID is ${chatId}.\n\nAdd this to your .env:\n\nALLOWED_CHAT_ID=${chatId}\n\nThen restart ClaudeClaw OS.`);
       return;
     }
 
@@ -1454,7 +1644,7 @@ export function createBot(): Bot {
     const chatId = ctx.chat!.id;
     if (!isAuthorised(chatId)) return;
     if (!ALLOWED_CHAT_ID) {
-      await ctx.reply(`Your chat ID is ${chatId}.\n\nAdd this to your .env:\n\nALLOWED_CHAT_ID=${chatId}\n\nThen restart ClaudeClaw.`);
+      await ctx.reply(`Your chat ID is ${chatId}.\n\nAdd this to your .env:\n\nALLOWED_CHAT_ID=${chatId}\n\nThen restart ClaudeClaw OS.`);
       return;
     }
 
@@ -1480,8 +1670,105 @@ export function createBot(): Bot {
 }
 
 /**
- * Process a message sent from the dashboard web UI.
- * Runs the agent pipeline and relays the response to Telegram.
+ * Dispatch a dashboard chat message to another agent's process via the
+ * mission task queue. The target agent claims the task from its own
+ * scheduler loop, runs it with its own model / system prompt / memory /
+ * session, and saves the turns to conversation_log under its agent_id.
+ *
+ * This function watches the task for completion and emits SSE chat events
+ * so the dashboard frontend renders the response in the right tab.
+ */
+export function dispatchDashboardChatToAgent(
+  text: string,
+  targetAgentId: string,
+): void {
+  if (!ALLOWED_CHAT_ID) return;
+  const chatIdStr = ALLOWED_CHAT_ID;
+
+  emitChatEvent({
+    type: 'user_message',
+    chatId: chatIdStr,
+    agentId: targetAgentId,
+    content: text,
+    source: 'dashboard',
+  });
+
+  // Dead-agent short-circuit. If the target agent's process isn't running,
+  // the chat mission will never be claimed. Fail fast instead of waiting
+  // out the 10-minute poller.
+  if (targetAgentId !== AGENT_ID && !isAgentRunning(targetAgentId)) {
+    emitChatEvent({
+      type: 'error',
+      chatId: chatIdStr,
+      agentId: targetAgentId,
+      content: `Agent "${targetAgentId}" isn't running. Start it from Mission Control first.`,
+    });
+    return;
+  }
+
+  // Per-agent processing indicator. Doesn't touch the global processing
+  // state because the work runs in another process.
+  emitChatEvent({ type: 'processing', chatId: chatIdStr, agentId: targetAgentId, processing: true });
+
+  const taskId = crypto.randomBytes(4).toString('hex');
+  const title = text.length > 60 ? text.slice(0, 60) + '...' : text;
+  // Chat-type mission: no per-task timeout override (pass null so scheduler
+  // falls back to MISSION_TIMEOUT_MS), type='chat', chat_id carries scope.
+  createMissionTask(taskId, title, text, targetAgentId, AGENT_ID, 5, null, 'chat', chatIdStr);
+
+  logger.info(
+    { taskId, targetAgentId, chatId: chatIdStr, messageLen: text.length },
+    'Dispatched dashboard chat to agent process',
+  );
+
+  const watchStart = Date.now();
+  const watchTimeoutMs = 10 * 60 * 1000;
+  const pollMs = 1000;
+  const poller = setInterval(() => {
+    const task = getMissionTask(taskId);
+    if (!task) {
+      clearInterval(poller);
+      return;
+    }
+    if (task.status === 'completed') {
+      clearInterval(poller);
+      emitChatEvent({ type: 'processing', chatId: chatIdStr, agentId: targetAgentId, processing: false });
+      emitChatEvent({
+        type: 'assistant_message',
+        chatId: chatIdStr,
+        agentId: targetAgentId,
+        content: task.result ?? 'Done.',
+        source: 'dashboard',
+      });
+      return;
+    }
+    if (task.status === 'failed' || task.status === 'cancelled') {
+      clearInterval(poller);
+      emitChatEvent({ type: 'processing', chatId: chatIdStr, agentId: targetAgentId, processing: false });
+      emitChatEvent({
+        type: 'error',
+        chatId: chatIdStr,
+        agentId: targetAgentId,
+        content: task.error ?? `Agent task ${task.status}.`,
+      });
+      return;
+    }
+    if (Date.now() - watchStart > watchTimeoutMs) {
+      clearInterval(poller);
+      emitChatEvent({ type: 'processing', chatId: chatIdStr, agentId: targetAgentId, processing: false });
+      emitChatEvent({
+        type: 'error',
+        chatId: chatIdStr,
+        agentId: targetAgentId,
+        content: 'Agent did not respond in time. Task left running in the background.',
+      });
+    }
+  }, pollMs);
+}
+
+/**
+ * Process a message sent from the dashboard web UI for the hosting agent.
+ * Sub-agent messages go via dispatchDashboardChatToAgent above.
  * Response is delivered via SSE (fire-and-forget from the caller's perspective).
  */
 export async function processMessageFromDashboard(
@@ -1504,8 +1791,8 @@ async function processDashboardMessage(
   text: string,
   chatIdStr: string,
 ): Promise<void> {
-  emitChatEvent({ type: 'user_message', chatId: chatIdStr, content: text, source: 'dashboard' });
-  setProcessing(chatIdStr, true);
+  emitChatEvent({ type: 'user_message', chatId: chatIdStr, agentId: AGENT_ID, content: text, source: 'dashboard' });
+  setProcessing(chatIdStr, true, AGENT_ID);
 
   try {
     const sessionId = getSession(chatIdStr, AGENT_ID);
@@ -1528,7 +1815,7 @@ async function processDashboardMessage(
     const fullMessage = dashParts.join('\n\n');
 
     const onProgress = (event: AgentProgressEvent) => {
-      emitChatEvent({ type: 'progress', chatId: chatIdStr, description: event.description });
+      emitChatEvent({ type: 'progress', chatId: chatIdStr, agentId: AGENT_ID, description: event.description });
     };
 
     const abortCtrl = new AbortController();
@@ -1557,7 +1844,7 @@ async function processDashboardMessage(
       const msg = result.text === null
         ? `Timed out after ${Math.round(AGENT_TIMEOUT_MS / 1000)}s. Try breaking the task into smaller steps.`
         : 'Stopped.';
-      emitChatEvent({ type: 'assistant_message', chatId: chatIdStr, content: msg, source: 'dashboard' });
+      emitChatEvent({ type: 'assistant_message', chatId: chatIdStr, agentId: AGENT_ID, content: msg, source: 'dashboard' });
       return;
     }
 
@@ -1573,16 +1860,9 @@ async function processDashboardMessage(
       void evaluateMemoryRelevance(dashSurfacedIds, dashSummaries, text, rawResponse).catch(() => {});
     }
 
-    // Emit assistant response to SSE clients
-    emitChatEvent({ type: 'assistant_message', chatId: chatIdStr, content: rawResponse, source: 'dashboard' });
-
-    // Relay to Telegram so the user sees it there too
-    const { text: responseText } = extractFileMarkers(rawResponse);
-    if (responseText) {
-      for (const part of splitMessage(formatForTelegram(responseText))) {
-        await botApi.sendMessage(parseInt(chatIdStr), part, { parse_mode: 'HTML' });
-      }
-    }
+    // Emit assistant response to SSE clients. Dashboard chat and Telegram
+    // are distinct channels now — no Telegram mirror here.
+    emitChatEvent({ type: 'assistant_message', chatId: chatIdStr, agentId: AGENT_ID, content: rawResponse, source: 'dashboard' });
 
     // Log token usage
     if (result.usage) {
@@ -1606,9 +1886,9 @@ async function processDashboardMessage(
   } catch (err) {
     setActiveAbort(chatIdStr, null);
     logger.error({ err }, 'Dashboard message processing error');
-    emitChatEvent({ type: 'error', chatId: chatIdStr, content: 'Something went wrong. Check the logs.' });
+    emitChatEvent({ type: 'error', chatId: chatIdStr, agentId: AGENT_ID, content: 'Something went wrong. Check the logs.' });
   } finally {
-    setProcessing(chatIdStr, false);
+    setProcessing(chatIdStr, false, AGENT_ID);
   }
 }
 

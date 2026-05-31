@@ -178,16 +178,16 @@ describe('task state machine', () => {
       expect(tasks[0].last_status).toBe('timeout');
     });
 
-    it('truncates last_result to 500 chars', () => {
+    it('truncates last_result to 4000 chars', () => {
       const past = Math.floor(Date.now() / 1000) - 60;
       const futureNextRun = Math.floor(Date.now() / 1000) + 86400;
       createScheduledTask('t1', 'task', '0 9 * * *', past, 'main');
 
-      const longResult = 'x'.repeat(1000);
+      const longResult = 'x'.repeat(5000);
       updateTaskAfterRun('t1', futureNextRun, longResult, 'success');
 
       const tasks = getAllScheduledTasks('main');
-      expect(tasks[0].last_result).toHaveLength(500);
+      expect(tasks[0].last_result).toHaveLength(4000);
     });
 
     it('clears started_at after completion', () => {

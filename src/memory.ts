@@ -1,11 +1,13 @@
-import { agentObsidianConfig, GOOGLE_API_KEY } from './config.js';
+import { agentObsidianConfig, GOOGLE_API_KEY, MEMORY_NUDGE_INTERVAL_TURNS, MEMORY_NUDGE_INTERVAL_HOURS } from './config.js';
 import {
   batchUpdateMemoryRelevance,
   decayMemories,
   getConsolidationsWithEmbeddings,
+  getLastMemorySaveTime,
   getOtherAgentActivity,
   getRecentConsolidations,
   getRecentHighImportanceMemories,
+  getTurnCountSinceTimestamp,
   logConversationTurn,
   pruneConversationLog,
   pruneSlackMessages,
@@ -36,11 +38,21 @@ export interface MemoryContextResult {
   surfacedMemorySummaries: Map<number, string>;
 }
 
+export interface BuildMemoryContextOpts {
+  includeConsolidations?: boolean;
+  includeTeamActivity?: boolean;
+  includeRecallHistory?: boolean;
+  strictAgentId?: string;
+  warRoomBridge?: unknown;
+}
+
 export async function buildMemoryContext(
   chatId: string,
   userMessage: string,
   agentId = 'main',
+  opts: BuildMemoryContextOpts = {},
 ): Promise<MemoryContextResult> {
+  void opts; // accepted for war-room call-site parity; honored fields TBD
   const seen = new Set<number>();
   const summaryMap = new Map<number, string>();
   const memLines: string[] = [];
@@ -59,7 +71,7 @@ export async function buildMemoryContext(
   // NOTE: We do NOT touch memories here. The feedback loop (evaluateMemoryRelevance)
   // is the only thing that should boost salience/accessed_at. Touching at retrieval
   // creates a positive feedback loop where noise stays fresh forever.
-  const searched = searchMemories(chatId, userMessage, 5, queryEmbedding);
+  const searched = searchMemories(chatId, userMessage, 5, queryEmbedding, agentId);
   for (const mem of searched) {
     seen.add(mem.id);
     summaryMap.set(mem.id, mem.summary);
@@ -69,7 +81,7 @@ export async function buildMemoryContext(
   }
 
   // Layer 2: recent high-importance memories (deduplicated)
-  const recent = getRecentHighImportanceMemories(chatId, 5);
+  const recent = getRecentHighImportanceMemories(chatId, 5, agentId);
   for (const mem of recent) {
     if (seen.has(mem.id)) continue;
     seen.add(mem.id);
@@ -260,6 +272,31 @@ ${memoryList}`;
     // Non-fatal, never block
   }
 }
+
+/**
+ * Check whether a memory nudge should be injected into the context.
+ * Returns true if enough turns or time have passed since the last memory save.
+ */
+export function shouldNudgeMemory(chatId: string, agentId = 'main'): boolean {
+  const lastSave = getLastMemorySaveTime(chatId, agentId);
+
+  // Never nudge if no memories have been saved yet (first conversation)
+  if (lastSave === null) return false;
+
+  const now = Math.floor(Date.now() / 1000);
+  const hoursSinceSave = (now - lastSave) / 3600;
+
+  // Time-based nudge
+  if (hoursSinceSave >= MEMORY_NUDGE_INTERVAL_HOURS) return true;
+
+  // Turn-based nudge
+  const turnsSinceSave = getTurnCountSinceTimestamp(chatId, lastSave, agentId);
+  if (turnsSinceSave >= MEMORY_NUDGE_INTERVAL_TURNS) return true;
+
+  return false;
+}
+
+export const MEMORY_NUDGE_TEXT = '[Memory nudge: It has been a while since anything was saved to long-term memory. If any decisions, preferences, or important facts came up in this conversation, consider mentioning them so they can be remembered.]';
 
 /** Safely parse a JSON array string, returning [] on failure. */
 function safeParse(json: string): string[] {

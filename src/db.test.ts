@@ -110,6 +110,15 @@ describe('database', () => {
       expect(results).toEqual([]);
     });
 
+    it('does not return memories from other agents (FTS5 path)', () => {
+      saveStructuredMemory('chat1', 'raw', 'Main agent fact about TypeScript', [], ['coding'], 0.6, 'conversation', 'main');
+      saveStructuredMemory('chat1', 'raw', 'Sub agent fact about TypeScript', [], ['coding'], 0.6, 'conversation', 'raka');
+      const mainOnly = searchMemories('chat1', 'TypeScript', 5, undefined, 'main');
+      expect(mainOnly.every((m) => m.agent_id === 'main')).toBe(true);
+      const rakaOnly = searchMemories('chat1', 'TypeScript', 5, undefined, 'raka');
+      expect(rakaOnly.every((m) => m.agent_id === 'raka')).toBe(true);
+    });
+
     it('respects limit parameter', () => {
       saveStructuredMemory('chat1', 'raw', 'first topic about coding', [], ['coding'], 0.5);
       saveStructuredMemory('chat1', 'raw', 'second topic about coding', [], ['coding'], 0.5);
@@ -126,6 +135,26 @@ describe('database', () => {
       const mems = getRecentHighImportanceMemories('chat1', 10);
       expect(mems).toHaveLength(1);
       expect(mems[0].summary).toBe('high importance');
+    });
+
+    it('does not return memories from other agents', () => {
+      saveStructuredMemory('chat1', 'raw', 'main fact', [], [], 0.8, 'conversation', 'main');
+      saveStructuredMemory('chat1', 'raw', 'raka fact', [], [], 0.8, 'conversation', 'raka');
+      const mainMems = getRecentHighImportanceMemories('chat1', 10, 'main');
+      expect(mainMems.map((m) => m.summary)).toEqual(['main fact']);
+      const rakaMems = getRecentHighImportanceMemories('chat1', 10, 'raka');
+      expect(rakaMems.map((m) => m.summary)).toEqual(['raka fact']);
+    });
+  });
+
+  describe('getRecentMemories', () => {
+    it('does not return memories from other agents', () => {
+      saveStructuredMemory('chat1', 'raw', 'main only', [], [], 0.5, 'conversation', 'main');
+      saveStructuredMemory('chat1', 'raw', 'raka only', [], [], 0.5, 'conversation', 'raka');
+      const mainMems = getRecentMemories('chat1', 10, 'main');
+      expect(mainMems.map((m) => m.summary)).toEqual(['main only']);
+      const rakaMems = getRecentMemories('chat1', 10, 'raka');
+      expect(rakaMems.map((m) => m.summary)).toEqual(['raka only']);
     });
   });
 

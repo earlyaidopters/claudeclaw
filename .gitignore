@@ -37,6 +37,51 @@ migrations/.applied.json
 scripts/waste-reminder.sh
 
 # Personal config — lives in CLAUDECLAW_CONFIG (default ~/.claudeclaw)
-CLAUDE.md
-agents/*/agent.yaml
-agents/*/CLAUDE.md
+
+# Skills install artifacts (managed by the `skills` CLI).
+# Keep skills-lock.json tracked so installs are reproducible.
+.agents/
+.claude/skills/defuddle
+.claude/skills/json-canvas
+.claude/skills/obsidian-bases
+.claude/skills/obsidian-cli
+.claude/skills/obsidian-markdown
+
+# Third-party CLI cloned for reference (has its own .git)
+cli/
+
+# Personal knowledge base / memory
+memory/
+
+# Generated dashboard HTML (rebuilt from src/dashboard-html.ts)
+dashboard.html
+
+# Personal task tracker
+TASKS.md
+
+# Machine-specific launchd plists (contain absolute home paths)
+launchd/com.claudeclaw.tunnel.plist
+
+# War Room (Python) local artifacts
+warroom/.venv/
+warroom/__pycache__/
+warroom/**/__pycache__/
+
+# Untracked secrets + personal working files (added during osrepo parity port)
+client_secret_*.json
+*.apps.googleusercontent.com.json
+alaska-trip/
+drive_*.py
+drive_*.gs
+drive_*.md
+personal_sweep.py
+rocket_local_sweep.py
+daily-briefing.jsx
+
+# Vendasta connector credentials (service-account private keys) — NEVER commit
+secrets/
+*service-account*.json
+*partner-service-account*.json
+
+# Machine-specific MCP registration (absolute paths) — local only
+.claude/settings.json

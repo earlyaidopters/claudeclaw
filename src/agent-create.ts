@@ -389,6 +389,9 @@ export interface ActivationResult {
 }
 
 export function activateAgent(agentId: string): ActivationResult {
+  if (!VALID_ID_RE.test(agentId)) {
+    return { ok: false, error: `Invalid agent ID format: ${agentId}` };
+  }
   try {
     if (os.platform() === 'darwin') {
       return activateLaunchd(agentId);
@@ -465,6 +468,9 @@ function activateSystemd(agentId: string): ActivationResult {
 }
 
 export function deactivateAgent(agentId: string): { ok: boolean; error?: string } {
+  if (!VALID_ID_RE.test(agentId)) {
+    return { ok: false, error: `Invalid agent ID format: ${agentId}` };
+  }
   try {
     if (os.platform() === 'darwin') {
       const label = `com.claudeclaw.${agentId}`;
@@ -504,6 +510,9 @@ export function deactivateAgent(agentId: string): { ok: boolean; error?: string 
 // ── Delete ───────────────────────────────────────────────────────────
 
 export function deleteAgent(agentId: string): { ok: boolean; error?: string } {
+  if (!VALID_ID_RE.test(agentId)) {
+    return { ok: false, error: `Invalid agent ID format: ${agentId}` };
+  }
   // Deactivate first
   deactivateAgent(agentId);
 
@@ -556,6 +565,43 @@ export function pickAgentColor(existingCount: number): string {
 }
 
 /** Check if an agent process is currently running. */
+/**
+ * Restart an agent by deactivating then reactivating its service.
+ * Works on both macOS (launchd) and Linux (systemd).
+ */
+export function restartAgent(agentId: string): { ok: boolean; error?: string } {
+  // Validate agent ID format to prevent shell injection
+  if (!VALID_ID_RE.test(agentId)) {
+    return { ok: false, error: `Invalid agent ID format: ${agentId}` };
+  }
+  try {
+    if (os.platform() === 'darwin') {
+      const label = `com.claudeclaw.${agentId}`;
+      const destPlist = path.join(os.homedir(), 'Library', 'LaunchAgents', `${label}.plist`);
+      if (!fs.existsSync(destPlist)) {
+        return { ok: false, error: `Agent ${agentId} is not installed (no plist found)` };
+      }
+      const uid = os.userInfo().uid;
+      try {
+        execSync(`launchctl kickstart -k gui/${uid}/${label}`, { stdio: 'ignore' });
+      } catch {
+        try { execSync(`launchctl unload "${destPlist}"`, { stdio: 'ignore' }); } catch { /* ok */ }
+        execSync(`launchctl load "${destPlist}"`);
+      }
+      logger.info({ agentId }, 'Agent restarted (launchd)');
+      return { ok: true };
+    } else if (os.platform() === 'linux') {
+      const serviceName = `com.claudeclaw.agent-${agentId}`;
+      execSync(`systemctl --user restart "${serviceName}"`, { stdio: 'ignore' });
+      logger.info({ agentId }, 'Agent restarted (systemd)');
+      return { ok: true };
+    }
+    return { ok: false, error: `Unsupported platform: ${os.platform()}` };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 export function isAgentRunning(agentId: string): boolean {
   const pidFile = path.join(STORE_DIR, `agent-${agentId}.pid`);
   if (!fs.existsSync(pidFile)) return false;

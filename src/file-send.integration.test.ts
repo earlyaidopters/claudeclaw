@@ -184,7 +184,9 @@ describe('file sending: mocked Grammy context', () => {
 
 describe('file sending: real Telegram API', () => {
   const { token, chatId } = loadEnv();
-  const canRunRealTests = !!(token && chatId);
+  // Opt-in: these tests send real messages to the configured Telegram chat.
+  // Require RUN_LIVE_TELEGRAM_TESTS=1 so a plain `npm run test` is quiet.
+  const canRunRealTests = !!(token && chatId && process.env.RUN_LIVE_TELEGRAM_TESTS === '1');
 
   // Create a real temp file for the test
   let tmpFile: string;

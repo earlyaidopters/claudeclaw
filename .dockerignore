@@ -1,0 +1,56 @@
+# Build hygiene — keep the image small and never bake secrets/state into it.
+
+# Build artifacts (rebuilt in the container)
+dist
+node_modules
+.tsbuildinfo
+*.tsbuildinfo
+
+# Secrets & state — these come from Fly secrets + the persistent volume
+.env
+.env.*
+store/
+logs/
+*.log
+
+# Local-only data
+backups/
+warroom/client.bundle.js
+
+# Local Python venvs — built fresh inside the image (Mac binaries won't run on Linux)
+warroom/.venv
+warroom/__pycache__
+**/__pycache__
+**/*.pyc
+
+# Dev / CI noise
+.git
+.github
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+coverage
+.nyc_output
+
+# Mac launchd plist (not used in container)
+com.claudeclaw.*.plist
+~/Library/LaunchAgents
+
+# Documentation that doesn't need to ship with the image — we keep CLAUDE.md
+# explicitly listed so docker doesn't pick up README.md/etc. but the agent
+# personality and runbook files we DO want in the image.
+docs/
+FLY-MIGRATION.md
+README.md
+
+# Test files
+**/*.test.ts
+**/*.test.js
+__tests__
+__mocks__
+
+# OS / editor
+*.swp
+*.swo
+.cache

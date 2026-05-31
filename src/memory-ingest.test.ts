@@ -6,8 +6,7 @@ vi.mock('./gemini.js', () => ({
 }));
 
 vi.mock('./db.js', () => ({
-  saveStructuredMemory: vi.fn(() => 1),
-  saveMemoryEmbedding: vi.fn(),
+  saveStructuredMemoryAtomic: vi.fn(() => 1),
   getMemoriesWithEmbeddings: vi.fn(() => []),
 }));
 
@@ -22,11 +21,11 @@ vi.mock('./logger.js', () => ({
 
 import { ingestConversationTurn } from './memory-ingest.js';
 import { generateContent, parseJsonResponse } from './gemini.js';
-import { saveStructuredMemory } from './db.js';
+import { saveStructuredMemoryAtomic } from './db.js';
 
 const mockGenerateContent = vi.mocked(generateContent);
 const mockParseJson = vi.mocked(parseJsonResponse);
-const mockSave = vi.mocked(saveStructuredMemory);
+const mockSave = vi.mocked(saveStructuredMemoryAtomic);
 
 describe('ingestConversationTurn', () => {
   beforeEach(() => {
@@ -107,6 +106,7 @@ describe('ingestConversationTurn', () => {
       ['dark mode', 'UI'],
       ['preferences', 'UI'],
       0.8,
+      expect.any(Array),
       'conversation',
       'main',
     );
@@ -199,6 +199,7 @@ describe('ingestConversationTurn', () => {
       [],
       [],
       1.0,  // clamped
+      expect.any(Array),
       'conversation',
       'main',
     );
@@ -274,6 +275,7 @@ describe('ingestConversationTurn', () => {
       [],  // defaults to empty
       [],  // defaults to empty
       0.5,
+      expect.any(Array),
       'conversation',
       'main',
     );

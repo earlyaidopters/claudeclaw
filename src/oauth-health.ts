@@ -41,17 +41,25 @@ function getAlertThresholdMs(): number {
 }
 
 async function checkOAuthHealth(sender: Sender): Promise<void> {
-  // If a long-lived setup token is configured, the credentials file is irrelevant
-  const env = readEnvFile(['CLAUDE_CODE_OAUTH_TOKEN']);
-  if (env.CLAUDE_CODE_OAUTH_TOKEN) {
-    logger.debug('Using long-lived env token (CLAUDE_CODE_OAUTH_TOKEN), skipping credentials check');
+  // If a long-lived token or API key is configured, the credentials file is irrelevant
+  const env = readEnvFile(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY']);
+  if (env.CLAUDE_CODE_OAUTH_TOKEN || env.ANTHROPIC_API_KEY) {
+    logger.debug('Using env-based auth, skipping OAuth credentials check');
     lastAlertLevel = 'none';
     return;
   }
 
   const creds = readCredentials();
 
+  // No credentials file and no env-based auth: only alert if the file existed before
+  // (i.e. don't spam users who use CLI OAuth and just haven't logged in yet)
   if (!creds?.claudeAiOauth?.expiresAt) {
+    if (!fs.existsSync(CREDENTIALS_PATH)) {
+      // No credentials file at all. Auth might work via other means (e.g. claude login session).
+      // Don't alert, just log.
+      logger.debug('No credentials file found at %s, skipping OAuth health check', CREDENTIALS_PATH);
+      return;
+    }
     if (lastAlertLevel !== 'expired') {
       lastAlertLevel = 'expired';
       await sender(

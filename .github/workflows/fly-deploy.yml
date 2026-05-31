@@ -1,0 +1,31 @@
+name: Deploy to Fly.io
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - ".github/**"
+      - "scripts/**"
+      - "memory/**"
+      - "store/**"
+      - "logs/**"
+      - "FLY-MIGRATION.md"
+  workflow_dispatch:  # manual trigger from GitHub UI
+
+jobs:
+  deploy:
+    name: Build + Deploy
+    runs-on: ubuntu-latest
+    concurrency:
+      group: fly-deploy
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Deploy
+        run: flyctl deploy --remote-only --strategy immediate --app claudeclaw-impactworks
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

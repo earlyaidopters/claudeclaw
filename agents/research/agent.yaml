@@ -1,0 +1,18 @@
+name: Research
+description: Web research, competitive analysis, fact-finding, market intelligence
+
+telegram_bot_token_env: RESEARCH_BOT_TOKEN
+
+model: claude-sonnet-4-6
+
+obsidian:
+  vault: /app/store/obsidian-brain
+  folders:
+    - Clippings/
+  read_only: []
+
+# War Room tool opt-in. OVERRIDES the default allowlist; safe read-only tools
+# (incl. WebSearch/WebFetch) are always included. Adds Vendasta + ClickUp.
+warroom_tools:
+  - mcp:vendasta-crm
+  - mcp:clickup

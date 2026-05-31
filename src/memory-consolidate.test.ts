@@ -7,11 +7,8 @@ vi.mock('./gemini.js', () => ({
 
 vi.mock('./db.js', () => ({
   getUnconsolidatedMemories: vi.fn(),
-  saveConsolidation: vi.fn(() => 1),
+  saveConsolidationAtomic: vi.fn(() => 1),
   saveConsolidationEmbedding: vi.fn(),
-  supersedeMemory: vi.fn(),
-  markMemoriesConsolidated: vi.fn(),
-  updateMemoryConnections: vi.fn(),
 }));
 
 vi.mock('./embeddings.js', () => ({
@@ -26,17 +23,13 @@ import { runConsolidation } from './memory-consolidate.js';
 import { generateContent, parseJsonResponse } from './gemini.js';
 import {
   getUnconsolidatedMemories,
-  saveConsolidation,
-  markMemoriesConsolidated,
-  updateMemoryConnections,
+  saveConsolidationAtomic,
 } from './db.js';
 
 const mockGetUnconsolidated = vi.mocked(getUnconsolidatedMemories);
 const mockGenerateContent = vi.mocked(generateContent);
 const mockParseJson = vi.mocked(parseJsonResponse);
-const mockSaveConsolidation = vi.mocked(saveConsolidation);
-const mockMarkConsolidated = vi.mocked(markMemoriesConsolidated);
-const mockUpdateConnections = vi.mocked(updateMemoryConnections);
+const mockSaveAtomic = vi.mocked(saveConsolidationAtomic);
 
 function makeMemory(id: number, summary: string) {
   return {
@@ -70,7 +63,7 @@ describe('runConsolidation', () => {
     mockGetUnconsolidated.mockReturnValue([makeMemory(1, 'only one')]);
     await runConsolidation('chat1');
     expect(mockGenerateContent).not.toHaveBeenCalled();
-    expect(mockSaveConsolidation).not.toHaveBeenCalled();
+    expect(mockSaveAtomic).not.toHaveBeenCalled();
   });
 
   it('skips when zero unconsolidated memories', async () => {
@@ -81,7 +74,7 @@ describe('runConsolidation', () => {
 
   // ── Successful consolidation ──────────────────────────────────────
 
-  it('consolidates 2+ memories and saves the result', async () => {
+  it('consolidates 2+ memories and saves the result atomically', async () => {
     const memories = [
       makeMemory(10, 'User prefers morning email triage'),
       makeMemory(20, 'User checks Slack after email'),
@@ -90,8 +83,8 @@ describe('runConsolidation', () => {
     mockGetUnconsolidated.mockReturnValue(memories);
 
     const consolidationResult = {
-      summary: 'User has a structured morning routine: email triage, then Slack, with a dedicated 9-10am admin block.',
-      insight: 'User organizes mornings around a clear priority order: email first, Slack second, admin last.',
+      summary: 'User has a structured morning routine.',
+      insight: 'User organizes mornings around a clear priority order.',
       connections: [
         { from_id: 10, to_id: 20, relationship: 'sequential workflow' },
         { from_id: 20, to_id: 30, relationship: 'part of morning routine' },
@@ -102,30 +95,21 @@ describe('runConsolidation', () => {
 
     await runConsolidation('chat1');
 
-    // Should save consolidation record
-    expect(mockSaveConsolidation).toHaveBeenCalledWith(
+    // Should call atomic save with all data bundled
+    expect(mockSaveAtomic).toHaveBeenCalledTimes(1);
+    expect(mockSaveAtomic).toHaveBeenCalledWith(
       'chat1',
       [10, 20, 30],
       consolidationResult.summary,
       consolidationResult.insight,
+      // Valid connections passed through
+      [
+        { from_id: 10, to_id: 20, relationship: 'sequential workflow' },
+        { from_id: 20, to_id: 30, relationship: 'part of morning routine' },
+      ],
+      // No contradictions
+      [],
     );
-
-    // Should wire bidirectional connections
-    expect(mockUpdateConnections).toHaveBeenCalledWith(10, [
-      { linked_to: 20, relationship: 'sequential workflow' },
-    ]);
-    expect(mockUpdateConnections).toHaveBeenCalledWith(20, [
-      { linked_to: 10, relationship: 'sequential workflow' },
-    ]);
-    expect(mockUpdateConnections).toHaveBeenCalledWith(20, [
-      { linked_to: 30, relationship: 'part of morning routine' },
-    ]);
-    expect(mockUpdateConnections).toHaveBeenCalledWith(30, [
-      { linked_to: 20, relationship: 'part of morning routine' },
-    ]);
-
-    // Should mark all source memories as consolidated
-    expect(mockMarkConsolidated).toHaveBeenCalledWith([10, 20, 30]);
   });
 
   // ── Connection filtering ──────────────────────────────────────────
@@ -138,8 +122,8 @@ describe('runConsolidation', () => {
       summary: 'summary',
       insight: 'insight',
       connections: [
-        { from_id: 10, to_id: 999, relationship: 'invalid target' }, // 999 not in source
-        { from_id: 888, to_id: 20, relationship: 'invalid source' }, // 888 not in source
+        { from_id: 10, to_id: 999, relationship: 'invalid target' },
+        { from_id: 888, to_id: 20, relationship: 'invalid source' },
         { from_id: 10, to_id: 20, relationship: 'valid connection' },
       ],
     };
@@ -148,14 +132,15 @@ describe('runConsolidation', () => {
 
     await runConsolidation('chat1');
 
-    // Only the valid connection (10 -> 20) should be wired
-    expect(mockUpdateConnections).toHaveBeenCalledTimes(2); // bidirectional for 1 connection
-    expect(mockUpdateConnections).toHaveBeenCalledWith(10, [
-      { linked_to: 20, relationship: 'valid connection' },
-    ]);
-    expect(mockUpdateConnections).toHaveBeenCalledWith(20, [
-      { linked_to: 10, relationship: 'valid connection' },
-    ]);
+    // Only the valid connection should be passed to atomic save
+    expect(mockSaveAtomic).toHaveBeenCalledWith(
+      'chat1',
+      [10, 20],
+      'summary',
+      'insight',
+      [{ from_id: 10, to_id: 20, relationship: 'valid connection' }],
+      [],
+    );
   });
 
   it('handles empty connections array', async () => {
@@ -172,9 +157,14 @@ describe('runConsolidation', () => {
 
     await runConsolidation('chat1');
 
-    expect(mockSaveConsolidation).toHaveBeenCalled();
-    expect(mockUpdateConnections).not.toHaveBeenCalled();
-    expect(mockMarkConsolidated).toHaveBeenCalledWith([10, 20]);
+    expect(mockSaveAtomic).toHaveBeenCalledWith(
+      'chat1',
+      [10, 20],
+      result.summary,
+      result.insight,
+      [],
+      [],
+    );
   });
 
   // ── Error handling ────────────────────────────────────────────────
@@ -185,8 +175,7 @@ describe('runConsolidation', () => {
     mockGenerateContent.mockRejectedValue(new Error('API timeout'));
 
     await expect(runConsolidation('chat1')).resolves.not.toThrow();
-    expect(mockSaveConsolidation).not.toHaveBeenCalled();
-    expect(mockMarkConsolidated).not.toHaveBeenCalled();
+    expect(mockSaveAtomic).not.toHaveBeenCalled();
   });
 
   it('handles invalid Gemini response (null parse)', async () => {
@@ -196,9 +185,7 @@ describe('runConsolidation', () => {
     mockParseJson.mockReturnValue(null);
 
     await runConsolidation('chat1');
-
-    expect(mockSaveConsolidation).not.toHaveBeenCalled();
-    expect(mockMarkConsolidated).not.toHaveBeenCalled();
+    expect(mockSaveAtomic).not.toHaveBeenCalled();
   });
 
   it('handles missing summary in response', async () => {
@@ -210,7 +197,7 @@ describe('runConsolidation', () => {
     mockParseJson.mockReturnValue(result);
 
     await runConsolidation('chat1');
-    expect(mockSaveConsolidation).not.toHaveBeenCalled();
+    expect(mockSaveAtomic).not.toHaveBeenCalled();
   });
 
   it('handles missing insight in response', async () => {
@@ -222,7 +209,7 @@ describe('runConsolidation', () => {
     mockParseJson.mockReturnValue(result);
 
     await runConsolidation('chat1');
-    expect(mockSaveConsolidation).not.toHaveBeenCalled();
+    expect(mockSaveAtomic).not.toHaveBeenCalled();
   });
 
   // ── Overlap guard ─────────────────────────────────────────────────
@@ -231,7 +218,6 @@ describe('runConsolidation', () => {
     const memories = [makeMemory(10, 'mem1'), makeMemory(20, 'mem2')];
     mockGetUnconsolidated.mockReturnValue(memories);
 
-    // Make generateContent hang
     let resolveFirst!: (val: string) => void;
     const firstPromise = new Promise<string>((resolve) => { resolveFirst = resolve; });
     mockGenerateContent.mockReturnValueOnce(firstPromise);
@@ -242,21 +228,16 @@ describe('runConsolidation', () => {
       connections: [],
     };
 
-    // Start first consolidation (will block on generateContent)
     const run1 = runConsolidation('chat1');
-
-    // Start second immediately (should be skipped due to guard)
     mockGetUnconsolidated.mockReturnValue(memories);
     const run2 = runConsolidation('chat1');
 
-    // Complete first
     resolveFirst(JSON.stringify(result));
     mockParseJson.mockReturnValue(result);
 
     await run1;
     await run2;
 
-    // generateContent should only have been called once (the second run was skipped)
     expect(mockGenerateContent).toHaveBeenCalledTimes(1);
   });
 });

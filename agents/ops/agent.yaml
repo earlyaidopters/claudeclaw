@@ -1,0 +1,20 @@
+name: Ops
+description: Automation workflows, Make/Zapier scenarios, business operations, system tasks
+
+telegram_bot_token_env: OPS_BOT_TOKEN
+
+model: claude-sonnet-4-6
+
+obsidian:
+  vault: /app/store/obsidian-brain
+  folders:
+    - Clippings/
+  read_only: []
+
+# War Room tool opt-in. OVERRIDES the default allowlist; safe read-only tools
+# are always included. Preserves Ops' defaults (Bash, Skill) + Vendasta + ClickUp.
+warroom_tools:
+  - Bash
+  - Skill
+  - mcp:vendasta-crm
+  - mcp:clickup

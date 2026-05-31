@@ -2,10 +2,18 @@ import fs from 'fs';
 import path from 'path';
 import yaml from 'js-yaml';
 
-import { CLAUDECLAW_CONFIG, PROJECT_ROOT } from './config.js';
+import { CLAUDECLAW_CONFIG, PROJECT_ROOT, STORE_DIR } from './config.js';
 import { readEnvFile } from './env.js';
 
+export const DEFAULT_MAIN_DESCRIPTION = 'Primary ClaudeClaw bot';
+
+function mainConfigPath(): string {
+  return path.join(STORE_DIR, 'main-config.json');
+}
+
 export interface AgentConfig {
+  /** Optional per-agent allowlist of MCP tools exposed in the war room. */
+  warroomTools?: string[];
   name: string;
   description: string;
   botTokenEnv: string;
@@ -17,6 +25,17 @@ export interface AgentConfig {
     folders: string[];
     readOnly?: string[];
   };
+  /** Pika voice id used when this agent joins a video meeting. Falls back
+   *  to the Pika preset English_radiant_girl if unset. */
+  meetVoiceId?: string;
+  /** Display name shown in the meeting ("Your Agent wants to join"). Falls
+   *  back to the agent's name or id with first letter capitalized. */
+  meetBotName?: string;
+  /** Restrict which user-invocable skills this bot exposes as slash
+   *  commands. When set, only these skill names appear in the Telegram
+   *  menu and are dispatchable via /<name>. When absent, the bot sees
+   *  every user_invocable skill under ~/.claude/skills/. */
+  skillsAllowlist?: string[];
 }
 
 /**
@@ -89,8 +108,31 @@ export function loadAgentConfig(agentId: string): AgentConfig {
   }
 
   const mcpServers = raw['mcp_servers'] as string[] | undefined;
+  const meetVoiceId = typeof raw['meet_voice_id'] === 'string' ? (raw['meet_voice_id'] as string) : undefined;
+  const meetBotName = typeof raw['meet_bot_name'] === 'string' ? (raw['meet_bot_name'] as string) : undefined;
+  const rawSkills = raw['skills_allowlist'];
+  const skillsAllowlist = Array.isArray(rawSkills)
+    ? (rawSkills as unknown[]).filter((s): s is string => typeof s === 'string').map((s) => s.toLowerCase())
+    : undefined;
 
-  return { name, description, botTokenEnv, botToken, model, mcpServers, obsidian };
+  const rawWarroom = raw['warroom_tools'];
+  const warroomTools = Array.isArray(rawWarroom)
+    ? (rawWarroom as unknown[]).filter((s): s is string => typeof s === 'string')
+    : undefined;
+
+  return {
+    name,
+    description,
+    botTokenEnv,
+    botToken,
+    model,
+    mcpServers,
+    obsidian,
+    meetVoiceId,
+    meetBotName,
+    skillsAllowlist,
+    warroomTools,
+  };
 }
 
 /** Update the model field in an agent's agent.yaml file. */
@@ -102,6 +144,49 @@ export function setAgentModel(agentId: string, model: string): void {
   const raw = yaml.load(fs.readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
   raw['model'] = model;
   fs.writeFileSync(configPath, yaml.dump(raw, { lineWidth: -1 }), 'utf-8');
+}
+
+/** Update the description field in an agent's agent.yaml file. */
+export function setAgentDescription(agentId: string, description: string): void {
+  const trimmed = description.trim();
+  if (!trimmed) throw new Error('description cannot be empty');
+
+  const agentDir = resolveAgentDir(agentId);
+  const configPath = path.join(agentDir, 'agent.yaml');
+  if (!fs.existsSync(configPath)) throw new Error(`Agent config not found: ${configPath}`);
+
+  const raw = yaml.load(fs.readFileSync(configPath, 'utf-8')) as Record<string, unknown>;
+  raw['description'] = trimmed;
+  fs.writeFileSync(configPath, yaml.dump(raw, { lineWidth: -1 }), 'utf-8');
+}
+
+/** Load the description for the main bot (persisted, editable). */
+export function getMainDescription(): string {
+  const configPath = mainConfigPath();
+  try {
+    if (!fs.existsSync(configPath)) return DEFAULT_MAIN_DESCRIPTION;
+    const raw = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as { description?: string };
+    const desc = (raw.description ?? '').trim();
+    return desc || DEFAULT_MAIN_DESCRIPTION;
+  } catch {
+    return DEFAULT_MAIN_DESCRIPTION;
+  }
+}
+
+/** Persist a description for the main bot. */
+export function setMainDescription(description: string): void {
+  const trimmed = description.trim();
+  if (!trimmed) throw new Error('description cannot be empty');
+
+  if (!fs.existsSync(STORE_DIR)) fs.mkdirSync(STORE_DIR, { recursive: true });
+
+  const configPath = mainConfigPath();
+  let raw: Record<string, unknown> = {};
+  if (fs.existsSync(configPath)) {
+    try { raw = JSON.parse(fs.readFileSync(configPath, 'utf-8')) as Record<string, unknown>; } catch { raw = {}; }
+  }
+  raw['description'] = trimmed;
+  fs.writeFileSync(configPath, JSON.stringify(raw, null, 2) + '\n', 'utf-8');
 }
 
 /** List all configured agent IDs (directories under agents/ with agent.yaml).
