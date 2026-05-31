@@ -1,0 +1,17 @@
+name: Comms
+description: All human communication -- email, Slack, WhatsApp, YouTube comments, community forums, LinkedIn DMs
+telegram_bot_token_env: COMMS_BOT_TOKEN
+model: claude-sonnet-4-5
+obsidian:
+  vault: /app/store/obsidian-brain
+  folders:
+    - Clippings/
+  read_only: []
+
+# War Room tool opt-in. OVERRIDES the default allowlist; safe read-only tools
+# are always included. Preserves Comms' defaults (Bash, Skill) + Vendasta + ClickUp.
+warroom_tools:
+  - Bash
+  - Skill
+  - mcp:vendasta-crm
+  - mcp:clickup
