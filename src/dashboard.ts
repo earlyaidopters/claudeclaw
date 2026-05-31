@@ -343,16 +343,37 @@ export function startDashboard(botApi?: Api<RawApi>): void {
   // Token auth middleware — gates ONLY /api/*. The SPA shell at `/` and the
   // Vite-built static assets under `/assets/*` are served unauthenticated so
   // a token-stripped URL still loads the app instead of returning raw 401
-  // JSON. The SPA reads ?token= from window.location and includes it in
-  // every API request. Legacy HTML routes that embed DASHBOARD_TOKEN in the
-  // page source call requireToken() inline.
+  // JSON. The SPA includes the token via three channels (checked in order):
+  //   1. ?token= query param  (original mechanism, always present when token known)
+  //   2. Authorization: Bearer <token>  header  (sent by api.ts on every fetch)
+  //   3. claw_token cookie  (set by api.ts on first authenticated load, survives
+  //      across browser sessions — critical for mobile where ITP clears
+  //      localStorage after 7 days of inactivity)
+  // Legacy HTML routes that embed DASHBOARD_TOKEN in the page source call
+  // requireToken() inline (query-param only).
+  function parseCookieToken(cookieHeader: string | undefined): string | null {
+    if (!cookieHeader) return null;
+    for (const part of cookieHeader.split(';')) {
+      const eq = part.indexOf('=');
+      if (eq < 0) continue;
+      if (part.slice(0, eq).trim() === 'claw_token') {
+        try { return decodeURIComponent(part.slice(eq + 1).trim()); } catch { return null; }
+      }
+    }
+    return null;
+  }
+
   app.use('*', async (c, next) => {
     const pathname = new URL(c.req.url).pathname;
     if (!pathname.startsWith('/api/')) {
       await next();
       return;
     }
-    const token = c.req.query('token');
+    const token =
+      c.req.query('token') ||
+      c.req.header('Authorization')?.replace(/^Bearer\s+/i, '') ||
+      parseCookieToken(c.req.header('Cookie')) ||
+      null;
     if (!safeTokenEqual(token, DASHBOARD_TOKEN)) {
       return c.json({ error: 'Unauthorized' }, 401);
     }
