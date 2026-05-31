@@ -39,12 +39,24 @@ fi
 # (Fly volume) and re-link it on each boot. We place it in the current
 # user's home dir (node, not root — Claude Code refuses to run the
 # bot's --dangerously-skip-permissions flag as root).
+CLAUDE_DIR="${HOME:-/home/node}/.claude"
+mkdir -p "$CLAUDE_DIR"
+
 if [ -f /app/store/claude-credentials.json ]; then
-  CLAUDE_DIR="${HOME:-/home/node}/.claude"
-  mkdir -p "$CLAUDE_DIR"
   cp /app/store/claude-credentials.json "$CLAUDE_DIR/.credentials.json"
   chmod 600 "$CLAUDE_DIR/.credentials.json"
   echo "Restored Claude Code credentials → $CLAUDE_DIR/.credentials.json"
+fi
+
+# Persist Claude Code session state across container restarts.
+# Without this, every deploy wipes ~/.claude/projects/* and the bot's stored
+# sessionIds become orphan ("No conversation found"), forcing a manual
+# DELETE FROM sessions on every redeploy. Symlink onto the Fly volume.
+mkdir -p /app/store/claude-projects
+if [ ! -L "$CLAUDE_DIR/projects" ]; then
+  rm -rf "$CLAUDE_DIR/projects"
+  ln -s /app/store/claude-projects "$CLAUDE_DIR/projects"
+  echo "Linked Claude Code project state → /app/store/claude-projects (persistent)"
 fi
 
 # ── Start Syncthing in the background ────────────────────────────────────
