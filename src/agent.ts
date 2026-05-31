@@ -354,15 +354,26 @@ export async function runAgent(
         // Extract usage info from result event
         const evUsage = ev['usage'] as Record<string, number> | undefined;
         if (evUsage) {
+          // Claude Code with OAuth (Pro/Max subscription) doesn't populate
+          // usage on per-assistant-message events — only on the final result
+          // event. Without the fallback, lastCallCacheRead and lastCallInputTokens
+          // stay 0, which makes context_tokens stuck at 0 in token_usage and
+          // breaks the /convolife progress bar. Fall back to the result event's
+          // aggregate input_tokens + cache_read_input_tokens for context size.
+          const resultInputTokens = evUsage['input_tokens'] ?? 0;
+          const resultCacheRead = evUsage['cache_read_input_tokens'] ?? 0;
+          const finalLastCallInputTokens = lastCallInputTokens > 0 ? lastCallInputTokens : resultInputTokens;
+          const finalLastCallCacheRead = lastCallCacheRead > 0 ? lastCallCacheRead : resultCacheRead;
+
           usage = {
-            inputTokens: evUsage['input_tokens'] ?? 0,
+            inputTokens: resultInputTokens,
             outputTokens: evUsage['output_tokens'] ?? 0,
-            cacheReadInputTokens: evUsage['cache_read_input_tokens'] ?? 0,
+            cacheReadInputTokens: resultCacheRead,
             totalCostUsd: (ev['total_cost_usd'] as number) ?? 0,
             didCompact,
             preCompactTokens,
-            lastCallCacheRead,
-            lastCallInputTokens,
+            lastCallCacheRead: finalLastCallCacheRead,
+            lastCallInputTokens: finalLastCallInputTokens,
           };
           logger.info(
             {
