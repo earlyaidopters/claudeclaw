@@ -3,14 +3,22 @@ name: Deploy to Fly.io
 on:
   push:
     branches: [main]
+    # NOTE: CLAUDE.md is intentionally NOT in this ignore list — it ships
+    # into the container (per Dockerfile) as Nikki's system prompt, so
+    # edits to it must trigger a redeploy. Other top-level markdown is
+    # documentation only and can be skipped.
     paths-ignore:
-      - "**.md"
+      - "README.md"
+      - "CHANGELOG.md"
+      - "CONTRIBUTING.md"
+      - "FLY-MIGRATION.md"
+      - "AGENTS.md"
+      - "docs/**"
       - ".github/**"
       - "scripts/**"
       - "memory/**"
       - "store/**"
       - "logs/**"
-      - "FLY-MIGRATION.md"
   workflow_dispatch:  # manual trigger from GitHub UI
 
 jobs:

@@ -101,6 +101,51 @@ Local Obsidian vault is at `/Users/dantecrescenzi/Documents/Claude/Obsidian Brai
 
 **Needs-auth connectors:** PayPal, Adzviser, Zapier, Stripe — will require OAuth before first use.
 
+## Email (Gmail API)
+
+For sending, reading, searching, replying, and drafting email, prefer the Gmail CLI over MCP. It works the same locally and on Fly, uses a stored refresh token, and returns JSON the agent can parse directly.
+
+```bash
+PROJECT_ROOT=$(git rev-parse --show-toplevel)
+
+# Send a new email (HTML body)
+node "$PROJECT_ROOT/dist/gmail-cli.js" send \
+  --to "client@example.com" \
+  --cc "team@impactworks.com" \
+  --subject "Sprint kickoff" \
+  --body "<p>Hey, kicking off Monday.</p>"
+
+# Plain-text body alternative
+node "$PROJECT_ROOT/dist/gmail-cli.js" send --to X --subject S --body-text "plain text body"
+
+# Search the mailbox (Gmail query syntax)
+node "$PROJECT_ROOT/dist/gmail-cli.js" search "from:client@example.com is:unread" --limit 20
+
+# Most recent inbox messages
+node "$PROJECT_ROOT/dist/gmail-cli.js" inbox --limit 10
+
+# Read one message (full body + headers)
+node "$PROJECT_ROOT/dist/gmail-cli.js" read <messageId>
+
+# Reply on an existing thread (preserves In-Reply-To / References headers)
+node "$PROJECT_ROOT/dist/gmail-cli.js" reply \
+  --id <messageId> --thread <threadId> \
+  --body "<p>Got it, will circle back tomorrow.</p>"
+
+# Save a draft (does not send)
+node "$PROJECT_ROOT/dist/gmail-cli.js" draft \
+  --to "client@example.com" --subject "Follow-up" --body "<p>Draft text.</p>"
+
+# Health check (exits non-zero if missing creds)
+node "$PROJECT_ROOT/dist/gmail-cli.js" status
+```
+
+All commands print JSON to stdout. Errors print JSON to stderr and exit non-zero.
+
+Default `From:` address is `dante@impactworks.com` (override via `--from` or `GMAIL_FROM_ADDRESS`).
+
+**First-time setup:** run `npx tsx src/gmail-auth.ts` once on a machine with a browser. It listens on `http://localhost:3456/callback`, walks the consent flow for the gmail.send / readonly / compose / modify scopes, and prints both the refresh token and the exact `fly secrets set GMAIL_REFRESH_TOKEN=<token> -a claudeclaw-impactworks` command.
+
 ## Scheduling Tasks
 
 When Dante asks to run something on a schedule, create a scheduled task using the Bash tool.

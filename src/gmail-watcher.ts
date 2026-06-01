@@ -19,12 +19,13 @@ import { PROJECT_ROOT } from './config.js';
 import { logger } from './logger.js';
 import { getRecentEmails } from './google-api.js';
 import { recordEmailEvent, setOutreachStatus } from './outreach-data.js';
+import { closeClickUpTasksForContact } from './clickup-utils.js';
 
 const ROSTER_FILE = path.join(PROJECT_ROOT, 'store', 'bid-roster.json');
 const CURSOR_FILE = path.join(PROJECT_ROOT, 'store', 'gmail-watcher-cursor.json');
 const POLL_MS = 5 * 60 * 1000;
 
-interface BidContact { email: string; entity: string; }
+interface BidContact { email: string; entity: string; contact?: string; }
 interface Cursor { lastRunMs: number; }
 
 function loadRoster(): BidContact[] {
@@ -63,6 +64,10 @@ export async function runGmailWatcherOnce(): Promise<{
     return { scanned: 0, sentLogged: 0, repliesLogged: 0, promotions: 0 };
   }
   const emails = new Set(roster.map(b => b.email.toLowerCase()));
+  // Lookup by lowercased email so the reply auto-close can pull the
+  // human contact name out of the roster without a second file read.
+  const byEmail = new Map<string, BidContact>();
+  for (const b of roster) byEmail.set(b.email.toLowerCase(), b);
   const cursor = loadCursor();
   const since = epochSec(cursor.lastRunMs - 24 * 3600 * 1000); // 1 day overlap to catch slow indexing
 
@@ -131,6 +136,25 @@ export async function runGmailWatcherOnce(): Promise<{
       if (reps.length > 0) {
         setOutreachStatus(addr, 'Replied');
         promotions++;
+
+        // Reply detected → auto-close any open ClickUp tasks tagged for
+        // this contact. ClickUp downtime must never break the watcher,
+        // so we swallow everything here and the helper itself is also
+        // try/catch-guarded internally.
+        try {
+          const bid = byEmail.get(addr);
+          const contactName = bid?.contact?.trim();
+          if (contactName) {
+            await closeClickUpTasksForContact(contactName, addr);
+          } else {
+            logger.warn({ addr }, 'auto-close: roster entry missing contact name, skipping ClickUp');
+          }
+        } catch (err) {
+          logger.warn(
+            { err: err instanceof Error ? err.message : String(err), addr },
+            'auto-close: ClickUp closure threw',
+          );
+        }
       }
     }
   }

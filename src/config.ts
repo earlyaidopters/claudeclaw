@@ -24,6 +24,9 @@ const envConfig = readEnvFile([
   'CLAUDECLAW_CONFIG',
   'DB_ENCRYPTION_KEY',
   'GOOGLE_API_KEY',
+  'GMAIL_REFRESH_TOKEN',
+  'GMAIL_FROM_ADDRESS',
+  'CLICKUP_API_TOKEN',
   'AGENT_TIMEOUT_MS',
   'MISSION_TIMEOUT_MS',
   'AGENT_MAX_TURNS',
@@ -215,6 +218,21 @@ export const DB_ENCRYPTION_KEY =
 export const GOOGLE_API_KEY =
   process.env.GOOGLE_API_KEY || envConfig.GOOGLE_API_KEY || '';
 
+// Gmail API (runtime send/read via OAuth refresh token).
+// Mint once via `npx tsx src/gmail-auth.ts`, then store as a Fly secret.
+// Empty string means the gmail.ts module will throw a clear setup error.
+export const GMAIL_REFRESH_TOKEN =
+  process.env.GMAIL_REFRESH_TOKEN || envConfig.GMAIL_REFRESH_TOKEN || '';
+
+// Default From: address on outbound mail.
+export const GMAIL_FROM_ADDRESS =
+  process.env.GMAIL_FROM_ADDRESS || envConfig.GMAIL_FROM_ADDRESS || 'dante@impactworks.com';
+
+// ClickUp personal API token (pk_...). Used by the gmail-watcher reply
+// auto-close path and any other ClickUp integration we add later.
+export const CLICKUP_API_TOKEN =
+  process.env.CLICKUP_API_TOKEN || envConfig.CLICKUP_API_TOKEN || '';
+
 // Streaming strategy for progressive Telegram updates.
 // 'global-throttle' (default): edits a placeholder message with streamed text,
 //   rate-limited to ~24 edits/min per chat to respect Telegram limits.
@@ -293,7 +311,7 @@ export const EXFILTRATION_GUARD_ENABLED =
   (process.env.EXFILTRATION_GUARD_ENABLED || envConfig.EXFILTRATION_GUARD_ENABLED || 'true').toLowerCase() === 'true';
 export const PROTECTED_ENV_VARS = (
   process.env.PROTECTED_ENV_VARS || envConfig.PROTECTED_ENV_VARS ||
-  'ANTHROPIC_API_KEY,CLAUDE_CODE_OAUTH_TOKEN,DB_ENCRYPTION_KEY,TELEGRAM_BOT_TOKEN,SLACK_USER_TOKEN,GROQ_API_KEY,ELEVENLABS_API_KEY,GOOGLE_API_KEY'
+  'ANTHROPIC_API_KEY,CLAUDE_CODE_OAUTH_TOKEN,DB_ENCRYPTION_KEY,TELEGRAM_BOT_TOKEN,SLACK_USER_TOKEN,GROQ_API_KEY,ELEVENLABS_API_KEY,GOOGLE_API_KEY,GMAIL_REFRESH_TOKEN,CLICKUP_API_TOKEN'
 ).split(',').map((s) => s.trim()).filter(Boolean);
 
 // ── War Room (voice meeting via Pipecat WebSocket) ──────────────────

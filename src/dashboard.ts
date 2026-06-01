@@ -328,7 +328,7 @@ export function startDashboard(botApi?: Api<RawApi>): void {
         }
       } catch { /* malformed Origin — emit no header */ }
     }
-    c.header('Access-Control-Allow-Methods', 'GET, POST, DELETE, PATCH, OPTIONS');
+    c.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
     c.header('Access-Control-Allow-Headers', 'Content-Type');
     if (c.req.method === 'OPTIONS') return c.body(null, 204);
     await next();
@@ -558,6 +558,110 @@ export function startDashboard(botApi?: Api<RawApi>): void {
     return new Response(data, {
       headers: { 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=86400' },
     });
+  });
+
+  // ── Mission Control agent avatars ───────────────────────────────────
+  // Backing store is warroom/avatars/<id>.<ext>. Same directory the War
+  // Room and Meet flows already read from, so an avatar change here
+  // propagates to those views automatically. Token-guarded because the
+  // GET response embeds an image only the dashboard user should see.
+  const AVATAR_EXTS = ['png', 'jpg', 'jpeg', 'webp'] as const;
+  const MIME_BY_EXT: Record<string, string> = {
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    webp: 'image/webp',
+  };
+  function findAvatarFile(agentId: string): { path: string; ext: string } | null {
+    for (const ext of AVATAR_EXTS) {
+      const p = path.join(PROJECT_ROOT, 'warroom', 'avatars', `${agentId}.${ext}`);
+      if (fs.existsSync(p)) return { path: p, ext };
+    }
+    return null;
+  }
+
+  app.get('/api/agents/:id/avatar', (c) => {
+    const auth = requireToken(c); if (auth) return auth;
+    const agentId = c.req.param('id').replace(/[^a-z0-9_-]/g, '');
+    const hit = findAvatarFile(agentId);
+    // 204 means "no avatar set" — the React component treats that as a
+    // fallback signal and renders initials. Don't 404, that triggers an
+    // error toast in some browsers.
+    if (!hit) return new Response(null, { status: 204 });
+    const data = fs.readFileSync(hit.path);
+    return new Response(data, {
+      headers: {
+        'Content-Type': MIME_BY_EXT[hit.ext] || 'application/octet-stream',
+        // No client-side cache: callers (AgentAvatar) cache-bust via a
+        // ?v=<n> query when they change, but other views skip the param,
+        // so we'd otherwise serve stale bytes for up to an hour.
+        'Cache-Control': 'no-store',
+      },
+    });
+  });
+
+  app.put('/api/agents/:id/avatar', async (c) => {
+    const auth = requireToken(c); if (auth) return auth;
+    const agentId = c.req.param('id').replace(/[^a-z0-9_-]/g, '');
+    if (!agentId) return c.json({ error: 'Invalid agent id' }, 400);
+
+    let body: Record<string, unknown>;
+    try {
+      body = await c.req.parseBody();
+    } catch (err: unknown) {
+      return c.json({ error: 'Could not parse upload: ' + (err instanceof Error ? err.message : String(err)) }, 400);
+    }
+
+    const file = body['image'] as File | string | undefined;
+    if (!file || typeof file === 'string') {
+      return c.json({ error: 'No `image` field in multipart upload' }, 400);
+    }
+
+    const buf = Buffer.from(await file.arrayBuffer());
+    if (buf.length === 0) return c.json({ error: 'Empty upload' }, 400);
+    if (buf.length > 5 * 1024 * 1024) return c.json({ error: 'Image too large (max 5MB)' }, 413);
+
+    // Pick extension from declared MIME, fall back to filename, default to png.
+    const mimeType = (file.type || '').toLowerCase();
+    let ext: string;
+    if (mimeType === 'image/png') ext = 'png';
+    else if (mimeType === 'image/jpeg' || mimeType === 'image/jpg') ext = 'jpg';
+    else if (mimeType === 'image/webp') ext = 'webp';
+    else {
+      const fromName = (file.name || '').toLowerCase().split('.').pop() || '';
+      ext = AVATAR_EXTS.includes(fromName as typeof AVATAR_EXTS[number]) ? fromName : 'png';
+    }
+
+    const avatarsDir = path.join(PROJECT_ROOT, 'warroom', 'avatars');
+    fs.mkdirSync(avatarsDir, { recursive: true });
+
+    // Remove any other-extension variants so GET never serves a stale file.
+    for (const other of AVATAR_EXTS) {
+      if (other === ext) continue;
+      const p = path.join(avatarsDir, `${agentId}.${other}`);
+      if (fs.existsSync(p)) {
+        try { fs.unlinkSync(p); } catch { /* best-effort */ }
+      }
+    }
+
+    const outPath = path.join(avatarsDir, `${agentId}.${ext}`);
+    fs.writeFileSync(outPath, buf);
+    logger.info({ agentId, ext, bytes: buf.length }, 'avatar updated');
+    return c.json({ ok: true, ext, bytes: buf.length });
+  });
+
+  app.delete('/api/agents/:id/avatar', (c) => {
+    const auth = requireToken(c); if (auth) return auth;
+    const agentId = c.req.param('id').replace(/[^a-z0-9_-]/g, '');
+    let removed = 0;
+    for (const ext of AVATAR_EXTS) {
+      const p = path.join(PROJECT_ROOT, 'warroom', 'avatars', `${agentId}.${ext}`);
+      if (fs.existsSync(p)) {
+        try { fs.unlinkSync(p); removed++; } catch { /* best-effort */ }
+      }
+    }
+    logger.info({ agentId, removed }, 'avatar cleared');
+    return c.json({ ok: true, removed });
   });
 
   // War Room API: meeting state management.
